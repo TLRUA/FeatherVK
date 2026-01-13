@@ -10,26 +10,10 @@
 // std
 #include <cassert>
 #include <cstring>
+#include <memory>
 
-namespace Kaamoo {
-
-/**
- * Returns the minimum instance size required to be compatible with devices minOffsetAlignment
- *
- * @param instanceSize The size of an instance
- * @param minOffsetAlignment The minimum required alignment, in bytes, for the offset member (eg
- * minUniformBufferOffsetAlignment)
- *
- * @return VkResult of the buffer mapping call
- */
-    VkDeviceSize Buffer::getAlignment(VkDeviceSize instanceSize, VkDeviceSize minOffsetAlignment) {
-        if (minOffsetAlignment > 0) {
-            //(instanceSize + minOffsetAlignment - 1) 防止instanceSize小于alignment时计算结果为0，因此加上minOffsetAlignment-1保证其结果有效，同时-1是为了防止计算结果偏大
-            //~(minOffsetAlignment-1)即取minOffsetAlignment的公倍数
-            return (instanceSize + minOffsetAlignment - 1) & ~(minOffsetAlignment - 1);
-        }
-        return instanceSize;
-    }
+namespace FeatherVK {
+    
 
     Buffer::Buffer(
             class Device &device,
@@ -43,7 +27,7 @@ namespace Kaamoo {
               instanceCount{instanceCount},
               usageFlags{usageFlags},
               memoryPropertyFlags{memoryPropertyFlags} {
-        alignmentSize = getAlignment(instanceSize, minOffsetAlignment);
+        alignmentSize = Device::getAlignment(instanceSize, minOffsetAlignment);
         bufferSize = alignmentSize * instanceCount;
         device.createBuffer(bufferSize, usageFlags, memoryPropertyFlags, buffer, memory);
     }
@@ -93,16 +77,22 @@ namespace Kaamoo {
         assert(mapped && "Cannot copy to unmapped buffer");
 
         if (size == VK_WHOLE_SIZE) {
+            if (memcmp(data, mapped, bufferSize) == 0) {
+                return;
+            }
             memcpy(mapped, data, bufferSize);
         } else {
             char *memOffset = (char *) mapped;
             memOffset += offset;
+            if (memcmp(data, memOffset, size) == 0) {
+                return;
+            }
             memcpy(memOffset, data, size);
         }
     }
 
 /**
- * Flush a memory range of the buffer to make it visible to the device
+ * Flush a memory range of the buffer to make it visible to the m_device
  *
  * @note Only required for non-coherent memory
  *
@@ -149,12 +139,12 @@ namespace Kaamoo {
  *
  * @return VkDescriptorBufferInfo of specified offset and range
  */
-    VkDescriptorBufferInfo Buffer::descriptorInfo(VkDeviceSize size, VkDeviceSize offset) {
-        return VkDescriptorBufferInfo{
-                buffer,
-                offset,
-                size,
-        };
+    std::shared_ptr<VkDescriptorBufferInfo> Buffer::descriptorInfo(VkDeviceSize size, VkDeviceSize offset) {
+        auto bufferInfoPtr = std::make_shared<VkDescriptorBufferInfo>();
+        bufferInfoPtr->buffer = buffer;
+        bufferInfoPtr->offset = offset;
+        bufferInfoPtr->range = size;
+        return bufferInfoPtr;
     }
 
 /**
@@ -169,7 +159,7 @@ namespace Kaamoo {
     }
 
 /**
- *  Flush the memory range at index * alignmentSize of the buffer to make it visible to the device
+ *  Flush the memory range at index * alignmentSize of the buffer to make it visible to the m_device
  *
  * @param index Used in offset calculation
  *
@@ -183,8 +173,9 @@ namespace Kaamoo {
  *
  * @return VkDescriptorBufferInfo for instance at index
  */
-    VkDescriptorBufferInfo Buffer::descriptorInfoForIndex(int index) {
-        return descriptorInfo(alignmentSize, index * alignmentSize);
+    std::shared_ptr<VkDescriptorBufferInfo> Buffer::descriptorInfoForIndex(int index) {
+        return descriptorInfo(instanceSize, index * alignmentSize);
+//        return descriptorInfo(alignmentSize, index * alignmentSize);
     }
 
 /**

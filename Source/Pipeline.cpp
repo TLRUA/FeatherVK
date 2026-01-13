@@ -1,32 +1,171 @@
 ﻿#include "Pipeline.hpp"
-#include "Material.h"
+#include "Material.hpp"
 
-namespace Kaamoo {
-    Pipeline::Pipeline(Device &device, const PipelineConfigureInfo &pipelineConfigureInfo, Material &material)
-            : device(device), material(material) {
-        createPipeline(pipelineConfigureInfo);
+namespace FeatherVK {
+    Pipeline::Pipeline(Device &device, const PipelineConfigureInfo &pipelineConfigureInfo, std::shared_ptr<Material> material)
+            : device(device), m_material(material) {
+#ifdef RAY_TRACING
+        if (material->getPipelineCategory() == PipelineCategory.RayTracing) {
+            createRayTracingPipeline(pipelineConfigureInfo);
+        } else if (material->getPipelineCategory() == PipelineCategory.Compute) {
+            createComputePipeline(pipelineConfigureInfo);
+        } else
+#endif
+        {
+            createGraphicsPipeline(pipelineConfigureInfo);
+        }
     }
 
 
     Pipeline::~Pipeline() {
-        for (auto &shaderModule: material.getShaderModulePointers()) {
-            if (*(shaderModule->shaderModule) != nullptr) {
-                vkDestroyShaderModule(device.device(), *(shaderModule->shaderModule), nullptr);
-                *shaderModule->shaderModule = nullptr;
-                shaderModule = nullptr;
-            }
-        }
-        vkDestroyPipeline(device.device(), graphicsPipeline, nullptr);
+
+        vkDestroyPipeline(device.device(), m_pipeline, nullptr);
     }
 
-    void Pipeline::createPipeline(const PipelineConfigureInfo &pipelineConfigureInfo) {
-        uint32_t shaderStageCount = material.getShaderModulePointers().size();
+#ifdef RAY_TRACING
 
-        VkPipelineShaderStageCreateInfo shaderStageCreateInfo[shaderStageCount];
+    void Pipeline::createComputePipeline(const FeatherVK::PipelineConfigureInfo &pipelineConfigureInfo) {
+        VkComputePipelineCreateInfo computePipelineCreateInfo{};
+        computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        computePipelineCreateInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        computePipelineCreateInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        computePipelineCreateInfo.stage.module = *m_material->getShaderModulePointers()[0]->shaderModule;
+        computePipelineCreateInfo.stage.pName = "main";
+        computePipelineCreateInfo.layout = pipelineConfigureInfo.pipelineLayout;
+        
+        if (vkCreateComputePipelines(device.device(), VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &m_pipeline) != VK_SUCCESS) {
+            throw std::runtime_error("Creating compute pipeline failed");
+        }
+    }
 
-        for (int i = 0; i < material.getShaderModulePointers().size(); i++) {
+    void Pipeline::createRayTracingPipeline(const PipelineConfigureInfo &pipelineConfigureInfo) {
+        //Shader
+        uint32_t shaderStageCount = static_cast<uint32_t>(m_material->getShaderModulePointers().size());
+        std::vector<VkPipelineShaderStageCreateInfo> shaderStageCreateInfo(shaderStageCount);
+
+        for (int i = 0; i < m_material->getShaderModulePointers().size(); i++) {
+            VkRayTracingShaderGroupCreateInfoKHR group{VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR};
+            group.anyHitShader = VK_SHADER_UNUSED_KHR;
+            group.closestHitShader = VK_SHADER_UNUSED_KHR;
+            group.generalShader = VK_SHADER_UNUSED_KHR;
+            group.intersectionShader = VK_SHADER_UNUSED_KHR;
             shaderStageCreateInfo[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-            auto &shaderCategory = material.getShaderModulePointers()[i]->shaderCategory;
+            auto &shaderCategory = m_material->getShaderModulePointers()[i]->shaderCategory;
+            switch (shaderCategory) {
+                case rayGen:
+                    shaderStageCreateInfo[i].stage = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+                    group.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+                    group.generalShader = i;
+                    m_rayTracingGroups.push_back(group);
+                    break;
+                case rayClosestHit:
+                    shaderStageCreateInfo[i].stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+                    group.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+                    group.generalShader = VK_SHADER_UNUSED_KHR;
+                    group.closestHitShader = i;
+                    m_rayTracingGroups.push_back(group);
+                    break;
+                case rayMiss:
+                    shaderStageCreateInfo[i].stage = VK_SHADER_STAGE_MISS_BIT_KHR;
+                    group.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+                    group.generalShader = i;
+                    m_rayTracingGroups.push_back(group);
+                    break;
+                case rayMiss2:
+                    shaderStageCreateInfo[i].stage = VK_SHADER_STAGE_MISS_BIT_KHR;
+                    group.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+                    group.generalShader = i;
+                    m_rayTracingGroups.push_back(group);
+                    break;
+                case rayAnyHit:
+                    shaderStageCreateInfo[i].stage = VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+                    m_rayTracingGroups.back().anyHitShader = i;
+                    break;
+            }
+            shaderStageCreateInfo[i].module = *m_material->getShaderModulePointers()[i]->shaderModule;
+            shaderStageCreateInfo[i].pName = "main";
+            shaderStageCreateInfo[i].flags = 0;
+            shaderStageCreateInfo[i].pNext = nullptr;
+            shaderStageCreateInfo[i].pSpecializationInfo = nullptr;
+        }
+
+        VkRayTracingPipelineCreateInfoKHR rayTracingPipelineCreateInfo{VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR};
+        rayTracingPipelineCreateInfo.stageCount = shaderStageCount;
+        rayTracingPipelineCreateInfo.pStages = shaderStageCreateInfo.data();
+        rayTracingPipelineCreateInfo.groupCount = static_cast<uint32_t>(m_rayTracingGroups.size());
+        rayTracingPipelineCreateInfo.pGroups = m_rayTracingGroups.data();
+        rayTracingPipelineCreateInfo.maxPipelineRayRecursionDepth = 16;
+        rayTracingPipelineCreateInfo.layout = pipelineConfigureInfo.pipelineLayout;
+        Device::pfn_vkCreateRayTracingPipelinesKHR(device.device(), VK_NULL_HANDLE, VK_NULL_HANDLE, 1, &rayTracingPipelineCreateInfo, nullptr, &m_pipeline);
+
+        createShaderBindingTable();
+    }
+
+    void Pipeline::createShaderBindingTable() {
+        uint32_t hitCount = m_rayTracingGroups.size() - GenShaderCount - MissShaderCount;
+        uint32_t handleCount = GenShaderCount + MissShaderCount + hitCount;
+        uint32_t handleSize = device.rayTracingPipelineProperties.shaderGroupHandleSize;
+        uint32_t handleSizeAligned = Utils::alignUp(handleSize, device.rayTracingPipelineProperties.shaderGroupHandleAlignment);
+
+        m_genRegion.stride = Utils::alignUp(handleSizeAligned, device.rayTracingPipelineProperties.shaderGroupBaseAlignment);
+        m_genRegion.size = m_genRegion.stride;
+        m_missRegion.stride = handleSizeAligned;
+        m_missRegion.size = Utils::alignUp(handleSizeAligned * MissShaderCount, device.rayTracingPipelineProperties.shaderGroupBaseAlignment);
+        m_hitRegion.stride = handleSizeAligned;
+        m_hitRegion.size = Utils::alignUp(handleSizeAligned * hitCount, device.rayTracingPipelineProperties.shaderGroupBaseAlignment);
+
+        uint32_t dataSize = handleCount * handleSize;
+        std::vector<uint8_t> shaderHandles(dataSize);
+        Device::pfn_vkGetRayTracingShaderGroupHandlesKHR(device.device(), m_pipeline, 0, handleCount, dataSize, shaderHandles.data());
+
+        VkDeviceSize sbtSize = m_genRegion.size + m_missRegion.size + m_hitRegion.size + m_callableRegion.size;
+        m_shaderBindingTableBuffer = std::make_shared<Buffer>(device, sbtSize, 1,
+                                                              VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        m_shaderBindingTableBuffer->map();
+
+        VkDeviceAddress sbtAddress = m_shaderBindingTableBuffer->getDeviceAddress();
+        m_genRegion.deviceAddress = sbtAddress;
+        m_missRegion.deviceAddress = sbtAddress + m_genRegion.size;
+        m_hitRegion.deviceAddress = m_missRegion.deviceAddress + m_missRegion.size;
+
+        auto getHandle = [&](uint32_t groupIndex) -> const uint8_t * { return shaderHandles.data() + groupIndex * handleSize; };
+
+        auto *pSbtBufferData = static_cast<uint8_t *>(m_shaderBindingTableBuffer->getMappedMemory());
+        uint8_t *pData = nullptr;
+        uint32_t handleIndex = 0;
+
+        {
+            //Ray Gen
+            pData = pSbtBufferData;
+            memcpy(pData, getHandle(handleIndex++), handleSize);
+
+            //Miss
+            pData = pSbtBufferData + m_genRegion.size;
+            for (uint32_t i = 0; i < MissShaderCount; i++) {
+                memcpy(pData, getHandle(handleIndex++), handleSize);
+                pData += m_missRegion.stride;
+            }
+
+            //Hit
+            pData = pSbtBufferData + m_genRegion.size + m_missRegion.size;
+            for (uint32_t i = 0; i < hitCount; i++) {
+                memcpy(pData, getHandle(handleIndex++), handleSize);
+                pData += m_hitRegion.stride;
+            }
+        }
+    }
+
+#endif
+
+    void Pipeline::createGraphicsPipeline(const PipelineConfigureInfo &pipelineConfigureInfo) {
+        //Shader
+        uint32_t shaderStageCount = static_cast<uint32_t>(m_material->getShaderModulePointers().size());
+        std::vector<VkPipelineShaderStageCreateInfo> shaderStageCreateInfo(shaderStageCount);
+
+        for (int i = 0; i < m_material->getShaderModulePointers().size(); i++) {
+            shaderStageCreateInfo[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            auto &shaderCategory = m_material->getShaderModulePointers()[i]->shaderCategory;
             switch (shaderCategory) {
                 case ShaderCategory::vertex:
                     shaderStageCreateInfo[i].stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -44,20 +183,12 @@ namespace Kaamoo {
                     shaderStageCreateInfo[i].stage = VK_SHADER_STAGE_GEOMETRY_BIT;
                     break;
             }
-            shaderStageCreateInfo[i].module = *material.getShaderModulePointers()[i]->shaderModule;
+            shaderStageCreateInfo[i].module = *m_material->getShaderModulePointers()[i]->shaderModule;
             shaderStageCreateInfo[i].pName = "main";
             shaderStageCreateInfo[i].flags = 0;
             shaderStageCreateInfo[i].pNext = nullptr;
             shaderStageCreateInfo[i].pSpecializationInfo = nullptr;
         }
-        
-
-//        VkPipelineViewportStateCreateInfo viewportInfo{};
-//        viewportInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-//        viewportInfo.viewportCount = 1;
-//        viewportInfo.pViewports = &pipelineConfigureInfo.viewport;
-//        viewportInfo.scissorCount = 1;
-//        viewportInfo.pScissors = &pipelineConfigureInfo.scissor;
 
         auto &bindingDescription = pipelineConfigureInfo.vertexBindingDescriptions;
         auto &attributeDescription = pipelineConfigureInfo.attributeDescriptions;
@@ -72,7 +203,7 @@ namespace Kaamoo {
         VkGraphicsPipelineCreateInfo pipelineCreateInfo{};
         pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
         pipelineCreateInfo.stageCount = shaderStageCount;
-        pipelineCreateInfo.pStages = shaderStageCreateInfo;
+        pipelineCreateInfo.pStages = shaderStageCreateInfo.data();
         pipelineCreateInfo.pVertexInputState = &vertexInputStateCreateInfo;
         pipelineCreateInfo.pInputAssemblyState = &pipelineConfigureInfo.inputAssemblyInfo;
         pipelineCreateInfo.pViewportState = &pipelineConfigureInfo.viewportStateCreateInfo;
@@ -92,8 +223,8 @@ namespace Kaamoo {
         pipelineCreateInfo.basePipelineHandle = VK_NULL_HANDLE;
 
         if (vkCreateGraphicsPipelines(device.device(), VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr,
-                                      &graphicsPipeline) != VK_SUCCESS) {
-            throw std::runtime_error("Creating graphics pipeline failed");
+                                      &m_pipeline) != VK_SUCCESS) {
+            throw std::runtime_error("Creating graphics m_pipeline failed");
         }
 
     }
@@ -103,15 +234,6 @@ namespace Kaamoo {
         configureInfo.inputAssemblyInfo.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         configureInfo.inputAssemblyInfo.primitiveRestartEnable = VK_FALSE;
 
-//        configureInfo.viewport.x = 0.0f;
-//        configureInfo.viewport.y = 0.0f;
-//        configureInfo.viewport.width = static_cast<float>(width);
-//        configureInfo.viewport.height = static_cast<float>(height);
-//        configureInfo.viewport.minDepth = 0.0f;
-//        configureInfo.viewport.maxDepth = 1.0f;
-//
-//        configureInfo.scissor.offset = {0, 0};
-//        configureInfo.scissor.extent = {width, height};
         configureInfo.viewportStateCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
         configureInfo.viewportStateCreateInfo.viewportCount = 1;
         configureInfo.viewportStateCreateInfo.pViewports = nullptr;
@@ -169,6 +291,7 @@ namespace Kaamoo {
         configureInfo.depthStencilInfo.minDepthBounds = 0.0f;  // Optional
         configureInfo.depthStencilInfo.maxDepthBounds = 1.0f;  // Optional
         configureInfo.depthStencilInfo.stencilTestEnable = VK_FALSE;
+
         configureInfo.depthStencilInfo.front = {};  // Optional
         configureInfo.depthStencilInfo.back = {};   // Optional
 
@@ -184,8 +307,8 @@ namespace Kaamoo {
         configureInfo.attributeDescriptions = Model::Vertex::getAttributeDescriptions();
     }
 
-    void Pipeline::bind(VkCommandBuffer commandBuffer) {
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+    void Pipeline::bind(VkCommandBuffer commandBuffer, VkPipelineBindPoint bindPoint) {
+        vkCmdBindPipeline(commandBuffer, bindPoint, m_pipeline);
     }
 
     void Pipeline::enableAlphaBlending(PipelineConfigureInfo &configureInfo) {
@@ -201,5 +324,7 @@ namespace Kaamoo {
         configureInfo.colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;              // Optional
     }
 
-
 }
+
+
+

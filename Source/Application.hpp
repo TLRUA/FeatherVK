@@ -1,49 +1,146 @@
-#pragma once
+﻿#pragma once
 
-#include <memory>
+#include <chrono>
+#include <glm/ext/matrix_clip_space.hpp>
 #include <glm/gtc/constants.hpp>
+#include <memory>
+#include <string>
+
+#include "Core/Events.hpp"
+#include "Core/Logger.hpp"
+#include "Descriptor.h"
+#include "Device.hpp"
+#include "GUI.hpp"
+#include "Image.h"
+#include "Managers/LogicManager.hpp"
+#include "Managers/RenderManager.hpp"
+#include "Managers/ResourceManager.hpp"
+#include "ECS/SceneRegistry.hpp"
+#include "Material.hpp"
+#include "Model.hpp"
 #include "MyWindow.hpp"
 #include "Pipeline.hpp"
-#include "Renderers/Renderer.h"
-#include "Device.hpp"
-#include "Model.hpp"
-#include "GameObject.h"
-#include "Systems/RenderSystem.h"
-#include "Systems/PointLightSystem.h"
-#include "InputController.h"
-#include <chrono>
-#include "Descriptor.h"
-#include "Image.h"
-#include "Material.h"
-#include "Shaders.h"
+#include "Renderer.h"
+#include "Sampler.h"
+#include "ShaderBuilder.h"
+#include "Utils/JsonUtils.hpp"
 
-namespace Kaamoo {
+namespace FeatherVK {
     class Application {
     public:
-        static constexpr int WIDTH = 800;
-        static constexpr int HEIGHT = 800;
+        Application() {
+            m_resourceManager = std::make_shared<ResourceManager>();
+            m_renderManager = std::make_unique<RenderManager>(m_resourceManager);
+            m_logicManager = std::make_unique<LogicManager>(m_resourceManager);
+        }
 
-        void run();
+        ~Application() {
+            GUI::Destroy();
+        }
 
-        Application();
+        void run() {
+            auto currentTime = std::chrono::high_resolution_clock::now();
+            float totalTime = 0.0f;
+            Awake();
+
+            auto &window = m_resourceManager->GetWindow();
+            auto &renderer = m_resourceManager->GetRenderer();
+            auto &materials = m_resourceManager->GetMaterials();
+            auto &device = m_resourceManager->GetDevice();
+            auto &sceneRegistry = m_resourceManager->GetSceneRegistry();
+
+            while (!window.shouldClose()) {
+                glfwPollEvents();
+
+                Event event{};
+                while (EventQueue::Poll(event)) {
+                    if (event.type == EventType::WindowResized) {
+                        Logger::Info("Window resized to " + std::to_string(event.width) + "x" + std::to_string(event.height));
+                    }
+                }
+
+                auto newTime = std::chrono::high_resolution_clock::now();
+                float frameTime = std::chrono::duration<float, std::chrono::seconds::period>(newTime - currentTime).count();
+                totalTime += frameTime;
+                currentTime = newTime;
+
+                if (auto commandBuffer = renderer.beginFrame()) {
+                    int frameIndex = renderer.getFrameIndex();
+                    FrameInfo frameInfo{
+                            frameIndex,
+                            frameTime,
+                            totalTime,
+                            commandBuffer,
+                            &sceneRegistry,
+                            materials,
+                            m_ubo,
+                            window.getCurrentExtent(),
+                            GUI::GetSelectedId(),
+                            false};
+
+                    GUI::BeginFrame(ImVec2(frameInfo.extent.width, frameInfo.extent.height));
+                    UpdateComponents(frameInfo);
+                    UpdateRendering(frameInfo);
+                }
+            }
+
+            vkDeviceWaitIdle(device.device());
+        }
 
         Application(const Application &) = delete;
-
         Application &operator=(const Application &) = delete;
 
     private:
-        void loadGameObjects();
-        void loadMaterials();
-        void updateLight(FrameInfo &frameInfo);
-        std::string readJsonFile(const std::string &path);
-        MyWindow myWindow{WIDTH, HEIGHT, "VulkanTest"};
-        Device device{myWindow};
-        Renderer renderer{myWindow, device};
+        GlobalUbo m_ubo{};
 
-        GameObject::Map gameObjects;
-        Material::Map materials;
-        std::unique_ptr<DescriptorPool> globalPool;
-        std::shared_ptr<VkRenderPass> shadowPass;
-        std::shared_ptr<VkFramebuffer> shadowFramebuffer;
+        std::shared_ptr<ResourceManager> m_resourceManager;
+        std::unique_ptr<RenderManager> m_renderManager;
+        std::unique_ptr<LogicManager> m_logicManager;
+
+        void Awake() {
+            auto &sceneRegistry = m_resourceManager->GetSceneRegistry();
+
+            ComponentAwakeInfo awakeInfo{};
+            awakeInfo.sceneRegistry = &sceneRegistry;
+
+            for (const auto entityId: sceneRegistry.GetEntityOrder()) {
+                TransformComponent *transform = nullptr;
+                sceneRegistry.TryGetComponent(entityId, transform);
+
+                awakeInfo.entityId = entityId;
+                awakeInfo.transform = transform;
+
+                for (auto *component: sceneRegistry.GetComponents(entityId)) {
+                    if (component != nullptr) {
+                        component->Awake(awakeInfo);
+                    }
+                }
+            }
+        }
+
+        void UpdateComponents(FrameInfo &frameInfo) {
+            m_logicManager->UpdateComponents(frameInfo);
+        }
+
+        void UpdateRendering(FrameInfo &frameInfo) {
+            auto &renderer = m_resourceManager->GetRenderer();
+            auto &hierarchyTree = m_resourceManager->GetHierarchyTree();
+#ifdef RAY_TRACING
+            auto &gameObjectDescBuffer = m_resourceManager->GetEntityDescBuffer();
+            auto &gameObjectDescs = m_resourceManager->GetEntityDescs();
+            frameInfo.pEntityDescBuffer = gameObjectDescBuffer;
+            frameInfo.pEntityDescs = gameObjectDescs;
+#endif
+            m_renderManager->UpdateRendering(renderer, frameInfo, hierarchyTree);
+        }
     };
 }
+
+
+
+
+
+
+
+
+

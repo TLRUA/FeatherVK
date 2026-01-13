@@ -1,0 +1,21 @@
+#version 460
+
+#include "RayTracingGlobal.glsl"
+#include "../PBR.glsl"
+#include "../Utils/random.glsl"
+
+layout (location = 1) rayPayloadInEXT ShadowPayload shadowPayload;
+
+hitAttributeEXT vec3 attribs;
+
+layout (set = 1, binding = 1, std430) readonly buffer EntityDescBuffer {EntityDesc entityDescs[];} entityDescBuffer;
+
+void main()
+{
+    EntityDesc entityDesc = entityDescBuffer.entityDescs[gl_InstanceCustomIndexEXT];
+    if ((gl_IncomingRayFlagsEXT & gl_RayFlagsSkipClosestHitShaderEXT) != 0)
+    {
+        shadowPayload.opacity += (1 - shadowPayload.opacity) * entityDesc.pbr.opacity;
+        ignoreIntersectionEXT;
+    }
+}   

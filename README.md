@@ -1,36 +1,75 @@
-# Vulkan Renderer
+# FeatherVK
 
-![image-20240106022548339](./README.assets/image-20240106022548339.png)
+FeatherVK is a C++17 + Vulkan renderer project with an ECS-based scene runtime, editor picking, gizmos, and configurable rasterization / ray tracing pipelines.
 
+![Preview](./README.assets/preview.png)
 
-## 进度
+## Current Features
 
-9.17 完成了基本的3D单物体渲染以及Transform变换
+- C++17 project, CMake build, Vulkan backend
+- ECS runtime (`SceneRegistry`) with component lifecycle (`Awake/Start/Update/LateUpdate/FixedUpdate`)
+- Scene/material/component data loaded from JSON in `Configurations/`
+- Editor-style interaction:
+  - object ID picking (left click)
+  - hierarchy + inspector (ImGui)
+  - selected object outline + gizmos axis
+- Camera and object controls (keyboard/mouse)
+- Two rendering data sets:
+  - `Configurations/RayTracing`
+  - `Configurations/Rasterization`
 
-9.18 添加了正交投影以及透视投影
+## Build Requirements
 
-9.19 实现了相机移动，视角转动
+- Windows
+- CMake >= 3.25
+- C++17 compiler (Visual Studio 2022 recommended)
+- Vulkan SDK installed and available in environment
+- Git (for `FetchContent` dependencies)
 
-9.20~9.21 完成程序结构示例图
+## Build
 
-9.23~9.24 完成几何着色器动态生成三维分形
+```powershell
+cmake -S . -B build
+cmake --build build --config Debug
+```
 
-10.4 添加了index buffer，更改了buffer属性为device local并配合staging buffer以优化性能
+Dependencies fetched by CMake:
 
-10.5 添加了对obj文件的读取功能(调用了tiny obj loader库)，同时根据obj文件数据建立index buffer，难点在于对自定义vertex类型的hash模板特化重载
+- `glfw` (3.4)
+- `glm` (1.0.1)
 
-10.6 添加了最简单的diffuse光照，抽象提取了Buffer类（依靠开源代码），创建了Uniform Buffer
+## Run
 
-10.8 使用Uniform Buffer，实现逐像素光照
+Run from the `build` directory so shader relative paths resolve correctly:
 
-10.14 实现了光源的可视化(Billboard)，实现了多光源光照
+```powershell
+cd build
+.\Debug\FeatherVK.exe
+```
 
-10.21 添加了alpha blending, 初起image类
+If you launch from IDE, set working directory to `.../FeatherVK/build`.
 
-10.22 完成纹理采样，但是没有封装不同物体使用不同的材质
+## Controls
 
-10.28 对于不同的物体，封装了不同的材质，即可以使用不同的纹理，所有object以及material信息均在json中配置，但自定义程度还有改进
+- Right mouse + drag: rotate camera
+- `W/A/S/D/Q/E`: move camera
+- Left mouse click in scene viewport: pick/select entity
+- `F`: focus camera on current selected entity
+- Arrow keys: move selected entity on X/Z plane (when scene input is not captured by UI)
 
-11.12 初步完成阴影效果，还有待优化的点：点光源全角度阴影
+## Configuration Notes
 
-1.1 完成动态生成与可交互草
+- Runtime scene data:
+  - `Configurations/RayTracing/*.json`
+  - `Configurations/Rasterization/*.json`
+- Cubemap textures are loaded from `Textures/Cubemap/` using fixed file names:
+  - `posx.jpg`, `negx.jpg`, `posy.jpg`, `negy.jpg`, `posz.jpg`, `negz.jpg`
+
+## Rendering Mode Switch
+
+Rendering path is currently selected by macro in `Source/Device.hpp`:
+
+- `#define RAY_TRACING` enabled: use ray tracing configuration path
+- comment out `RAY_TRACING`: use rasterization path
+
+Rebuild after changing this macro.

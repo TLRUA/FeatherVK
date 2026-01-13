@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace Kaamoo {
+namespace FeatherVK {
 
     class DescriptorSetLayout {
     public:
@@ -15,13 +15,9 @@ namespace Kaamoo {
         public:
             Builder(Device &Device) : Device{Device} {}
 
-            Builder &addBinding(
-                    uint32_t binding,
-                    VkDescriptorType descriptorType,
-                    VkShaderStageFlags stageFlags,
-                    uint32_t count = 1);
+            Builder &addBinding(uint32_t binding, VkDescriptorType descriptorType, VkShaderStageFlags stageFlags, uint32_t count = 1);
 
-            std::shared_ptr<DescriptorSetLayout> build( ) const;
+            std::shared_ptr<DescriptorSetLayout> build() const;
 
         private:
             Device &Device;
@@ -31,8 +27,7 @@ namespace Kaamoo {
             const std::vector<VkDescriptorSetLayoutBinding> &getBindings() const;
         };
 
-        DescriptorSetLayout(
-                Device &Device, const std::vector<VkDescriptorSetLayoutBinding>& bindings);
+        DescriptorSetLayout(Device &Device, const std::vector<VkDescriptorSetLayoutBinding> &bindings);
 
         ~DescriptorSetLayout();
 
@@ -45,7 +40,7 @@ namespace Kaamoo {
     private:
         Device &Device;
         VkDescriptorSetLayout descriptorSetLayout;
-        std::vector< VkDescriptorSetLayoutBinding> bindings;
+        std::vector<VkDescriptorSetLayoutBinding> bindings;
 
         friend class DescriptorWriter;
     };
@@ -89,6 +84,8 @@ namespace Kaamoo {
         void freeDescriptors(std::vector<VkDescriptorSet> &descriptors) const;
 
         void resetPool();
+        
+        VkDescriptorPool getDescriptorPool() const { return descriptorPool; }
 
     private:
         Device &Device;
@@ -101,9 +98,16 @@ namespace Kaamoo {
     public:
         DescriptorWriter(std::shared_ptr<DescriptorSetLayout> setLayout, DescriptorPool &pool);
 
-        DescriptorWriter &writeBuffer(uint32_t binding, VkDescriptorBufferInfo bufferInfo);
+        DescriptorWriter &writeBuffer(uint32_t binding, std::shared_ptr<VkDescriptorBufferInfo> bufferInfo);
+        
+        DescriptorWriter &writeBuffers(uint32_t binding, std::vector<VkDescriptorBufferInfo>& bufferInfos);
 
-        DescriptorWriter &writeImage(uint32_t binding, std::shared_ptr<VkDescriptorImageInfo> imageInfo);
+        DescriptorWriter &writeImage(uint32_t binding, const std::shared_ptr<VkDescriptorImageInfo> &imageInfo);
+        
+        DescriptorWriter &writeImages(uint32_t binding, std::vector<VkDescriptorImageInfo> &imageInfos);
+
+        DescriptorWriter &writeTLAS(uint32_t binding,
+                                    std::shared_ptr<VkWriteDescriptorSetAccelerationStructureKHR> accelerationStructureInfo);
 
         bool build(std::shared_ptr<VkDescriptorSet> &setPtr);
 
@@ -111,8 +115,12 @@ namespace Kaamoo {
 
     private:
         std::shared_ptr<DescriptorSetLayout> setLayout;
+        std::vector<std::shared_ptr<VkDescriptorBufferInfo>> m_bufferInfos{};
+        std::vector<std::shared_ptr<VkDescriptorImageInfo>> m_imageInfos{};
+        std::vector<std::shared_ptr<VkWriteDescriptorSetAccelerationStructureKHR>> m_tlasInfos{};
         DescriptorPool &pool;
         std::vector<std::shared_ptr<VkWriteDescriptorSet>> writes;
     };
 
 }  // namespace 
+

@@ -1,0 +1,95 @@
+[
+  {
+    "name": "Sphere0",
+    "transform": {
+      "id": 0,
+      "childrenIds": [1],
+      "translation": [0,-1,0],
+      "scale": [0.4,0.4,0.4],
+      "rotation": [0,0,0]
+    },
+    "componentIds":[1]
+  },
+  {
+    "name": "Sphere1",
+    "transform": {
+      "id": 1,
+      "translation": [-1,-1,-1],
+      "scale": [0.4,0.4,0.4],
+      "rotation": [0,0,0]
+    },
+    "componentIds":[12,16]
+  },
+  {
+    "name": "Sphere2",
+    "transform": {
+      "translation": [0.4,-1,-1],
+      "scale": [0.3,0.3,0.3],
+      "rotation": [0,0,0]
+    },
+    "componentIds":[13,16]
+  },
+  {
+    "name": "Sphere3",
+    "transform": {
+      "translation": [1.6,-1,-1],
+      "scale": [0.4,0.4,0.4],
+      "rotation": [0,0,0]
+    },
+    "componentIds":[14,16]
+  },
+  {
+    "name": "Vase",
+    "transform": {
+      "translation": [-2,-2,-2],
+      "scale": [2,2,2],
+      "rotation": [0,0,0]
+    },
+    "componentIds":[16,15]
+  },
+  {
+    "name": "Ground",
+    "transform": {
+      "translation": [0,0,0],
+      "scale": [4,1,4],
+      "rotation": [0,0,0]
+    },
+    "componentIds":[2]
+  },
+  {
+    "name": "MainCamera",
+    "transform": {
+      "translation": [0, -1, -4],
+      "scale": [0.1,1,1],
+      "rotation": [0,0,0]
+    },
+    "componentIds":[9,10]
+  },
+  {
+    "name": "RayTracingManager",
+    "transform": {
+      "translation": [0, 0, 0],
+      "scale": [1,1,1],
+      "rotation": [0,0,0]
+    },
+    "componentIds":[11]
+  },
+  {
+    "name": "DirectionalLight",
+    "transform": {
+    "translation": [0, 0, 0],
+    "scale": [1,1,1],
+    "rotation": [-30,-30,0]
+    },
+    "componentIds":[50]
+  },
+  {
+    "name": "Point",
+    "transform": {
+    "translation": [2, -0.7, 0.5],
+    "scale": [0.05,0.05,0.05],
+    "rotation": [-30,-30,0]
+    },
+    "componentIds":[51,60]
+  }
+]

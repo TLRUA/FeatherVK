@@ -10,22 +10,34 @@
 #include "Device.hpp"
 #include "Sampler.h"
 
-namespace Kaamoo {
+namespace FeatherVK {
+    const struct ImageCategory{
+        std::string Default="Default";
+        std::string CubeMap="CubeMap";
+    } ImageType;
+    
+    const int IMAGE_DEFAULT_EXTENT = 1024;
+    
     class Image {
     public:
-        Image(Device &device);
+        VkImage image;
+        VkImageView imageView;
+        VkSampler sampler;
+        
+        explicit Image(Device &device, std::string imageCategory = ImageType.Default);
 
         ~Image();
 
-        void createTextureImage(std::string path);
+        void createTextureImage(const std::string& path,bool SRGB = false);
 
-        void createTextureImage(std::string path, VkImageCreateInfo createInfo);
 
         void createImageView();
 
         void createImageView(VkImageViewCreateInfo createInfo);
 
         std::shared_ptr<VkDescriptorImageInfo> descriptorInfo(Sampler &sampler);
+        
+        std::shared_ptr<VkDescriptorImageInfo> descriptorInfo();
 
         void setImage(VkImage vkImage) { this->image = vkImage; }
 
@@ -37,17 +49,19 @@ namespace Kaamoo {
 
         void createImage(VkImageCreateInfo createInfo);
 
+        const VkImageView *getImageView() const;
+        
     private:
         Device &device;
-        VkImage image;
-        VkImageView imageView;
-    public:
-        const VkImageView *getImageView() const;
-
-    private:
+        
         VkDeviceMemory imageMemory{};
         int texWidth, texHeight, texChannels;
+        
+        std::string imageType;
+        
+        void createDefaultImage(const std::string& path, VkImageCreateInfo createInfo);
 
+        void createCubeMapImage(const std::string &path, VkImageCreateInfo createInfo);
     };
 
 

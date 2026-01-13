@@ -1,16 +1,14 @@
-#pragma once
+﻿#pragma once
 
 #include "Device.hpp"
 
-// vulkan headers
 #include <vulkan/vulkan.h>
 
-// std lib headers
 #include <string>
 #include <vector>
 #include <memory>
 
-namespace Kaamoo {
+namespace FeatherVK {
 
     class SwapChain {
     public:
@@ -29,7 +27,9 @@ namespace Kaamoo {
 
         VkFramebuffer getFrameBuffer(int index) { return swapChainFrameBuffers[index]; }
 
-        VkRenderPass getRenderPass() { return renderPass; }
+        VkRenderPass& getRenderPass() { return renderPass; }
+
+        VkRenderPass getGizmosRenderPass() { return m_gizmosRenderPass; }
 
         VkImageView getImageView(int index) { return swapChainImageViews[index]; }
 
@@ -42,10 +42,6 @@ namespace Kaamoo {
         uint32_t width() { return swapChainExtent.width; }
 
         uint32_t height() { return swapChainExtent.height; }
-
-        float extentAspectRatio() {
-            return static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height);
-        }
 
         VkFormat findDepthFormat();
 
@@ -69,6 +65,8 @@ namespace Kaamoo {
 
         void createRenderPass();
 
+        void createGizmosRenderPass();
+
         void createFramebuffers();
 
         void createSyncObjects();
@@ -88,6 +86,7 @@ namespace Kaamoo {
 
         std::vector<VkFramebuffer> swapChainFrameBuffers;
         VkRenderPass renderPass;
+        VkRenderPass m_gizmosRenderPass;
 
         std::vector<VkImage> depthImages;
         std::vector<VkDeviceMemory> depthImageMemories;
@@ -110,3 +109,4 @@ namespace Kaamoo {
     };
 
 }  // namespace lve
+

@@ -336,13 +336,13 @@ struct joint_and_weight_t {
 };
 
 struct skin_weight_t {
-  int vertex_id;  // Corresponding vertex index in `attrib_t::vertices`.
+  int vertex_id;  // Corresponding vertex index in `attrib_t::m_vertices`.
                   // Compared to `index_t`, this index must be positive and
                   // start with 0(does not allow relative indexing)
   std::vector<joint_and_weight_t> weightValues;
 };
 
-// Index struct to support different indices for vtx/normal/texcoord.
+// Index struct to support different m_indices for vtx/normal/texcoord.
 // -1 means not used.
 struct index_t {
   int vertex_index;
@@ -353,10 +353,10 @@ struct index_t {
 struct mesh_t {
   std::vector<index_t> indices;
   std::vector<unsigned char>
-      num_face_vertices;          // The number of vertices per
+      num_face_vertices;          // The number of m_vertices per
                                   // face. 3 = triangle, 4 = quad,
-                                  // ... Up to 255 vertices per face.
-  std::vector<int> material_ids;  // per-face material ID
+                                  // ... Up to 255 m_vertices per face.
+  std::vector<int> material_ids;  // per-face m_material ID
   std::vector<unsigned int> smoothing_group_ids;  // per-face smoothing group
                                                   // ID(0 = off. positive value
                                                   // = group id)
@@ -364,17 +364,17 @@ struct mesh_t {
 };
 
 // struct path_t {
-//  std::vector<int> indices;  // pairs of indices for lines
+//  std::vector<int> m_indices;  // pairs of m_indices for lines
 //};
 
 struct lines_t {
-  // Linear flattened indices.
-  std::vector<index_t> indices;        // indices for vertices(poly lines)
-  std::vector<int> num_line_vertices;  // The number of vertices per line.
+  // Linear flattened m_indices.
+  std::vector<index_t> indices;        // m_indices for m_vertices(poly lines)
+  std::vector<int> num_line_vertices;  // The number of m_vertices per line.
 };
 
 struct points_t {
-  std::vector<index_t> indices;  // indices for points
+  std::vector<index_t> indices;  // m_indices for points
 };
 
 struct shape_t {
@@ -429,15 +429,15 @@ struct callback_t {
   // `vt` line.
   void (*texcoord_cb)(void *user_data, real_t x, real_t y, real_t z);
 
-  // called per 'f' line. num_indices is the number of face indices(e.g. 3 for
+  // called per 'f' line. num_indices is the number of face m_indices(e.g. 3 for
   // triangle, 4 for quad)
   // 0 will be passed for undefined index in index_t members.
   void (*index_cb)(void *user_data, index_t *indices, int num_indices);
-  // `name` material name, `material_id` = the array index of material_t[]. -1
+  // `name` m_material name, `material_id` = the array index of material_t[]. -1
   // if
-  // a material not found in .mtl
+  // a m_material not found in .mtl
   void (*usemtl_cb)(void *user_data, const char *name, int material_id);
-  // `materials` = parsed material data.
+  // `m_materials` = parsed m_material data.
   void (*mtllib_cb)(void *user_data, const material_t *materials,
                     int num_materials);
   // There may be multiple group names
@@ -591,7 +591,7 @@ class ObjReader {
 /// ==>>========= Legacy v1 API =============================================
 
 /// Loads .obj from a file.
-/// 'attrib', 'shapes' and 'materials' will be filled with parsed shape data
+/// 'attrib', 'shapes' and 'm_materials' will be filled with parsed shape data
 /// 'shapes' will be filled with parsed shape data
 /// Returns true when loading .obj become success.
 /// Returns warning message into `warn`, and error message into `err`
@@ -620,7 +620,7 @@ bool LoadObjWithCallback(std::istream &inStream, const callback_t &callback,
                          std::string *warn = NULL, std::string *err = NULL);
 
 /// Loads object from a std::istream, uses `readMatFn` to retrieve
-/// std::istream for materials.
+/// std::istream for m_materials.
 /// Returns true when loading .obj become success.
 /// Returns warning and error message into `err`
 bool LoadObj(attrib_t *attrib, std::vector<shape_t> *shapes,
@@ -629,14 +629,14 @@ bool LoadObj(attrib_t *attrib, std::vector<shape_t> *shapes,
              MaterialReader *readMatFn = NULL, bool triangulate = true,
              bool default_vcols_fallback = true);
 
-/// Loads materials into std::map
+/// Loads m_materials into std::map
 void LoadMtl(std::map<std::string, int> *material_map,
              std::vector<material_t> *materials, std::istream *inStream,
              std::string *warning, std::string *err);
 
 ///
 /// Parse texture name and texture option for custom texture parameter through
-/// material::unknown_parameter
+/// m_material::unknown_parameter
 ///
 /// @param[out] texname Parsed texture name
 /// @param[out] texopt Parsed texopt
@@ -704,7 +704,7 @@ struct face_t {
   unsigned int
       smoothing_group_id;  // smoothing group id. 0 = smoothing groupd is off.
   int pad_;
-  std::vector<vertex_index_t> vertex_indices;  // face vertex indices.
+  std::vector<vertex_index_t> vertex_indices;  // face vertex m_indices.
 
   face_t() : smoothing_group_id(0), pad_(0) {}
 };
@@ -826,7 +826,7 @@ static inline bool fixIndex(int idx, int n, int *ret, bool allow_zero, const war
   if (idx == 0) {
     // zero is not allowed according to the spec.
     if (context.warn) {
-      (*context.warn) += "A zero value index found (will have a value of -1 for normal and tex indices. Line "
+      (*context.warn) += "A zero value index found (will have a value of -1 for normal and tex m_indices. Line "
           + toString(context.line_number) + ").\n";
     }
 
@@ -1471,14 +1471,14 @@ static bool exportGroupsToShape(shape_t *shape, const PrimGroup &prim_group,
 
   // polygon
   if (!prim_group.faceGroup.empty()) {
-    // Flatten vertices and indices
+    // Flatten m_vertices and m_indices
     for (size_t i = 0; i < prim_group.faceGroup.size(); i++) {
       const face_t &face = prim_group.faceGroup[i];
 
       size_t npolys = face.vertex_indices.size();
 
       if (npolys < 3) {
-        // Face must have 3+ vertices.
+        // Face must have 3+ m_vertices.
         if (warn) {
           (*warn) += "Degenerated face found\n.";
         }
@@ -1658,7 +1658,7 @@ static bool exportGroupsToShape(shape_t *shape, const PrimGroup &prim_group,
           //TMW change: Find best normal and project v0x and v0y to those coordinates, instead of
           //picking a plane aligned with an axis (which can flip polygons).
 
-          // Fill polygon data(facevarying vertices).
+          // Fill polygon data(facevarying m_vertices).
           for (size_t k = 0; k < npolys; k++) {
             i0 = face.vertex_indices[k];
             size_t vi0 = size_t(i0.v_idx);
@@ -1676,34 +1676,34 @@ static bool exportGroupsToShape(shape_t *shape, const PrimGroup &prim_group,
           }
 
           polygon.push_back(polyline);
-          std::vector<uint32_t> indices = mapbox::earcut<uint32_t>(polygon);
+          std::vector<uint32_t> m_indices = mapbox::earcut<uint32_t>(polygon);
           // => result = 3 * faces, clockwise
 
-          assert(indices.size() % 3 == 0);
+          assert(m_indices.size() % 3 == 0);
 
           // Reconstruct vertex_index_t
-          for (size_t k = 0; k < indices.size() / 3; k++) {
+          for (size_t k = 0; k < m_indices.size() / 3; k++) {
             {
               index_t idx0, idx1, idx2;
-              idx0.vertex_index = face.vertex_indices[indices[3 * k + 0]].v_idx;
+              idx0.vertex_index = face.vertex_indices[m_indices[3 * k + 0]].v_idx;
               idx0.normal_index =
-                face.vertex_indices[indices[3 * k + 0]].vn_idx;
+                face.vertex_indices[m_indices[3 * k + 0]].vn_idx;
               idx0.texcoord_index =
-                face.vertex_indices[indices[3 * k + 0]].vt_idx;
-              idx1.vertex_index = face.vertex_indices[indices[3 * k + 1]].v_idx;
+                face.vertex_indices[m_indices[3 * k + 0]].vt_idx;
+              idx1.vertex_index = face.vertex_indices[m_indices[3 * k + 1]].v_idx;
               idx1.normal_index =
-                face.vertex_indices[indices[3 * k + 1]].vn_idx;
+                face.vertex_indices[m_indices[3 * k + 1]].vn_idx;
               idx1.texcoord_index =
-                face.vertex_indices[indices[3 * k + 1]].vt_idx;
-              idx2.vertex_index = face.vertex_indices[indices[3 * k + 2]].v_idx;
+                face.vertex_indices[m_indices[3 * k + 1]].vt_idx;
+              idx2.vertex_index = face.vertex_indices[m_indices[3 * k + 2]].v_idx;
               idx2.normal_index =
-                face.vertex_indices[indices[3 * k + 2]].vn_idx;
+                face.vertex_indices[m_indices[3 * k + 2]].vn_idx;
               idx2.texcoord_index =
-                face.vertex_indices[indices[3 * k + 2]].vt_idx;
+                face.vertex_indices[m_indices[3 * k + 2]].vt_idx;
 
-              shape->mesh.indices.push_back(idx0);
-              shape->mesh.indices.push_back(idx1);
-              shape->mesh.indices.push_back(idx2);
+              shape->mesh.m_indices.push_back(idx0);
+              shape->mesh.m_indices.push_back(idx1);
+              shape->mesh.m_indices.push_back(idx2);
 
               shape->mesh.num_face_vertices.push_back(3);
               shape->mesh.material_ids.push_back(material_id);
@@ -1778,7 +1778,7 @@ static bool exportGroupsToShape(shape_t *shape, const PrimGroup &prim_group,
           real_t vy[3];
 
           // How many iterations can we do without decreasing the remaining
-          // vertices.
+          // m_vertices.
           size_t remainingIterations = face.vertex_indices.size();
           size_t previousRemainingVertices =
               remainingFace.vertex_indices.size();
@@ -1794,7 +1794,7 @@ static bool exportGroupsToShape(shape_t *shape, const PrimGroup &prim_group,
             }
 
             if (previousRemainingVertices != npolys) {
-              // The number of remaining vertices decreased. Reset counters.
+              // The number of remaining m_vertices decreased. Reset counters.
               previousRemainingVertices = npolys;
               remainingIterations = npolys;
             } else {
@@ -1958,7 +1958,7 @@ static bool exportGroupsToShape(shape_t *shape, const PrimGroup &prim_group,
 
   // line
   if (!prim_group.lineGroup.empty()) {
-    // Flatten indices
+    // Flatten m_indices
     for (size_t i = 0; i < prim_group.lineGroup.size(); i++) {
       for (size_t j = 0; j < prim_group.lineGroup[i].vertex_indices.size();
            j++) {
@@ -1979,7 +1979,7 @@ static bool exportGroupsToShape(shape_t *shape, const PrimGroup &prim_group,
 
   // points
   if (!prim_group.pointsGroup.empty()) {
-    // Flatten & convert indices
+    // Flatten & convert m_indices
     for (size_t i = 0; i < prim_group.pointsGroup.size(); i++) {
       for (size_t j = 0; j < prim_group.pointsGroup[i].vertex_indices.size();
            j++) {
@@ -2045,7 +2045,7 @@ void LoadMtl(std::map<std::string, int> *material_map,
              std::string *warning, std::string *err) {
   (void)err;
 
-  // Create a default material anyway.
+  // Create a default m_material anyway.
   material_t material;
   InitMaterial(&material);
 
@@ -2096,14 +2096,14 @@ void LoadMtl(std::map<std::string, int> *material_map,
 
     // new mtl
     if ((0 == strncmp(token, "newmtl", 6)) && IS_SPACE((token[6]))) {
-      // flush previous material.
+      // flush previous m_material.
       if (!material.name.empty()) {
         material_map->insert(std::pair<std::string, int>(
             material.name, static_cast<int>(materials->size())));
         materials->push_back(material);
       }
 
-      // initial temporary material
+      // initial temporary m_material
       InitMaterial(&material);
 
       has_d = false;
@@ -2116,7 +2116,7 @@ void LoadMtl(std::map<std::string, int> *material_map,
         // TODO: empty name check?
         if (namebuf.empty()) {
           if (warning) {
-            (*warning) += "empty material name in `newmtl`\n";
+            (*warning) += "empty m_material name in `newmtl`\n";
           }
         }
         material.name = namebuf;
@@ -2276,7 +2276,7 @@ void LoadMtl(std::map<std::string, int> *material_map,
       continue;
     }
 
-    // PBR: anisotropy rotation
+    // PBR: anisotropy direction
     if ((0 == strncmp(token, "anisor", 6)) && IS_SPACE(token[6])) {
       token += 7;
       material.anisotropy_rotation = parseReal(&token);
@@ -2430,7 +2430,7 @@ void LoadMtl(std::map<std::string, int> *material_map,
           std::pair<std::string, std::string>(key, value));
     }
   }
-  // flush last material.
+  // flush last m_material.
   material_map->insert(std::pair<std::string, int>(
       material.name, static_cast<int>(materials->size())));
   materials->push_back(material);
@@ -2571,7 +2571,7 @@ bool LoadObj(attrib_t *attrib, std::vector<shape_t> *shapes,
   PrimGroup prim_group;
   std::string name;
 
-  // material
+  // m_material
   std::set<std::string> material_filenames;
   std::map<std::string, int> material_map;
   int material = -1;
@@ -2820,14 +2820,14 @@ bool LoadObj(attrib_t *attrib, std::vector<shape_t> *shapes,
       if (it != material_map.end()) {
         newMaterialId = it->second;
       } else {
-        // { error!! material not found }
+        // { error!! m_material not found }
         if (warn) {
-          (*warn) += "material [ '" + namebuf + "' ] not found in .mtl\n";
+          (*warn) += "m_material [ '" + namebuf + "' ] not found in .mtl\n";
         }
       }
 
       if (newMaterialId != material) {
-        // Create per-face material. Thus we don't add `shape` to `shapes` at
+        // Create per-face m_material. Thus we don't add `shape` to `shapes` at
         // this time.
         // just clear `faceGroup` after `exportGroupsToShape()` call.
         exportGroupsToShape(&shape, prim_group, tags, material, name,
@@ -2851,7 +2851,7 @@ bool LoadObj(attrib_t *attrib, std::vector<shape_t> *shapes,
           if (warn) {
             std::stringstream ss;
             ss << "Looks like empty filename for mtllib. Use default "
-                  "material (line "
+                  "m_material (line "
                << line_num << ".)\n";
 
             (*warn) += ss.str();
@@ -2886,8 +2886,8 @@ bool LoadObj(attrib_t *attrib, std::vector<shape_t> *shapes,
           if (!found) {
             if (warn) {
               (*warn) +=
-                  "Failed to load material file(s). Use default "
-                  "material.\n";
+                  "Failed to load m_material file(s). Use default "
+                  "m_material.\n";
             }
           }
         }
@@ -2909,7 +2909,7 @@ bool LoadObj(attrib_t *attrib, std::vector<shape_t> *shapes,
 
       shape = shape_t();
 
-      // material = -1;
+      // m_material = -1;
       prim_group.clear();
 
       std::vector<std::string> names;
@@ -2960,7 +2960,7 @@ bool LoadObj(attrib_t *attrib, std::vector<shape_t> *shapes,
         shapes->push_back(shape);
       }
 
-      // material = -1;
+      // m_material = -1;
       prim_group.clear();
       shape = shape_t();
 
@@ -3061,7 +3061,7 @@ bool LoadObj(attrib_t *attrib, std::vector<shape_t> *shapes,
     // Ignore unknown command.
   }
 
-  // not all vertices have colors, no default colors desired? -> clear colors
+  // not all m_vertices have colors, no default colors desired? -> clear colors
   if (!found_all_colors && !default_vcols_fallback) {
     vc.clear();
   }
@@ -3069,21 +3069,21 @@ bool LoadObj(attrib_t *attrib, std::vector<shape_t> *shapes,
   if (greatest_v_idx >= static_cast<int>(v.size() / 3)) {
     if (warn) {
       std::stringstream ss;
-      ss << "Vertex indices out of bounds (line " << line_num << ".)\n\n";
+      ss << "Vertex m_indices out of bounds (line " << line_num << ".)\n\n";
       (*warn) += ss.str();
     }
   }
   if (greatest_vn_idx >= static_cast<int>(vn.size() / 3)) {
     if (warn) {
       std::stringstream ss;
-      ss << "Vertex normal indices out of bounds (line " << line_num << ".)\n\n";
+      ss << "Vertex normal m_indices out of bounds (line " << line_num << ".)\n\n";
       (*warn) += ss.str();
     }
   }
   if (greatest_vt_idx >= static_cast<int>(vt.size() / 2)) {
     if (warn) {
       std::stringstream ss;
-      ss << "Vertex texcoord indices out of bounds (line " << line_num << ".)\n\n";
+      ss << "Vertex texcoord m_indices out of bounds (line " << line_num << ".)\n\n";
       (*warn) += ss.str();
     }
   }
@@ -3093,7 +3093,7 @@ bool LoadObj(attrib_t *attrib, std::vector<shape_t> *shapes,
   // exportGroupsToShape return false when `usemtl` is called in the last
   // line.
   // we also add `shape` to `shapes` when `shape.mesh` has already some
-  // faces(indices)
+  // faces(m_indices)
   if (ret || shape.mesh.indices
                  .size()) {  // FIXME(syoyo): Support other prims(e.g. lines)
     shapes->push_back(shape);
@@ -3122,7 +3122,7 @@ bool LoadObjWithCallback(std::istream &inStream, const callback_t &callback,
                          std::string *err /*= NULL*/) {
   std::stringstream errss;
 
-  // material
+  // m_material
   std::set<std::string> material_filenames;
   std::map<std::string, int> material_map;
   int material_id = -1;  // -1 = invalid
@@ -3239,9 +3239,9 @@ bool LoadObjWithCallback(std::istream &inStream, const callback_t &callback,
       if (it != material_map.end()) {
         newMaterialId = it->second;
       } else {
-        // { warn!! material not found }
+        // { warn!! m_material not found }
         if (warn && (!callback.usemtl_cb)) {
-          (*warn) += "material [ " + namebuf + " ] not found in .mtl\n";
+          (*warn) += "m_material [ " + namebuf + " ] not found in .mtl\n";
         }
       }
 
@@ -3268,7 +3268,7 @@ bool LoadObjWithCallback(std::istream &inStream, const callback_t &callback,
           if (warn) {
             (*warn) +=
                 "Looks like empty filename for mtllib. Use default "
-                "material. \n";
+                "m_material. \n";
           }
         } else {
           bool found = false;
@@ -3301,8 +3301,8 @@ bool LoadObjWithCallback(std::istream &inStream, const callback_t &callback,
           if (!found) {
             if (warn) {
               (*warn) +=
-                  "Failed to load material file(s). Use default "
-                  "material.\n";
+                  "Failed to load m_material file(s). Use default "
+                  "m_material.\n";
             }
           } else {
             if (callback.mtllib_cb) {

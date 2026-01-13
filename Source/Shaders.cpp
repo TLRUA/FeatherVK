@@ -4,10 +4,10 @@
 
 #include <fstream>
 #include <iostream>
-#include "Shaders.h"
+#include "ShaderBuilder.h"
 
-namespace Kaamoo {
-    std::vector<char> Shaders::readFile(const std::string &filepath) {
+namespace FeatherVK {
+    std::vector<char> ShaderBuilder::readFile(const std::string &filepath) {
         std::ifstream inputFileStream{filepath, std::ios::ate | std::ios::binary};
 
         if (!inputFileStream.is_open()) {
@@ -25,15 +25,18 @@ namespace Kaamoo {
         return buffer;
     }
 
-    std::shared_ptr<VkShaderModule> Shaders::createShaderModule(const std::string& shaderName) {
+    std::shared_ptr<VkShaderModule> ShaderBuilder::createShaderModule(const std::string& shaderName) {
         //judge whether there exists the same shader to create
+        //This is disabled in RayTracing due to SBT. The geometries have strict rules to correspond with the shaders.
+#ifndef RAY_TRACING
         auto count = shaderModuleMap.count(shaderName);
         if (count > 0)return shaderModuleMap.at(shaderName);
-
+#endif
+        
         VkShaderModuleCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
 
-        auto code = readFile(BASE_SHADER_PATH + shaderName);
+        auto code = readFile(GetBaseShaderPath() + shaderName);
         createInfo.codeSize = code.size();
         createInfo.pCode = reinterpret_cast<const uint32_t *>(code.data());
 
@@ -41,17 +44,21 @@ namespace Kaamoo {
         if (vkCreateShaderModule(device.device(), &createInfo, nullptr, shaderModule.get()) != VK_SUCCESS) {
             throw std::runtime_error("failed to create shader module");
         }
+#ifndef RAY_TRACING
         shaderModuleMap.emplace(shaderName, shaderModule);
-        std::cout << shaderName << " code size: " << code.size() << std::endl;
+#endif
         return shaderModule;
     }
 
-    std::shared_ptr<VkShaderModule> Shaders::getShaderModulePointer(const std::string& shaderName) {
+#ifndef RAY_TRACING
+    std::shared_ptr<VkShaderModule> ShaderBuilder::getShaderModulePointer(const std::string& shaderName) {
         auto count = shaderModuleMap.count(shaderName);
         if (count <= 0) {
             createShaderModule(shaderName);
         }
         return shaderModuleMap.at(shaderName);
     }
+#endif 
+    
+} // FeatherVK
 
-} // Kaamoo

@@ -1,7 +1,9 @@
 ﻿#include "MyWindow.hpp"
 
-namespace Kaamoo {
-    MyWindow::MyWindow(int w, int h, std::string name) : width(w), height(h), windowName(name) {
+#include "Core/Events.hpp"
+
+namespace FeatherVK {
+    MyWindow::MyWindow(int w, int h, std::string name) : m_windowWidth(w), m_windowHeight(h), windowName(name) {
         initWindow();
     }
 
@@ -11,26 +13,32 @@ namespace Kaamoo {
     }
 
     void MyWindow::initWindow() {
-        glfwInit();
+        if (!glfwInit()) {
+            throw std::runtime_error("Failed to initialize GLFW");
+        }
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
         glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-        window = glfwCreateWindow(width, height, windowName.c_str(), nullptr, nullptr);
-        glfwSetWindowUserPointer(window,this);
-        glfwSetFramebufferSizeCallback(window,frameBufferResizedCallback);
+        window = glfwCreateWindow(m_windowWidth, m_windowHeight, windowName.c_str(), nullptr, nullptr);
+        if (window == nullptr) {
+            glfwTerminate();
+            throw std::runtime_error("Failed to create GLFW window");
+        }
+        glfwSetWindowUserPointer(window, this);
+        glfwSetFramebufferSizeCallback(window, frameBufferResizedCallback);
     }
 
     void MyWindow::createWindowSurface(VkInstance instance, VkSurfaceKHR *surface) {
         if (glfwCreateWindowSurface(instance, window, nullptr, surface) != VK_SUCCESS) {
             throw std::runtime_error("Failed to create window surface");
         }
-
     }
 
     void MyWindow::frameBufferResizedCallback(GLFWwindow *myWindow, int width, int height) {
         //reinterpret_cast，强制指针类型转换而不进行类型检查
         auto window = reinterpret_cast<MyWindow *>(glfwGetWindowUserPointer(myWindow));
-        window->frameBufferResized = true;
-        window->width = width;
-        window->height = height;
+        window->isFrameBufferResized = true;
+        window->m_windowWidth = width;
+        window->m_windowHeight = height;
+        EventQueue::PushWindowResized(width, height);
     }
 }

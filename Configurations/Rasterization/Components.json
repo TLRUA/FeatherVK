@@ -1,0 +1,78 @@
+[
+  {
+    "id": 1,
+    "type": "MeshRendererComponent",
+    "model": "smooth_vase.obj",
+    "materialId": 2
+  },
+  {
+    "id": 2,
+    "type": "MeshRendererComponent",
+    "model": "Ground.obj",
+    "materialId": 1
+  },
+  {
+    "id": 3,
+    "type": "MeshRendererComponent",
+    "model": "cube.obj",
+    "materialId": 5
+  },
+  {
+    "id": 4,
+    "type": "MeshRendererComponent",
+    "model": "cube.obj",
+    "materialId": 6
+  },
+  {
+    "id": 5,
+    "type": "MeshRendererComponent",
+    "model": "cube.obj",
+    "materialId": 2
+  },
+  {
+    "id": 6,
+    "type": "LightComponent",
+    "category": "Point",
+    "color": [1, 1, 1],
+    "intensity": 1
+  },
+  {
+    "id": 7,
+    "type": "MeshRendererComponent",
+    "materialId": 0
+  },
+  {
+    "id": 8,
+    "type": "LightComponent",
+    "category": "Directional",
+    "color": [1, 1, 1],
+    "intensity": 0.5
+  },
+  {
+    "id": 9,
+    "type": "CameraComponent"
+  },
+  {
+    "id": 10,
+    "type": "CameraMovementComponent"
+  },
+  {
+    "id": 11,
+    "type": "RigidBodyComponent",
+    "omega": [0,0,0],
+    "velocity": [0,0,0],
+    "useGravity": true
+  },
+  {
+    "id": 12,
+    "type": "RigidBodyComponent",
+    "isKinematic": true
+  },
+  {
+    "id": 13,
+    "type": "RigidBodyComponent",
+    "omega": [0,0,1],
+    "velocity": [0,0,0],
+    "useGravity": true
+  }
+]
