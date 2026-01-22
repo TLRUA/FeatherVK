@@ -6,16 +6,15 @@
 #include "../RenderSystems/EditorPickingRenderSystem.hpp"
 #include "../RenderSystems/GizmosRenderSystem.hpp"
 #include "../RenderSystems/GrassSystem.hpp"
+#include "../RenderSystems/LightSystem.hpp"
 #include "../RenderSystems/PostSystem.hpp"
 #include "../RenderSystems/RayTracingSystem.hpp"
 #include "../RenderSystems/RenderSystem.h"
 #include "../RenderSystems/ShadowSystem.hpp"
 #include "../RenderSystems/SkyBoxSystem.hpp"
+#include "../Components/RayTracingInstanceComponent.hpp"
 #include "../ShaderBuilder.h"
 #include "ResourceManager.hpp"
-#ifdef RAY_TRACING
-#include "../RayTracing/TLAS.hpp"
-#endif
 
 namespace FeatherVK {
     class ResourceManager;
@@ -39,7 +38,11 @@ namespace FeatherVK {
                 const auto pipelineCategory = material->getPipelineCategory();
 
                 if (pipelineCategory == PipelineCategory.Gizmos) {
-                    m_gizmosRenderSystem = std::make_shared<GizmosRenderSystem>(device, renderer.getSwapChainRenderPass(), material);
+                    m_gizmosRenderSystem = std::make_shared<GizmosRenderSystem>(
+                        device,
+                        renderer.getSwapChainRenderPass(),
+                        material,
+                        m_resourceManager->GetModelRepository());
                     continue;
                 }
 
@@ -87,27 +90,47 @@ namespace FeatherVK {
         }
 
         void UpdateUbo(FrameInfo &frameInfo) {
+            m_lightSystem.Collect(frameInfo);
 #ifndef RAY_TRACING
-            frameInfo.globalUbo.shadowViewMatrix[0] = m_shadowSystem->calculateViewMatrixForRotation(frameInfo.globalUbo.lights[0].position, glm::vec3(0, 90, 180));
-            frameInfo.globalUbo.shadowViewMatrix[1] = m_shadowSystem->calculateViewMatrixForRotation(frameInfo.globalUbo.lights[0].position, glm::vec3(0, -90, 180));
-            frameInfo.globalUbo.shadowViewMatrix[2] = m_shadowSystem->calculateViewMatrixForRotation(frameInfo.globalUbo.lights[0].position, glm::vec3(-90, 0, 0));
-            frameInfo.globalUbo.shadowViewMatrix[3] = m_shadowSystem->calculateViewMatrixForRotation(frameInfo.globalUbo.lights[0].position, glm::vec3(90, 0, 0));
-            frameInfo.globalUbo.shadowViewMatrix[4] = m_shadowSystem->calculateViewMatrixForRotation(frameInfo.globalUbo.lights[0].position, glm::vec3(180, 0, 0));
-            frameInfo.globalUbo.shadowViewMatrix[5] = m_shadowSystem->calculateViewMatrixForRotation(frameInfo.globalUbo.lights[0].position, glm::vec3(0, 0, 180));
-            frameInfo.globalUbo.shadowProjMatrix = CameraComponent::CorrectionMatrix * glm::perspective(glm::radians(90.0f), 1.0f, 0.1f, 5.0f);
-            frameInfo.globalUbo.lightProjectionViewMatrix = frameInfo.globalUbo.shadowProjMatrix * frameInfo.globalUbo.shadowViewMatrix[0];
+            if (frameInfo.globalUbo.lightNum > 0) {
+                frameInfo.globalUbo.shadowViewMatrix[0] = m_shadowSystem->calculateViewMatrixForRotation(frameInfo.globalUbo.lights[0].position, glm::vec3(0, 90, 180));
+                frameInfo.globalUbo.shadowViewMatrix[1] = m_shadowSystem->calculateViewMatrixForRotation(frameInfo.globalUbo.lights[0].position, glm::vec3(0, -90, 180));
+                frameInfo.globalUbo.shadowViewMatrix[2] = m_shadowSystem->calculateViewMatrixForRotation(frameInfo.globalUbo.lights[0].position, glm::vec3(-90, 0, 0));
+                frameInfo.globalUbo.shadowViewMatrix[3] = m_shadowSystem->calculateViewMatrixForRotation(frameInfo.globalUbo.lights[0].position, glm::vec3(90, 0, 0));
+                frameInfo.globalUbo.shadowViewMatrix[4] = m_shadowSystem->calculateViewMatrixForRotation(frameInfo.globalUbo.lights[0].position, glm::vec3(180, 0, 0));
+                frameInfo.globalUbo.shadowViewMatrix[5] = m_shadowSystem->calculateViewMatrixForRotation(frameInfo.globalUbo.lights[0].position, glm::vec3(0, 0, 180));
+                frameInfo.globalUbo.shadowProjMatrix = CameraComponent::CorrectionMatrix * glm::perspective(glm::radians(90.0f), 1.0f, 0.1f, 5.0f);
+                frameInfo.globalUbo.lightProjectionViewMatrix = frameInfo.globalUbo.shadowProjMatrix * frameInfo.globalUbo.shadowViewMatrix[0];
+            }
 #endif
         }
 
-        void UpdateRendering(Renderer &renderer, FrameInfo &frameInfo, HierarchyTree &hierarchyTree) {
+        void UpdateRendering(Renderer &renderer, FrameInfo &frameInfo) {
             UpdateUbo(frameInfo);
 
             const auto frameIndex = frameInfo.frameIndex;
 #ifdef RAY_TRACING
-            SyncRayTracingScene(frameInfo);
-
             GUI::ShowWindow(ImVec2(frameInfo.extent.width, frameInfo.extent.height),
-                            frameInfo.sceneRegistry, &frameInfo.pEntityDescs, &hierarchyTree, frameInfo);
+                            frameInfo.sceneRegistry,
+                            &frameInfo.pEntityDescs,
+                            m_resourceManager->GetHierarchyService(),
+                            m_resourceManager->GetEntityCommandService(),
+                            m_resourceManager->GetEditorSelectionService(),
+                            m_resourceManager->GetTransformService(),
+                            frameInfo);
+            if (GUI::IsLayoutInteractionActive()) {
+                renderer.beginSwapChainRenderPass(frameInfo.commandBuffer);
+                if (m_postSystem != nullptr) {
+                    m_postSystem->UpdateGlobalUboBuffer(frameInfo.globalUbo, frameIndex);
+                    m_postSystem->RenderWithImageIndex(frameInfo, m_lastPresentedSceneImageIndex);
+                }
+                GUI::EndFrame(frameInfo.commandBuffer);
+                renderer.endSwapChainRenderPass(frameInfo.commandBuffer);
+                renderer.endFrame();
+                return;
+            }
+
+            SyncRayTracingScene(frameInfo);
             frameInfo.pEntityDescBuffer->writeToBuffer(frameInfo.pEntityDescs.data(), frameInfo.pEntityDescs.size() * sizeof(EntityDesc));
             m_rayTracingSystem->UpdateGlobalUboBuffer(frameInfo.globalUbo, frameIndex);
             m_rayTracingSystem->rayTrace(frameInfo);
@@ -125,7 +148,20 @@ namespace FeatherVK {
 
             m_postSystem->UpdateGlobalUboBuffer(frameInfo.globalUbo, frameIndex);
             m_postSystem->render(frameInfo);
+            m_lastPresentedSceneImageIndex = frameIndex % 2;
 #else
+            GUI::ShowWindow(ImVec2(frameInfo.extent.width, frameInfo.extent.height),
+                            frameInfo.sceneRegistry,
+                            &frameInfo.materials,
+                            m_resourceManager->GetHierarchyService(),
+                            m_resourceManager->GetEntityCommandService(),
+                            m_resourceManager->GetEditorSelectionService(),
+                            m_resourceManager->GetTransformService(),
+                            frameInfo);
+            if (GUI::IsLayoutInteractionActive()) {
+                // Raster path renders directly to the swapchain; keep rendering to avoid a black scene region.
+            }
+
             renderer.beginShadowRenderPass(frameInfo.commandBuffer);
             m_shadowSystem->UpdateGlobalUboBuffer(frameInfo.globalUbo, frameIndex);
             m_shadowSystem->renderShadow(frameInfo);
@@ -149,6 +185,9 @@ namespace FeatherVK {
                     if (!sceneRegistry.TryGetComponent(entityId, meshRendererComponent) || meshRendererComponent == nullptr) {
                         continue;
                     }
+                    if (!meshRendererComponent->IsVisible()) {
+                        continue;
+                    }
 
                     const auto renderSystemIt = m_renderSystemMap.find(meshRendererComponent->GetMaterialID());
                     if (renderSystemIt == m_renderSystemMap.end() || renderSystemIt->second == nullptr) {
@@ -168,9 +207,6 @@ namespace FeatherVK {
                     renderSystem->render(frameInfo, entityId, sceneRegistry);
                 }
             }
-
-            GUI::ShowWindow(ImVec2(frameInfo.extent.width, frameInfo.extent.height),
-                            frameInfo.sceneRegistry, &frameInfo.materials, &hierarchyTree, frameInfo);
 #endif
             GUI::EndFrame(frameInfo.commandBuffer);
             renderer.endSwapChainRenderPass(frameInfo.commandBuffer);
@@ -206,6 +242,7 @@ namespace FeatherVK {
             std::vector<std::shared_ptr<Buffer>> bufferPointers{bufferPointersRef.begin(), bufferPointersRef.end()};
 
             m_editorPickingMaterial = std::make_shared<Material>(
+                    device,
                     -1000,
                     shaderModulePointers,
                     descriptorSetLayoutPointers,
@@ -242,8 +279,8 @@ namespace FeatherVK {
                 return;
             }
 
-            TLAS::ProcessDeferredDestroy();
-
+            auto &rayTracingSceneContext = m_resourceManager->GetRayTracingSceneContext();
+            rayTracingSceneContext.ProcessDeferredDestroy();
             auto &sceneRegistry = *frameInfo.sceneRegistry;
             bool addedNewTlasInstance = false;
             bool tlasHandleChanged = false;
@@ -251,21 +288,24 @@ namespace FeatherVK {
             for (const auto entityId: sceneRegistry.View<MeshRendererComponent, TransformComponent>()) {
                 MeshRendererComponent *meshRendererComponent = nullptr;
                 TransformComponent *transformComponent = nullptr;
+                RayTracingInstanceComponent *rayTracingInstanceComponent = nullptr;
                 if (!sceneRegistry.TryGetComponent(entityId, meshRendererComponent) || meshRendererComponent == nullptr ||
                     !sceneRegistry.TryGetComponent(entityId, transformComponent) || transformComponent == nullptr ||
                     meshRendererComponent->GetModelPtr() == nullptr) {
                     continue;
                 }
 
-                const bool isActive = sceneRegistry.IsEntityActive(entityId);
-                const glm::mat4 currentTransform = transformComponent->mat4();
-                const bool transformDirty = meshRendererComponent->ConsumeTransformDirty();
-                const id_t tlasId = meshRendererComponent->GetTLASId();
-                m_entityToTlasId[entityId] = tlasId;
-
-                if (tlasId < 0) {
-                    continue;
+                if (!sceneRegistry.TryGetComponent(entityId, rayTracingInstanceComponent) || rayTracingInstanceComponent == nullptr) {
+                    rayTracingInstanceComponent =
+                        sceneRegistry.EmplaceComponent<RayTracingInstanceComponent>(entityId, rayTracingSceneContext.AllocateInstanceId());
+                } else if (!rayTracingInstanceComponent->IsValid()) {
+                    rayTracingInstanceComponent->instanceId = rayTracingSceneContext.AllocateInstanceId();
                 }
+
+                const bool isActive = sceneRegistry.IsEntityActive(entityId) && meshRendererComponent->IsVisible();
+                const glm::mat4 currentTransform = transformComponent->mat4();
+                const id_t tlasId = rayTracingInstanceComponent->instanceId;
+                m_entityToTlasId[entityId] = tlasId;
 
                 if (static_cast<size_t>(tlasId) >= static_cast<size_t>(RuntimeEntityDescCapacity)) {
                     continue;
@@ -276,10 +316,12 @@ namespace FeatherVK {
                 }
 
                 EntityDesc &entityDesc = frameInfo.pEntityDescs[tlasId];
-                const bool descWasEmpty = entityDesc.vertexBufferAddress == 0 || entityDesc.indexBufferAddress == 0;
-                entityDesc.vertexBufferAddress = meshRendererComponent->GetModelPtr()->getVertexBuffer()->getDeviceAddress();
-                entityDesc.indexBufferAddress = meshRendererComponent->GetModelPtr()->getIndexBuffer()->getDeviceAddress();
-                if (descWasEmpty) {
+                EntityDesc baseEntityDesc{};
+                const bool hasBaseEntityDesc =
+                    m_resourceManager->TryGetRayTracingMaterialDesc(meshRendererComponent->GetMaterialID(), baseEntityDesc);
+                if (hasBaseEntityDesc) {
+                    entityDesc = baseEntityDesc;
+                } else if (entityDesc.vertexBufferAddress == 0 || entityDesc.indexBufferAddress == 0) {
                     entityDesc.textureEntry = glm::ivec2{0, 0};
                     entityDesc.pbr.albedo = glm::vec3{0.8f, 0.2f, 0.2f};
                     entityDesc.pbr.normal = glm::vec3{0.0f};
@@ -289,10 +331,20 @@ namespace FeatherVK {
                     entityDesc.pbr.AO = 1.0f;
                     entityDesc.pbr.emissive = glm::vec3{0.0f};
                 }
+                entityDesc.vertexBufferAddress = meshRendererComponent->GetModelPtr()->getVertexBuffer()->getDeviceAddress();
+                entityDesc.indexBufferAddress = meshRendererComponent->GetModelPtr()->getIndexBuffer()->getDeviceAddress();
 
-                if (!TLAS::HasTLASInstance(tlasId)) {
-                    const uint32_t shaderOffset = ResolveRayTracingShaderOffset(sceneRegistry, entityId, meshRendererComponent->GetMaterialID());
-                    TLAS::createTLAS(*meshRendererComponent->GetModelPtr(), tlasId, static_cast<id_t>(shaderOffset), currentTransform);
+                if (!rayTracingSceneContext.HasBlas(meshRendererComponent->GetModelPtr())) {
+                    rayTracingSceneContext.EnsureBlasBuilt(meshRendererComponent->GetModelPtr());
+                }
+
+                if (!rayTracingSceneContext.HasInstance(tlasId)) {
+                    const uint32_t shaderOffset = m_resourceManager->GetRayTracingShaderOffset(meshRendererComponent->GetMaterialID());
+                    rayTracingSceneContext.CreateInstance(
+                        *meshRendererComponent->GetModelPtr(),
+                        tlasId,
+                        static_cast<id_t>(shaderOffset),
+                        currentTransform);
                     addedNewTlasInstance = true;
                     frameInfo.sceneUpdated = true;
                 }
@@ -301,12 +353,12 @@ namespace FeatherVK {
                 if (activeStateEntry == m_meshRendererActiveState.end()) {
                     m_meshRendererActiveState.emplace(entityId, isActive);
                     if (!isActive) {
-                        if (TLAS::updateTLAS(tlasId, currentTransform, 0x00)) {
+                        if (rayTracingSceneContext.UpdateInstance(tlasId, currentTransform, 0x00)) {
                             frameInfo.sceneUpdated = true;
                         }
                     }
                 } else if (activeStateEntry->second != isActive) {
-                    if (TLAS::updateTLAS(tlasId, currentTransform, isActive ? 0xFF : 0x00)) {
+                    if (rayTracingSceneContext.UpdateInstance(tlasId, currentTransform, isActive ? 0xFF : 0x00)) {
                         frameInfo.sceneUpdated = true;
                     }
                     activeStateEntry->second = isActive;
@@ -325,8 +377,8 @@ namespace FeatherVK {
                     continue;
                 }
 
-                if (transformDirty || transformChanged) {
-                    if (TLAS::updateTLAS(tlasId, currentTransform)) {
+                if (transformChanged) {
+                    if (rayTracingSceneContext.UpdateInstance(tlasId, currentTransform)) {
                         frameInfo.sceneUpdated = true;
                     }
                 }
@@ -343,7 +395,7 @@ namespace FeatherVK {
                 }
 
                 const id_t staleTlasId = it->second;
-                TLAS::updateTLAS(staleTlasId, glm::mat4{1.0f}, 0x00);
+                rayTracingSceneContext.UpdateInstance(staleTlasId, glm::mat4{1.0f}, 0x00);
                 if (staleTlasId >= 0 && static_cast<size_t>(staleTlasId) < frameInfo.pEntityDescs.size()) {
                     frameInfo.pEntityDescs[staleTlasId] = EntityDesc{};
                 }
@@ -363,11 +415,11 @@ namespace FeatherVK {
             }
 
             if (addedNewTlasInstance) {
-                tlasHandleChanged = TLAS::buildTLAS(VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR, false);
-                TLAS::shouldUpdate = false;
-            } else if (TLAS::shouldUpdate) {
-                tlasHandleChanged = TLAS::buildTLAS(VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR, true);
-                TLAS::shouldUpdate = false;
+                tlasHandleChanged = rayTracingSceneContext.BuildTopLevel(VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR, false);
+                rayTracingSceneContext.ClearUpdateFlag();
+            } else if (rayTracingSceneContext.ShouldUpdate()) {
+                tlasHandleChanged = rayTracingSceneContext.BuildTopLevel(VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR, true);
+                rayTracingSceneContext.ClearUpdateFlag();
             }
 
             if (tlasHandleChanged) {
@@ -375,30 +427,6 @@ namespace FeatherVK {
             }
 
             m_resourceManager->GetEntityDescs() = frameInfo.pEntityDescs;
-        }
-
-        uint32_t ResolveRayTracingShaderOffset(ECS::SceneRegistry &sceneRegistry,
-                                               id_t entityId,
-                                               Material::id_t materialId) const {
-            for (const auto candidateEntityId: sceneRegistry.View<MeshRendererComponent>()) {
-                if (candidateEntityId == entityId) {
-                    continue;
-                }
-
-                MeshRendererComponent *candidateMeshRenderer = nullptr;
-                if (!sceneRegistry.TryGetComponent(candidateEntityId, candidateMeshRenderer) || candidateMeshRenderer == nullptr) {
-                    continue;
-                }
-                if (candidateMeshRenderer->GetMaterialID() != materialId) {
-                    continue;
-                }
-
-                uint32_t shaderOffset = 0;
-                if (TLAS::TryGetShaderOffset(candidateMeshRenderer->GetTLASId(), shaderOffset)) {
-                    return shaderOffset;
-                }
-            }
-            return 0;
         }
 #endif
 
@@ -410,12 +438,14 @@ namespace FeatherVK {
         std::shared_ptr<ComputeSystem> m_computeSystem;
         std::shared_ptr<Material> m_editorPickingMaterial;
         std::shared_ptr<EditorPickingRenderSystem> m_editorPickingRenderSystem;
+        LightSystem m_lightSystem;
 
 #ifdef RAY_TRACING
         std::shared_ptr<RayTracingSystem> m_rayTracingSystem;
         std::unordered_map<id_t, bool> m_meshRendererActiveState{};
         std::unordered_map<id_t, glm::mat4> m_meshRendererTransformCache{};
         std::unordered_map<id_t, id_t> m_entityToTlasId{};
+        int m_lastPresentedSceneImageIndex = 0;
 #else
         std::shared_ptr<ShadowSystem> m_shadowSystem;
 #endif

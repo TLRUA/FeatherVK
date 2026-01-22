@@ -49,8 +49,6 @@ namespace FeatherVK {
 
         static VkDeviceSize getAlignment(VkDeviceSize instanceSize, VkDeviceSize minOffsetAlignment);
 
-        static Device *getDeviceSingleton() { return deviceSingleton; }
-
         VkInstance getInstance() { return instance; }
 
         VkPhysicalDevice getPhysicalDevice() { return physicalDevice; }
@@ -110,7 +108,6 @@ namespace FeatherVK {
 #endif
 
     private:
-        inline static Device *deviceSingleton;
         VkInstance instance;
         VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
         QueueFamilyIndices indices;

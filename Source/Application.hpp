@@ -41,7 +41,6 @@ namespace FeatherVK {
         void run() {
             auto currentTime = std::chrono::high_resolution_clock::now();
             float totalTime = 0.0f;
-            Awake();
 
             auto &window = m_resourceManager->GetWindow();
             auto &renderer = m_resourceManager->GetRenderer();
@@ -50,7 +49,12 @@ namespace FeatherVK {
             auto &sceneRegistry = m_resourceManager->GetSceneRegistry();
 
             while (!window.shouldClose()) {
+                m_resourceManager->GetInputState().BeginFrame();
                 glfwPollEvents();
+
+                const VkExtent2D windowExtent = window.getCurrentExtent();
+                GUI::UpdateLayout(ImVec2(static_cast<float>(windowExtent.width), static_cast<float>(windowExtent.height)));
+                m_resourceManager->SyncSceneViewportLayout(GUI::GetScenePanelRect(), GUI::GetSceneContentRect());
 
                 Event event{};
                 while (EventQueue::Poll(event)) {
@@ -74,11 +78,14 @@ namespace FeatherVK {
                             &sceneRegistry,
                             materials,
                             m_ubo,
-                            window.getCurrentExtent(),
-                            GUI::GetSelectedId(),
+                            windowExtent,
+                            renderer.getSceneRenderExtent(),
+                            renderer.getScenePanelRect(),
+                            renderer.getSceneViewportRect(),
+                            m_resourceManager->GetEditorSelectionService().GetSelectedId(),
                             false};
 
-                    GUI::BeginFrame(ImVec2(frameInfo.extent.width, frameInfo.extent.height));
+                    GUI::BeginFrame(ImVec2(static_cast<float>(windowExtent.width), static_cast<float>(windowExtent.height)));
                     UpdateComponents(frameInfo);
                     UpdateRendering(frameInfo);
                 }
@@ -97,41 +104,19 @@ namespace FeatherVK {
         std::unique_ptr<RenderManager> m_renderManager;
         std::unique_ptr<LogicManager> m_logicManager;
 
-        void Awake() {
-            auto &sceneRegistry = m_resourceManager->GetSceneRegistry();
-
-            ComponentAwakeInfo awakeInfo{};
-            awakeInfo.sceneRegistry = &sceneRegistry;
-
-            for (const auto entityId: sceneRegistry.GetEntityOrder()) {
-                TransformComponent *transform = nullptr;
-                sceneRegistry.TryGetComponent(entityId, transform);
-
-                awakeInfo.entityId = entityId;
-                awakeInfo.transform = transform;
-
-                for (auto *component: sceneRegistry.GetComponents(entityId)) {
-                    if (component != nullptr) {
-                        component->Awake(awakeInfo);
-                    }
-                }
-            }
-        }
-
         void UpdateComponents(FrameInfo &frameInfo) {
             m_logicManager->UpdateComponents(frameInfo);
         }
 
         void UpdateRendering(FrameInfo &frameInfo) {
             auto &renderer = m_resourceManager->GetRenderer();
-            auto &hierarchyTree = m_resourceManager->GetHierarchyTree();
 #ifdef RAY_TRACING
             auto &gameObjectDescBuffer = m_resourceManager->GetEntityDescBuffer();
             auto &gameObjectDescs = m_resourceManager->GetEntityDescs();
             frameInfo.pEntityDescBuffer = gameObjectDescBuffer;
             frameInfo.pEntityDescs = gameObjectDescs;
 #endif
-            m_renderManager->UpdateRendering(renderer, frameInfo, hierarchyTree);
+            m_renderManager->UpdateRendering(renderer, frameInfo);
         }
     };
 }

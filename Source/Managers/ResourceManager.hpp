@@ -1,7 +1,9 @@
 #pragma once
 
+#include <limits>
 #include <numeric>
-#include "../ComponentFactory.hpp"
+#include <optional>
+#include "../Core/InputState.hpp"
 #include "../Descriptor.h"
 #include "../Device.hpp"
 #include "../GUI.hpp"
@@ -15,12 +17,25 @@
 #include "../Utils/JsonUtils.hpp"
 
 #include "../Utils/ProjectPaths.hpp"
-#include "../ECS/HierarchyTree.hpp"
+#include "../Components/CameraComponent.hpp"
+#include "../Components/Input/CameraMovementComponent.hpp"
+#include "../Components/Input/ObjectMovementComponent.hpp"
+#include "../Components/LightComponent.hpp"
+#include "../Components/MeshRendererComponent.hpp"
+#include "../Components/RayTracingInstanceComponent.hpp"
+#include "../Components/RigidBodyComponent.hpp"
+#include "../Components/TransformComponent.hpp"
 #include "../ECS/SceneRegistry.hpp"
+#include "../Managers/EntityCommandService.hpp"
+#include "../Managers/EditorSelectionService.hpp"
+#include "../Managers/HierarchyService.hpp"
+#include "../Managers/ModelRepository.hpp"
+#include "../Managers/SceneComponentLoader.hpp"
+#include "../Managers/TransformService.hpp"
 #include "../Components/UIComponent.hpp"
+#include "../Systems/TransformHierarchySystem.hpp"
 #ifdef RAY_TRACING
-#include "../RayTracing/BLAS.hpp"
-#include "../RayTracing/TLAS.hpp"
+#include "../Managers/RayTracingSceneContext.hpp"
 #endif
 
 namespace FeatherVK {
@@ -46,7 +61,14 @@ namespace FeatherVK {
 
     class ResourceManager {
     public:
-        ResourceManager() {
+        ResourceManager()
+            : m_modelRepository(m_device),
+              m_sceneComponentLoader(m_modelRepository)
+#ifdef RAY_TRACING
+              , m_rayTracingSceneContext(m_device)
+#endif
+        {
+            m_inputState.Attach(m_window.getGLFWwindow());
             m_globalPool = DescriptorPool::Builder(m_device).
                     setMaxSets(SwapChain::MAX_FRAMES_IN_FLIGHT * MATERIAL_NUMBER).
                     addPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, SwapChain::MAX_FRAMES_IN_FLIGHT * MATERIAL_NUMBER).
@@ -54,10 +76,14 @@ namespace FeatherVK {
                     addPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, SwapChain::MAX_FRAMES_IN_FLIGHT * MATERIAL_NUMBER).
                     addPoolSize(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, SwapChain::MAX_FRAMES_IN_FLIGHT * MATERIAL_NUMBER).
                     addPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, SwapChain::MAX_FRAMES_IN_FLIGHT * MATERIAL_NUMBER).build();
-            RegisterSceneComponentTypes();
+            m_entityCommandService.SetDependencies(m_modelRepository
+#ifdef RAY_TRACING
+                , &m_rayTracingSceneContext
+#endif
+            );
             loadEntities();
             loadMaterials();
-            GUI::Init(m_renderer, m_window);
+            GUI::Init(m_renderer, m_window, m_device);
         }
 
         ~ResourceManager() {
@@ -66,15 +92,12 @@ namespace FeatherVK {
             }
             m_sceneRegistry.Clear();
 #ifdef RAY_TRACING
-            // RT backend resources are global renderer state and are released here after the device
-            // is idle, not from any scene entity/component destructor.
-            TLAS::release();
-            BLAS::release();
+            m_rayTracingSceneContext.Release();
             m_pEntityDescBuffer.reset();
             m_pEntityDescs.clear();
 #endif
             m_textureCache.clear();
-            Model::models.clear();
+            m_modelRepository.Clear();
             m_materials.clear();
         }
 
@@ -83,7 +106,14 @@ namespace FeatherVK {
 
         MyWindow &GetWindow() { return m_window; }
 
-        HierarchyTree &GetHierarchyTree() { return m_hierarchyTree; }
+        InputState &GetInputState() { return m_inputState; }
+
+        HierarchyTree &GetHierarchyTree() { return m_hierarchyService.GetTree(); }
+        HierarchyService &GetHierarchyService() { return m_hierarchyService; }
+        EntityCommandService &GetEntityCommandService() { return m_entityCommandService; }
+        EditorSelectionService &GetEditorSelectionService() { return m_editorSelectionService; }
+        TransformService &GetTransformService() { return m_transformService; }
+        ModelRepository &GetModelRepository() { return m_modelRepository; }
 
         Material::Map &GetMaterials() { return m_materials; }
 
@@ -93,45 +123,53 @@ namespace FeatherVK {
 
         Renderer &GetRenderer() { return m_renderer; }
 
+        bool SyncSceneViewportLayout(const ViewportRect &scenePanelRect, const ViewportRect &sceneViewportRect) {
+            const bool sceneExtentChanged = m_renderer.UpdateSceneViewportLayout(scenePanelRect, sceneViewportRect);
+#ifdef RAY_TRACING
+            if (sceneExtentChanged) {
+                RefreshSceneSizedDescriptors();
+            }
+#endif
+            return sceneExtentChanged;
+        }
+
 #ifdef RAY_TRACING
         std::shared_ptr<Buffer>& GetEntityDescBuffer() { return m_pEntityDescBuffer; }
         std::vector<EntityDesc>& GetEntityDescs() { return m_pEntityDescs; }
+        RayTracingSceneContext &GetRayTracingSceneContext() { return m_rayTracingSceneContext; }
+
+        bool TryGetRayTracingMaterialDesc(Material::id_t materialId, EntityDesc &entityDesc) const {
+            const auto entry = m_rayTracingMaterialDescs.find(materialId);
+            if (entry == m_rayTracingMaterialDescs.end()) {
+                return false;
+            }
+            entityDesc = entry->second;
+            return true;
+        }
+
+        uint32_t GetRayTracingShaderOffset(Material::id_t materialId) const {
+            const auto entry = m_rayTracingShaderOffsets.find(materialId);
+            return entry == m_rayTracingShaderOffsets.end() ? 0u : entry->second;
+        }
 
         bool RefreshRayTracingTlasDescriptor() {
-            auto materialIt = m_materials.find(Material::MaterialId::rayTracing);
-            if (materialIt == m_materials.end() || materialIt->second == nullptr) {
-                return false;
-            }
-
-            const auto descriptorSetLayouts = materialIt->second->getDescriptorSetLayoutPointers();
-            const auto descriptorSets = materialIt->second->getDescriptorSetPointers();
-            if (descriptorSetLayouts.empty() || descriptorSets.empty() ||
-                descriptorSetLayouts[0] == nullptr || descriptorSets[0] == nullptr) {
-                return false;
-            }
-
-            auto accelerationStructureInfo = std::make_shared<VkWriteDescriptorSetAccelerationStructureKHR>();
-            accelerationStructureInfo->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
-            accelerationStructureInfo->accelerationStructureCount = 1;
-            accelerationStructureInfo->pAccelerationStructures = &TLAS::tlas;
-
-            DescriptorWriter(descriptorSetLayouts[0], *m_globalPool).
-                    writeTLAS(0, accelerationStructureInfo).
-                    overwrite(*descriptorSets[0]);
-            return true;
+            return RefreshRayTracingRayGenDescriptorSet();
         }
 #endif
 
         void loadEntities() {
             struct HierarchyEntry {
                 id_t entityId;
-                int32_t transformId;
+                std::optional<id_t> parentEntityId{};
             };
 
             m_sceneRegistry.Clear();
-            m_hierarchyTree.Reset();
+            m_hierarchyService.Reset();
+            m_entityCommandService.Reset();
+            m_editorSelectionService.ClearSelection();
+            m_transformService.Reset();
 #ifdef RAY_TRACING
-            MeshRendererComponent::ResetTLASIdAllocator();
+            m_rayTracingSceneContext.Release();
 #endif
 
             std::string entitiesJsonString = JsonUtils::ReadJsonFile(GetBasePath() + EntitiesFileName);
@@ -150,9 +188,7 @@ namespace FeatherVK {
                 }
             }
 
-            std::unordered_map<int, id_t> childTransformIdToParentEntityMap;
             std::vector<HierarchyEntry> hierarchyEntries{};
-            ComponentFactory componentFactory;
 
             if (entitiesDocument.IsArray()) {
                 for (rapidjson::SizeType i = 0; i < entitiesDocument.Size(); i++) {
@@ -160,104 +196,70 @@ namespace FeatherVK {
 
                     const std::string entityName = object.HasMember("name") ? object["name"].GetString() : "Entity";
                     const bool active = !object.HasMember("IsActive") || object["IsActive"].GetBool();
-
-                    const id_t entityId = m_sceneRegistry.CreateEntity(entityName, active);
-                    TransformComponent *transformComponentPtr = m_sceneRegistry.AddOwnedComponent<TransformComponent>(entityId);
-                    int32_t transformId = HierarchyTree::DEFAULT_TRANSFORM_ID;
+                    const id_t entityId = object.HasMember("id")
+                                              ? m_sceneRegistry.CreateEntityWithId(object["id"].GetUint(), entityName, active)
+                                              : m_sceneRegistry.CreateEntity(entityName, active);
+                    TransformComponent *transformComponentPtr = m_sceneRegistry.EmplaceComponent<TransformComponent>(entityId);
+                    HierarchyEntry hierarchyEntry{entityId, object.HasMember("parentId")
+                                                               ? std::optional<id_t>{object["parentId"].GetUint()}
+                                                               : std::nullopt};
 
                     if (object.HasMember("transform")) {
                         const rapidjson::Value &transformJsonObj = object["transform"];
-                        if (transformJsonObj.HasMember("id")) {
-                            transformId = transformJsonObj["id"].GetInt();
-                        }
-
-                        transformComponentPtr->SetTransformId(transformId);
-
-                        if (transformJsonObj.HasMember("childrenIds")) {
-                            const rapidjson::Value &childrenIdsArray = transformJsonObj["childrenIds"];
-                            for (rapidjson::SizeType j = 0; j < childrenIdsArray.Size(); j++) {
-                                const int childrenId = childrenIdsArray[j].GetInt();
-                                if (transformId != -1) {
-                                    childTransformIdToParentEntityMap[childrenId] = entityId;
-                                }
-                            }
-                        }
-
                         const rapidjson::Value &translationArray = transformJsonObj["translation"];
                         const rapidjson::Value &scaleArray = transformJsonObj["scale"];
                         const rapidjson::Value &rotationArray = transformJsonObj["rotation"];
 
-                        transformComponentPtr->SetTranslation(glm::vec3{
-                                translationArray[0].GetFloat(),
-                                translationArray[1].GetFloat(),
-                                translationArray[2].GetFloat()});
-                        transformComponentPtr->SetScale(glm::vec3{
-                                scaleArray[0].GetFloat(),
-                                scaleArray[1].GetFloat(),
-                                scaleArray[2].GetFloat()});
-                        transformComponentPtr->SetRotation(glm::radians(glm::vec3{
-                                rotationArray[0].GetFloat(),
-                                rotationArray[1].GetFloat(),
-                                rotationArray[2].GetFloat()}));
+                        m_transformService.SetTranslation(m_sceneRegistry, entityId, glm::vec3{
+                            translationArray[0].GetFloat(),
+                            translationArray[1].GetFloat(),
+                            translationArray[2].GetFloat()});
+                        m_transformService.SetScale(m_sceneRegistry, entityId, glm::vec3{
+                            scaleArray[0].GetFloat(),
+                            scaleArray[1].GetFloat(),
+                            scaleArray[2].GetFloat()});
+                        m_transformService.SetRotation(m_sceneRegistry, entityId, glm::radians(glm::vec3{
+                            rotationArray[0].GetFloat(),
+                            rotationArray[1].GetFloat(),
+                            rotationArray[2].GetFloat()}));
                     }
 
-                    hierarchyEntries.push_back(HierarchyEntry{entityId, transformId});
+                    hierarchyEntries.push_back(std::move(hierarchyEntry));
 
                     if (object.HasMember("componentIds")) {
                         auto componentIdsArray = object["componentIds"].GetArray();
                         for (rapidjson::SizeType j = 0; j < componentIdsArray.Size(); j++) {
                             const int componentId = componentIdsArray[j].GetInt();
-                            std::unique_ptr<Component> componentOwner(componentFactory.CreateComponent(componentsMap, componentId));
-                            if (componentOwner) {
-                                m_sceneRegistry.AddOwnedComponent(entityId, std::move(componentOwner));
-                            }
+                            m_sceneComponentLoader.Emplace(m_sceneRegistry, entityId, componentsMap[componentId]);
                         }
                     }
                 }
             }
 
             for (const auto &hierarchyEntry: hierarchyEntries) {
-                TransformComponent *childTransform = nullptr;
-                if (!m_sceneRegistry.TryGetComponent(hierarchyEntry.entityId, childTransform) || childTransform == nullptr) {
-                    continue;
-                }
-
-                const auto parentEntry = childTransformIdToParentEntityMap.find(hierarchyEntry.transformId);
-                if (parentEntry != childTransformIdToParentEntityMap.end()) {
-                    TransformComponent *parentTransform = nullptr;
-                    if (m_sceneRegistry.TryGetComponent(parentEntry->second, parentTransform) && parentTransform != nullptr) {
-                        parentTransform->AddChild(childTransform);
-                    }
-                    m_hierarchyTree.AddNode(static_cast<int>(parentEntry->second), static_cast<int>(hierarchyEntry.entityId), hierarchyEntry.transformId);
-                } else {
-                    m_hierarchyTree.AddNode(HierarchyTree::ROOT_ID, static_cast<int>(hierarchyEntry.entityId), hierarchyEntry.transformId);
-                }
+                m_transformService.SetParent(m_sceneRegistry, m_hierarchyService, hierarchyEntry.entityId, hierarchyEntry.parentEntityId);
             }
 
-            for (const auto entityId: m_sceneRegistry.GetEntityOrder()) {
-                for (auto *component: m_sceneRegistry.GetComponents(entityId)) {
-                    if (component != nullptr) {
-                        component->OnLoad(entityId, m_sceneRegistry);
-                    }
-                }
-            }
-
-            for (const auto entityId: m_sceneRegistry.GetEntityOrder()) {
-                for (auto *component: m_sceneRegistry.GetComponents(entityId)) {
-                    if (component != nullptr) {
-                        component->Loaded(entityId, m_sceneRegistry);
-                    }
-                }
-            }
+            TransformHierarchySystem{}.Update(m_sceneRegistry, m_hierarchyService, m_transformService);
 
 #ifdef RAY_TRACING
             for (const auto entityId: m_sceneRegistry.View<MeshRendererComponent>()) {
                 auto *meshRendererComponent = TryGetSceneComponent<MeshRendererComponent>(entityId);
+                if (meshRendererComponent == nullptr || m_sceneRegistry.HasComponent<RayTracingInstanceComponent>(entityId)) {
+                    continue;
+                }
+                m_sceneRegistry.EmplaceComponent<RayTracingInstanceComponent>(entityId, m_rayTracingSceneContext.AllocateInstanceId());
+            }
+
+            for (const auto entityId: m_sceneRegistry.View<MeshRendererComponent>()) {
+                auto *meshRendererComponent = TryGetSceneComponent<MeshRendererComponent>(entityId);
                 if (meshRendererComponent != nullptr && meshRendererComponent->GetModelPtr() != nullptr) {
-                    BLAS::modelToBLASInput(meshRendererComponent->GetModelPtr());
+                    m_rayTracingSceneContext.QueueBlasBuild(meshRendererComponent->GetModelPtr());
                 }
             }
-            BLAS::buildBLAS(VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR | VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR);
+            m_rayTracingSceneContext.BuildPendingBlas(
+                VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR |
+                VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR);
 #endif
         }
 
@@ -338,10 +340,34 @@ namespace FeatherVK {
                     textureEntries.emplace(id, textureEntry);
                 }
             }
-            for (const auto entityId: m_sceneRegistry.View<MeshRendererComponent, TransformComponent>()) {
+            m_rayTracingShaderOffsets.clear();
+            m_rayTracingMaterialDescs.clear();
+            for (const auto &entry: idShaderOffsetMap) {
+                m_rayTracingShaderOffsets.emplace(entry.first, static_cast<uint32_t>(entry.second));
+            }
+            for (const auto &entry: textureEntries) {
+                EntityDesc materialDesc{};
+                materialDesc.textureEntry = entry.second;
+                const auto pbrEntry = pbrMaterials.find(entry.first);
+                if (pbrEntry != pbrMaterials.end()) {
+                    materialDesc.pbr = pbrEntry->second;
+                } else {
+                    materialDesc.pbr.albedo = glm::vec3{0.8f, 0.2f, 0.2f};
+                    materialDesc.pbr.normal = glm::vec3{0.0f};
+                    materialDesc.pbr.metallic = 0.0f;
+                    materialDesc.pbr.roughness = 1.0f;
+                    materialDesc.pbr.opacity = 1.0f;
+                    materialDesc.pbr.AO = 1.0f;
+                    materialDesc.pbr.emissive = glm::vec3{0.0f};
+                }
+                m_rayTracingMaterialDescs.emplace(entry.first, materialDesc);
+            }
+
+            for (const auto entityId: m_sceneRegistry.View<MeshRendererComponent, TransformComponent, RayTracingInstanceComponent>()) {
                 auto *meshRendererComponent = TryGetSceneComponent<MeshRendererComponent>(entityId);
                 auto *transformComponent = TryGetSceneComponent<TransformComponent>(entityId);
-                if (meshRendererComponent == nullptr || transformComponent == nullptr) {
+                auto *rayTracingInstance = TryGetSceneComponent<RayTracingInstanceComponent>(entityId);
+                if (meshRendererComponent == nullptr || transformComponent == nullptr || rayTracingInstance == nullptr) {
                     continue;
                 }
 
@@ -350,12 +376,13 @@ namespace FeatherVK {
                     continue;
                 }
 
-                TLAS::createTLAS(*model,
-                                 meshRendererComponent->GetTLASId(),
-                                 idShaderOffsetMap[meshRendererComponent->GetMaterialID()],
-                                 transformComponent->mat4());
+                m_rayTracingSceneContext.CreateInstance(
+                    *model,
+                    rayTracingInstance->instanceId,
+                    static_cast<id_t>(idShaderOffsetMap[meshRendererComponent->GetMaterialID()]),
+                    transformComponent->mat4());
             }
-            TLAS::buildTLAS();
+            m_rayTracingSceneContext.BuildTopLevel();
 
             //TLAS, offscreen, GBuffer
             auto rayGenDescriptorSetLayoutPtr = DescriptorSetLayout::Builder(m_device).
@@ -370,7 +397,7 @@ namespace FeatherVK {
             auto accelerationStructureInfo = std::make_shared<VkWriteDescriptorSetAccelerationStructureKHR>();
             accelerationStructureInfo->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
             accelerationStructureInfo->accelerationStructureCount = 1;
-            accelerationStructureInfo->pAccelerationStructures = &TLAS::tlas;
+            accelerationStructureInfo->pAccelerationStructures = &m_rayTracingSceneContext.GetTlasHandle();
 
             std::vector<VkDescriptorImageInfo> offscreenImageInfos;
             auto offScreenImageInfo = std::make_shared<VkDescriptorImageInfo>();
@@ -399,10 +426,11 @@ namespace FeatherVK {
             size_t maxTlasId = 0;
             for (const auto entityId: meshRendererEntities) {
                 auto *meshRendererComponent = TryGetSceneComponent<MeshRendererComponent>(entityId);
-                if (meshRendererComponent == nullptr) {
+                auto *rayTracingInstance = TryGetSceneComponent<RayTracingInstanceComponent>(entityId);
+                if (meshRendererComponent == nullptr || rayTracingInstance == nullptr) {
                     continue;
                 }
-                maxTlasId = std::max(maxTlasId, static_cast<size_t>(meshRendererComponent->GetTLASId()));
+                maxTlasId = std::max(maxTlasId, static_cast<size_t>(rayTracingInstance->instanceId));
             }
 
             m_pEntityDescs.clear();
@@ -410,7 +438,8 @@ namespace FeatherVK {
             for (const auto entityId: meshRendererEntities) {
                 EntityDesc modelDesc{};
                 auto *meshRendererComponent = TryGetSceneComponent<MeshRendererComponent>(entityId);
-                if (meshRendererComponent == nullptr || meshRendererComponent->GetModelPtr() == nullptr) {
+                auto *rayTracingInstance = TryGetSceneComponent<RayTracingInstanceComponent>(entityId);
+                if (meshRendererComponent == nullptr || rayTracingInstance == nullptr || meshRendererComponent->GetModelPtr() == nullptr) {
                     continue;
                 }
 
@@ -423,8 +452,13 @@ namespace FeatherVK {
                 auto pbrEntry = pbrMaterials.find(meshRendererComponent->GetMaterialID());
                 if (pbrEntry != pbrMaterials.end()) {
                     modelDesc.pbr = pbrEntry->second;
+                } else {
+                    auto baseDescEntry = m_rayTracingMaterialDescs.find(meshRendererComponent->GetMaterialID());
+                    if (baseDescEntry != m_rayTracingMaterialDescs.end()) {
+                        modelDesc.pbr = baseDescEntry->second.pbr;
+                    }
                 }
-                m_pEntityDescs[meshRendererComponent->GetTLASId()] = modelDesc;
+                m_pEntityDescs[rayTracingInstance->instanceId] = modelDesc;
             }
 
             const uint32_t entityDescBufferCount = static_cast<uint32_t>(std::max(
@@ -463,7 +497,7 @@ namespace FeatherVK {
                     writeImage(3, skyBoxImage->descriptorInfo(*skyBoxSampler)).
                     build(sceneDescriptorSet);
             descriptorSetPointers.push_back(sceneDescriptorSet);
-            auto material = std::make_shared<Material>(Material::MaterialId::rayTracing, shaderModulePointers, descriptorSetLayoutPointers, descriptorSetPointers,
+            auto material = std::make_shared<Material>(m_device, Material::MaterialId::rayTracing, shaderModulePointers, descriptorSetLayoutPointers, descriptorSetPointers,
                                                        imagePointers, samplerPointers, bufferPointers, "RayTracing");
             m_materials.emplace(Material::MaterialId::rayTracing, std::move(material));
 
@@ -503,7 +537,7 @@ namespace FeatherVK {
             std::vector<std::shared_ptr<Sampler>> samplerPointers{};
             std::vector<std::shared_ptr<Buffer>> bufferPointers{globalUboBufferPtr};
 
-            auto postMaterial = std::make_shared<Material>(Material::MaterialId::post, shaderModulePointers, descriptorSetLayoutPointers, descriptorSetPointers, imagePointers, samplerPointers,
+            auto postMaterial = std::make_shared<Material>(m_device, Material::MaterialId::post, shaderModulePointers, descriptorSetLayoutPointers, descriptorSetPointers, imagePointers, samplerPointers,
                                                            bufferPointers,
                                                            PipelineCategory.Post);
             m_materials.emplace(Material::MaterialId::post, std::move(postMaterial));
@@ -565,7 +599,7 @@ namespace FeatherVK {
             std::vector<std::shared_ptr<Sampler>> samplerPointers{};
             std::vector<std::shared_ptr<Buffer>> bufferPointers{globalUboBufferPtr};
 
-            auto computeMaterial = std::make_shared<Material>(Material::MaterialId::compute, shaderModulePointers, descriptorSetLayoutPointers, descriptorSetPointers, imagePointers, samplerPointers,
+            auto computeMaterial = std::make_shared<Material>(m_device, Material::MaterialId::compute, shaderModulePointers, descriptorSetLayoutPointers, descriptorSetPointers, imagePointers, samplerPointers,
                                                               bufferPointers,
                                                               PipelineCategory.Compute);
             m_materials.emplace(Material::MaterialId::compute, std::move(computeMaterial));
@@ -700,7 +734,7 @@ namespace FeatherVK {
                     descriptorSetPointers.push_back(materialDescriptorSetPointer);
 
 
-                    auto m_material = std::make_shared<Material>(id, shaderModulePointers, descriptorSetLayoutPointers, descriptorSetPointers,
+                    auto m_material = std::make_shared<Material>(m_device, id, shaderModulePointers, descriptorSetLayoutPointers, descriptorSetPointers,
                                                                  imagePointers, samplerPointers, bufferPointers, pipelineCategoryString);
 
                     m_materials.emplace(id, std::move(m_material));
@@ -725,7 +759,7 @@ namespace FeatherVK {
                 std::vector<std::shared_ptr<Sampler>> samplerPointers{};
                 std::vector<std::shared_ptr<Buffer>> bufferPointers{globalUboBufferPtr};
 
-                auto uiMaterial = std::make_shared<Material>(Material::MaterialId::gizmos, shaderModulePointers, descriptorSetLayoutPointers, descriptorSetPointers, imagePointers, samplerPointers,
+                auto uiMaterial = std::make_shared<Material>(m_device, Material::MaterialId::gizmos, shaderModulePointers, descriptorSetLayoutPointers, descriptorSetPointers, imagePointers, samplerPointers,
                                                              bufferPointers,
                                                              PipelineCategory.Gizmos);
                 m_materials.emplace(Material::MaterialId::gizmos, std::move(uiMaterial));
@@ -755,19 +789,137 @@ namespace FeatherVK {
             return cacheEntry;
         }
     private:
-        void RegisterSceneComponentTypes() {
-            m_sceneRegistry.RegisterComponentType<TransformComponent>();
-            m_sceneRegistry.RegisterComponentType<MeshRendererComponent>();
-            m_sceneRegistry.RegisterComponentType<LightComponent>();
-            m_sceneRegistry.RegisterComponentType<ObjectMovementComponent>();
-            m_sceneRegistry.RegisterComponentType<CameraMovementComponent>();
-            m_sceneRegistry.RegisterComponentType<CameraComponent>();
-            m_sceneRegistry.RegisterComponentType<RigidBodyComponent>();
-            m_sceneRegistry.RegisterComponentType<UIComponent>();
-#ifdef RAY_TRACING
-            m_sceneRegistry.RegisterComponentType<RayTracingManagerComponent>();
-#endif
+        bool RefreshPostDescriptorSet() {
+            auto materialIt = m_materials.find(Material::MaterialId::post);
+            if (materialIt == m_materials.end() || materialIt->second == nullptr) {
+                return false;
+            }
+
+            const auto descriptorSetLayouts = materialIt->second->getDescriptorSetLayoutPointers();
+            const auto descriptorSets = materialIt->second->getDescriptorSetPointers();
+            const auto &bufferPointers = materialIt->second->getBufferPointers();
+            if (descriptorSetLayouts.empty() || descriptorSets.empty() ||
+                descriptorSetLayouts[0] == nullptr || descriptorSets[0] == nullptr ||
+                bufferPointers.empty() || bufferPointers[0] == nullptr) {
+                return false;
+            }
+
+            std::vector<VkDescriptorImageInfo> offscreenImageInfos{};
+            auto imageInfo = m_renderer.getOffscreenImageColor(0)->descriptorInfo();
+            imageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            offscreenImageInfos.emplace_back(*imageInfo);
+            imageInfo = m_renderer.getOffscreenImageColor(1)->descriptorInfo();
+            imageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            offscreenImageInfos.emplace_back(*imageInfo);
+
+            DescriptorWriter(descriptorSetLayouts[0], *m_globalPool).
+                    writeBuffer(0, bufferPointers[0]->descriptorInfo()).
+                    writeImages(1, offscreenImageInfos).
+                    overwrite(*descriptorSets[0]);
+            return true;
         }
+
+#ifdef RAY_TRACING
+        bool RefreshRayTracingRayGenDescriptorSet() {
+            auto materialIt = m_materials.find(Material::MaterialId::rayTracing);
+            if (materialIt == m_materials.end() || materialIt->second == nullptr) {
+                return false;
+            }
+
+            const auto descriptorSetLayouts = materialIt->second->getDescriptorSetLayoutPointers();
+            const auto descriptorSets = materialIt->second->getDescriptorSetPointers();
+            if (descriptorSetLayouts.empty() || descriptorSets.empty() ||
+                descriptorSetLayouts[0] == nullptr || descriptorSets[0] == nullptr) {
+                return false;
+            }
+
+            auto accelerationStructureInfo = std::make_shared<VkWriteDescriptorSetAccelerationStructureKHR>();
+            accelerationStructureInfo->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+            accelerationStructureInfo->accelerationStructureCount = 1;
+            accelerationStructureInfo->pAccelerationStructures = &m_rayTracingSceneContext.GetTlasHandle();
+
+            std::vector<VkDescriptorImageInfo> offscreenImageInfos{};
+            auto offscreenImageInfo = m_renderer.getOffscreenImageColor(0)->descriptorInfo();
+            offscreenImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            offscreenImageInfos.emplace_back(*offscreenImageInfo);
+            offscreenImageInfo = m_renderer.getOffscreenImageColor(1)->descriptorInfo();
+            offscreenImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            offscreenImageInfos.emplace_back(*offscreenImageInfo);
+
+            std::vector<VkDescriptorImageInfo> worldPosImageInfos{};
+            auto worldPosImageInfo = m_renderer.getWorldPosImageColor(0)->descriptorInfo();
+            worldPosImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            worldPosImageInfos.emplace_back(*worldPosImageInfo);
+            worldPosImageInfo = m_renderer.getWorldPosImageColor(1)->descriptorInfo();
+            worldPosImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            worldPosImageInfos.emplace_back(*worldPosImageInfo);
+
+            DescriptorWriter(descriptorSetLayouts[0], *m_globalPool).
+                    writeTLAS(0, accelerationStructureInfo).
+                    writeImages(1, offscreenImageInfos).
+                    writeImages(2, worldPosImageInfos).
+                    overwrite(*descriptorSets[0]);
+            return true;
+        }
+
+        bool RefreshComputeDescriptorSet() {
+            auto materialIt = m_materials.find(Material::MaterialId::compute);
+            if (materialIt == m_materials.end() || materialIt->second == nullptr) {
+                return false;
+            }
+
+            const auto descriptorSetLayouts = materialIt->second->getDescriptorSetLayoutPointers();
+            const auto descriptorSets = materialIt->second->getDescriptorSetPointers();
+            const auto &bufferPointers = materialIt->second->getBufferPointers();
+            if (descriptorSetLayouts.empty() || descriptorSets.empty() ||
+                descriptorSetLayouts[0] == nullptr || descriptorSets[0] == nullptr ||
+                bufferPointers.empty() || bufferPointers[0] == nullptr) {
+                return false;
+            }
+
+            std::vector<VkDescriptorImageInfo> offscreenImageInfos{};
+            auto offscreenImageInfo = m_renderer.getOffscreenImageColor(0)->descriptorInfo();
+            offscreenImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            offscreenImageInfos.emplace_back(*offscreenImageInfo);
+            offscreenImageInfo = m_renderer.getOffscreenImageColor(1)->descriptorInfo();
+            offscreenImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            offscreenImageInfos.emplace_back(*offscreenImageInfo);
+
+            std::vector<VkDescriptorImageInfo> worldPosImageInfos{};
+            auto worldPosImageInfo = m_renderer.getWorldPosImageColor(0)->descriptorInfo();
+            worldPosImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            worldPosImageInfos.emplace_back(*worldPosImageInfo);
+            worldPosImageInfo = m_renderer.getWorldPosImageColor(1)->descriptorInfo();
+            worldPosImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            worldPosImageInfos.emplace_back(*worldPosImageInfo);
+
+            auto denoisingImageInfo = m_renderer.getDenoisingAccumulationImageColor()->descriptorInfo();
+            denoisingImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+            std::vector<VkDescriptorImageInfo> viewPosImageInfos{};
+            auto viewPosImageInfo = m_renderer.getViewPosImageColor(0)->descriptorInfo();
+            viewPosImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            viewPosImageInfos.emplace_back(*viewPosImageInfo);
+            viewPosImageInfo = m_renderer.getViewPosImageColor(1)->descriptorInfo();
+            viewPosImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            viewPosImageInfos.emplace_back(*viewPosImageInfo);
+
+            DescriptorWriter(descriptorSetLayouts[0], *m_globalPool).
+                    writeBuffer(0, bufferPointers[0]->descriptorInfo()).
+                    writeImages(1, offscreenImageInfos).
+                    writeImages(2, worldPosImageInfos).
+                    writeImage(3, denoisingImageInfo).
+                    writeImages(4, viewPosImageInfos).
+                    overwrite(*descriptorSets[0]);
+            return true;
+        }
+
+        void RefreshSceneSizedDescriptors() {
+            RefreshRayTracingRayGenDescriptorSet();
+            RefreshPostDescriptorSet();
+            RefreshComputeDescriptorSet();
+        }
+#endif
 
         template<typename T>
         T *TryGetSceneComponent(const id_t entityId) {
@@ -776,18 +928,27 @@ namespace FeatherVK {
         }
 
         MyWindow m_window{SCENE_WIDTH + UI_LEFT_WIDTH + UI_LEFT_WIDTH_2, SCENE_HEIGHT, "FeatherVK"};
+        InputState m_inputState{};
         Device m_device{m_window};
         Renderer m_renderer{m_window, m_device};
         ShaderBuilder m_shaderBuilder{m_device};
         std::shared_ptr<DescriptorPool> m_globalPool;
+        ModelRepository m_modelRepository;
+        SceneComponentLoader m_sceneComponentLoader;
         ECS::SceneRegistry m_sceneRegistry;
-        HierarchyTree m_hierarchyTree;
+        HierarchyService m_hierarchyService;
+        EntityCommandService m_entityCommandService;
+        EditorSelectionService m_editorSelectionService;
+        TransformService m_transformService;
         Material::Map m_materials;
         std::unordered_map<std::string, TextureCacheEntry> m_textureCache;
 
 #ifdef RAY_TRACING
+        RayTracingSceneContext m_rayTracingSceneContext;
         std::shared_ptr<Buffer> m_pEntityDescBuffer;
         std::vector<EntityDesc> m_pEntityDescs;
+        std::unordered_map<Material::id_t, EntityDesc> m_rayTracingMaterialDescs;
+        std::unordered_map<Material::id_t, uint32_t> m_rayTracingShaderOffsets;
 #endif
     };
 }

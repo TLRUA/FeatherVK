@@ -5,13 +5,10 @@
 #include "Utils/ProjectPaths.hpp"
 #include <memory>
 #include <iostream>
-#include <unordered_map>
 
 namespace FeatherVK {
     class Model {
     public:
-
-        inline static std::unordered_map<std::string, std::shared_ptr<Model>> models{};
 
         Model(const Model &model) = delete;
 
@@ -76,7 +73,11 @@ namespace FeatherVK {
 
         std::vector<Vertex> &GetVertices() { return m_vertices; }
 
+        const std::vector<Vertex> &GetVertices() const { return m_vertices; }
+
         std::vector<uint32_t> &GetIndices() { return m_indices; }
+
+        const std::vector<uint32_t> &GetIndices() const { return m_indices; }
         
         void RefreshVertexBuffer(const std::vector<Vertex> &vertices){
             vertexCount = static_cast<uint32_t>(vertices.size());

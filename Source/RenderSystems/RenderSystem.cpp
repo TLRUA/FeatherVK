@@ -106,7 +106,7 @@ namespace FeatherVK {
             }
 
             pointLightPushConstant.position = glm::vec4(transformComponent->GetTranslation(), 1.f);
-            pointLightPushConstant.color = glm::vec4(lightComponent->getColor(), lightComponent->getLightIntensity());
+            pointLightPushConstant.color = glm::vec4(lightComponent->GetColor(), lightComponent->GetLightIntensity());
             pointLightPushConstant.radius = transformComponent->GetScale().x;
             vkCmdPushConstants(frameInfo.commandBuffer, m_pipelineLayout,
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
@@ -117,6 +117,7 @@ namespace FeatherVK {
             MeshRendererComponent *meshRendererComponent = nullptr;
             if (!sceneRegistry.TryGetComponent(entityId, transformComponent) || transformComponent == nullptr ||
                 !sceneRegistry.TryGetComponent(entityId, meshRendererComponent) || meshRendererComponent == nullptr ||
+                !meshRendererComponent->IsVisible() ||
                 meshRendererComponent->GetModelPtr() == nullptr) {
                 return;
             }

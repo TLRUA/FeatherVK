@@ -1,168 +1,170 @@
-﻿#ifndef TRANSFORM_COMPONENT_INCLUDED
+#ifndef TRANSFORM_COMPONENT_INCLUDED
 #define TRANSFORM_COMPONENT_INCLUDED
 
-#include <string>
-#include <cstdint>
-#include <algorithm>
-#include <vector>
-#include <glm/vec3.hpp>
-#include <glm/fwd.hpp>
+#include <limits>
+
 #include <glm/detail/type_mat3x3.hpp>
 #include <glm/ext/matrix_transform.hpp>
-#include "Component.hpp"
+#include <glm/fwd.hpp>
+#include <glm/vec3.hpp>
+
+#include "../Utils/Utils.hpp"
 
 namespace FeatherVK {
-    class TransformComponent : public Component {
+    class TransformComponent {
     public:
-        TransformComponent() {
-            name = "TransformComponent";
-        }
+        inline static constexpr id_t InvalidEntityId = std::numeric_limits<id_t>::max();
 
         glm::vec3 getForwardDir() const {
-            float yaw = rotation.y;
+            const float yaw = GetRotation().y;
             return glm::vec3{glm::sin(yaw), 0, glm::cos(yaw)};
-        };
+        }
 
         void Translate(glm::vec3 t) {
             translation += t;
+            MarkLocalDirty();
         }
-        
-        void Rotate(glm::vec3 r,glm::vec3 rotateCenter = glm::vec3(0.f)) {
+
+        void Rotate(glm::vec3 r, glm::vec3 rotateCenter = glm::vec3(0.f)) {
             rotation += r;
+            MarkLocalDirty();
         }
 
-        void AddChild(TransformComponent *child) {
-            if (child == nullptr || child == this) {
+        void SetParentEntityId(id_t id) {
+            if (parentEntityId == id) {
                 return;
             }
-            if (child->parentNode == this) {
-                return;
-            }
-            child->DetachFromParent();
-            childrenNodes.push_back(child);
-            child->parentNode = this;
+            parentEntityId = id;
+            MarkHierarchyDirty();
         }
 
-        void RemoveChild(TransformComponent *child) {
-            if (child == nullptr) {
-                return;
-            }
-
-            childrenNodes.erase(
-                    std::remove(childrenNodes.begin(), childrenNodes.end(), child),
-                    childrenNodes.end());
-            if (child->parentNode == this) {
-                child->parentNode = nullptr;
-            }
+        id_t GetParentEntityId() const {
+            return parentEntityId;
         }
 
-        void DetachFromParent() {
-            if (parentNode == nullptr) {
-                return;
-            }
-
-            parentNode->childrenNodes.erase(
-                    std::remove(parentNode->childrenNodes.begin(), parentNode->childrenNodes.end(), this),
-                    parentNode->childrenNodes.end());
-            parentNode = nullptr;
+        bool HasParent() const {
+            return parentEntityId != InvalidEntityId;
         }
 
-        glm::mat3 normalMatrix() {
-            glm::mat3 invScaleMatrix = glm::mat4{1.f};
-            const glm::vec3 invScale = 1.0f / scale;
-            invScaleMatrix[0][0] = invScale.x;
-            invScaleMatrix[1][1] = invScale.y;
-            invScaleMatrix[2][2] = invScale.z;
+        void ClearParentEntityId() {
+            SetParentEntityId(InvalidEntityId);
+        }
 
-            auto rotationMatrix = GetRotationMatrix();
-
-            return rotationMatrix * invScaleMatrix;
+        glm::mat3 normalMatrix() const {
+            return worldNormalMatrix;
         }
 
         glm::mat4 mat4() const {
-
-            auto transform = glm::translate(glm::mat4{1.f}, GetTranslation());
-
-            auto worldRotation = GetRotation();
-            transform = glm::rotate(transform, worldRotation.y, {0, 1, 0});
-            transform = glm::rotate(transform, worldRotation.x, {1, 0, 0});
-            transform = glm::rotate(transform, worldRotation.z, {0, 0, 1});
-
-            transform = glm::scale(transform, GetScale());
-            return transform;
-        }
-
-        void SetTransformId(int32_t id) {
-            transformId = id;
-        }
-
-        int32_t GetTransformId() const {
-            return transformId;
+            return worldMatrix;
         }
 
         void SetTranslation(glm::vec3 t) {
             translation = t;
+            MarkLocalDirty();
         }
 
         glm::vec3 GetTranslation() const {
-            if (parentNode != nullptr && transformId != -1)
-                return translation + parentNode->GetTranslation();
-            return translation;
+            return worldTranslation;
         }
-        
+
         glm::vec3 GetRelativeTranslation() const {
             return translation;
         }
 
         void SetScale(glm::vec3 s) {
             scale = s;
+            MarkLocalDirty();
         }
 
         glm::vec3 GetScale() const {
-            if (parentNode != nullptr && transformId != -1)
-                return scale * parentNode->GetScale();
-            return scale;
+            return worldScale;
         }
-        
+
         glm::vec3 GetRelativeScale() const {
             return scale;
         }
 
         void SetRotation(glm::vec3 r) {
             rotation = r;
+            MarkLocalDirty();
         }
 
         glm::vec3 GetRotation() const {
-            if (parentNode != nullptr && transformId != -1)
-                return rotation + parentNode->GetRotation();
-            return rotation;
+            return worldRotation;
         }
-        
+
         glm::vec3 GetRelativeRotation() const {
             return rotation;
         }
-        
+
         glm::mat3 GetRotationMatrix() const {
             auto rotationMatrix = glm::mat4(1.0f);
-            rotationMatrix = glm::rotate(rotationMatrix, rotation.y, {0, 1, 0});
-            rotationMatrix = glm::rotate(rotationMatrix, rotation.x, {1, 0, 0});
-            rotationMatrix = glm::rotate(rotationMatrix, rotation.z, {0, 0, 1});
+            rotationMatrix = glm::rotate(rotationMatrix, worldRotation.y, {0, 1, 0});
+            rotationMatrix = glm::rotate(rotationMatrix, worldRotation.x, {1, 0, 0});
+            rotationMatrix = glm::rotate(rotationMatrix, worldRotation.z, {0, 0, 1});
             return glm::mat3(rotationMatrix);
         }
-        
+
+        void SetWorldTransform(const glm::vec3 &newWorldTranslation,
+                               const glm::vec3 &newWorldScale,
+                               const glm::vec3 &newWorldRotation) {
+            worldTranslation = newWorldTranslation;
+            worldScale = newWorldScale;
+            worldRotation = newWorldRotation;
+            RebuildWorldMatrices();
+            localDirty = false;
+            hierarchyDirty = false;
+            worldDirty = false;
+        }
+
+        bool IsDirty() const {
+            return localDirty || hierarchyDirty || worldDirty;
+        }
+
+        bool HasValidWorldTransform() const {
+            return !worldDirty;
+        }
 
     private:
+        void MarkLocalDirty() {
+            localDirty = true;
+            worldDirty = true;
+        }
 
-        int32_t transformId = -1;
+        void MarkHierarchyDirty() {
+            hierarchyDirty = true;
+            worldDirty = true;
+        }
+
+        void RebuildWorldMatrices() {
+            auto transform = glm::translate(glm::mat4{1.f}, worldTranslation);
+            transform = glm::rotate(transform, worldRotation.y, {0, 1, 0});
+            transform = glm::rotate(transform, worldRotation.x, {1, 0, 0});
+            transform = glm::rotate(transform, worldRotation.z, {0, 0, 1});
+            transform = glm::scale(transform, worldScale);
+            worldMatrix = transform;
+
+            glm::mat3 invScaleMatrix = glm::mat4{1.f};
+            const glm::vec3 invScale = 1.0f / worldScale;
+            invScaleMatrix[0][0] = invScale.x;
+            invScaleMatrix[1][1] = invScale.y;
+            invScaleMatrix[2][2] = invScale.z;
+            worldNormalMatrix = GetRotationMatrix() * invScaleMatrix;
+        }
+
+        id_t parentEntityId = InvalidEntityId;
         glm::vec3 translation{};
         glm::vec3 scale{1.f, 1.f, 1.f};
         glm::vec3 rotation{};
-        TransformComponent *parentNode{nullptr};
-        std::vector<TransformComponent *> childrenNodes{};
+        glm::vec3 worldTranslation{};
+        glm::vec3 worldScale{1.f, 1.f, 1.f};
+        glm::vec3 worldRotation{};
+        glm::mat4 worldMatrix{1.f};
+        glm::mat3 worldNormalMatrix{1.f};
+        bool localDirty = true;
+        bool hierarchyDirty = true;
+        bool worldDirty = true;
     };
 }
 
 #endif
-
-
-

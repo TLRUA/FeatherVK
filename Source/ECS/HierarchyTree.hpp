@@ -1,183 +1,161 @@
 #pragma once
 
 #include <algorithm>
+#include <limits>
+#include <optional>
+#include <unordered_map>
 #include <vector>
+
+#include "../Utils/Utils.hpp"
 
 namespace FeatherVK {
     class HierarchyTree {
     public:
+        inline static constexpr id_t RootId = std::numeric_limits<id_t>::max();
+        inline static constexpr id_t ROOT_ID = RootId;
+
         struct Node {
-            int id;
-            int parentTransformId = -2;
-            std::vector<Node *> children;
+            id_t id = RootId;
+            id_t parentId = RootId;
+            std::vector<id_t> children{};
         };
 
-        static const int ROOT_ID = -1;
-        static const int DEFAULT_TRANSFORM_ID = -2;
-
-        HierarchyTree() { m_root = new Node{ROOT_ID}; }
-
-        ~HierarchyTree() { DeleteSubtree(m_root); }
-
-        Node *GetRoot() {
+        const Node &GetRoot() const {
             return m_root;
         }
 
-        const Node *GetRoot() const {
-            return m_root;
+        const std::vector<id_t> &GetRootChildren() const {
+            return m_root.children;
         }
 
-        bool AddNode(int parentId, int childId, int childTransformId = DEFAULT_TRANSFORM_ID) {
-            auto *parentNode = FindNode(parentId, m_root);
+        bool AddNode(std::optional<id_t> parentId, id_t childId) {
+            return ReparentNode(parentId, childId);
+        }
 
-            if (parentNode == nullptr) {
-                auto *node = new Node{childId, parentId};
-                m_fakeNodes.push_back(node);
-                m_root->children.push_back(node);
-            } else {
-                auto *node = new Node{childId};
-                parentNode->children.push_back(node);
-                for (auto fakeIt = m_fakeNodes.begin(); fakeIt != m_fakeNodes.end();) {
-                    Node *fakeNode = *fakeIt;
-                    if (childId == fakeNode->parentTransformId) {
-                        node->children.push_back(fakeNode);
-                        auto rootChildIt = std::find(m_root->children.begin(), m_root->children.end(), fakeNode);
-                        if (rootChildIt != m_root->children.end()) {
-                            m_root->children.erase(rootChildIt);
-                        }
+        bool ReparentNode(std::optional<id_t> parentId, id_t childId) {
+            if (childId == RootId) {
+                return false;
+            }
 
-                        fakeIt = m_fakeNodes.erase(fakeIt);
-                    } else {
-                        ++fakeIt;
-                    }
-                }
+            const id_t normalizedParentId = NormalizeParent(parentId, childId);
+            DetachNode(childId);
+
+            if (normalizedParentId != RootId) {
+                auto &parentNode = m_nodes[normalizedParentId];
+                parentNode.id = normalizedParentId;
+            }
+
+            auto &childNode = m_nodes[childId];
+            childNode.id = childId;
+            childNode.parentId = normalizedParentId;
+
+            auto &siblings = normalizedParentId == RootId ? m_root.children : m_nodes[normalizedParentId].children;
+            if (std::find(siblings.begin(), siblings.end(), childId) == siblings.end()) {
+                siblings.push_back(childId);
             }
 
             return true;
         }
 
-        Node *FindNode(int id) {
-            return FindNode(id, m_root);
+        Node *FindNode(id_t id) {
+            const auto it = m_nodes.find(id);
+            return it == m_nodes.end() ? nullptr : &it->second;
         }
 
-        const Node *FindNode(int id) const {
-            return FindNode(id, m_root);
+        const Node *FindNode(id_t id) const {
+            const auto it = m_nodes.find(id);
+            return it == m_nodes.end() ? nullptr : &it->second;
         }
 
-        bool RemoveNode(int id) {
-            if (id == ROOT_ID || m_root == nullptr) {
+        const std::vector<id_t> &GetChildren(id_t parentId) const {
+            if (parentId == RootId) {
+                return m_root.children;
+            }
+
+            const auto it = m_nodes.find(parentId);
+            return it == m_nodes.end() ? m_emptyChildren : it->second.children;
+        }
+
+        bool RemoveNode(id_t id) {
+            auto nodeIt = m_nodes.find(id);
+            if (nodeIt == m_nodes.end()) {
                 return false;
             }
-            return RemoveNodeInternal(m_root, id);
+
+            const std::vector<id_t> children = nodeIt->second.children;
+            for (const id_t childId: children) {
+                RemoveNode(childId);
+            }
+
+            DetachNode(id);
+            m_nodes.erase(id);
+            return true;
         }
 
-        void CollectSubtreeIds(int id, std::vector<int> &outIds) const {
-            const Node *node = FindNode(id, m_root);
+        void CollectSubtreeIds(id_t id, std::vector<id_t> &outIds) const {
+            const Node *node = FindNode(id);
             if (node == nullptr) {
                 return;
             }
-            CollectSubtreeIds(node, outIds);
+            CollectSubtreeIds(*node, outIds);
         }
 
         void Reset() {
-            DeleteSubtree(m_root);
-            m_root = new Node{ROOT_ID};
-            m_fakeNodes.clear();
+            m_nodes.clear();
+            m_root = Node{};
         }
 
     private:
-        Node *m_root = nullptr;
-        std::vector<Node *> m_fakeNodes;
-
-        Node *FindNode(int id, Node *tmpNode) {
-            if (tmpNode->id == id) {
-                return tmpNode;
-            }
-            for (auto &child: tmpNode->children) {
-                auto *node = FindNode(id, child);
-                if (node != nullptr) {
-                    return node;
+        void CollectSubtreeIds(const Node &node, std::vector<id_t> &outIds) const {
+            for (const id_t childId: node.children) {
+                const auto childIt = m_nodes.find(childId);
+                if (childIt != m_nodes.end()) {
+                    CollectSubtreeIds(childIt->second, outIds);
                 }
             }
-            return nullptr;
+            outIds.push_back(node.id);
         }
 
-        const Node *FindNode(int id, const Node *tmpNode) const {
-            if (tmpNode == nullptr) {
-                return nullptr;
+        id_t NormalizeParent(std::optional<id_t> parentId, id_t childId) const {
+            if (!parentId.has_value() || *parentId == RootId || *parentId == childId) {
+                return RootId;
             }
-            if (tmpNode->id == id) {
-                return tmpNode;
+
+            if (WouldCreateCycle(*parentId, childId)) {
+                return RootId;
             }
-            for (const auto *child: tmpNode->children) {
-                const Node *node = FindNode(id, child);
-                if (node != nullptr) {
-                    return node;
-                }
-            }
-            return nullptr;
+
+            return *parentId;
         }
 
-        static void CollectSubtreeIds(const Node *node, std::vector<int> &outIds) {
-            if (node == nullptr) {
-                return;
-            }
-            for (const Node *child: node->children) {
-                CollectSubtreeIds(child, outIds);
-            }
-            outIds.push_back(node->id);
-        }
-
-        bool RemoveNodeInternal(Node *parent, int id) {
-            if (parent == nullptr) {
-                return false;
-            }
-
-            for (auto it = parent->children.begin(); it != parent->children.end(); ++it) {
-                Node *child = *it;
-                if (child == nullptr) {
-                    continue;
-                }
-                if (child->id == id) {
-                    std::vector<Node *> subtreeNodes{};
-                    CollectSubtreeNodes(child, subtreeNodes);
-                    m_fakeNodes.erase(
-                            std::remove_if(
-                                    m_fakeNodes.begin(),
-                                    m_fakeNodes.end(),
-                                    [&subtreeNodes](Node *fakeNode) {
-                                        return std::find(subtreeNodes.begin(), subtreeNodes.end(), fakeNode) != subtreeNodes.end();
-                                    }),
-                            m_fakeNodes.end());
-                    DeleteSubtree(child);
-                    parent->children.erase(it);
+        bool WouldCreateCycle(id_t parentId, id_t childId) const {
+            id_t cursor = parentId;
+            while (cursor != RootId) {
+                if (cursor == childId) {
                     return true;
                 }
-                if (RemoveNodeInternal(child, id)) {
-                    return true;
+
+                const auto it = m_nodes.find(cursor);
+                if (it == m_nodes.end()) {
+                    return false;
                 }
+                cursor = it->second.parentId;
             }
             return false;
         }
 
-        static void DeleteSubtree(Node *node) {
-            if (node == nullptr) {
+        void DetachNode(id_t id) {
+            const auto nodeIt = m_nodes.find(id);
+            if (nodeIt == m_nodes.end()) {
                 return;
             }
-            for (Node *child: node->children) {
-                DeleteSubtree(child);
-            }
-            delete node;
+
+            auto &siblings = nodeIt->second.parentId == RootId ? m_root.children : m_nodes[nodeIt->second.parentId].children;
+            siblings.erase(std::remove(siblings.begin(), siblings.end(), id), siblings.end());
         }
 
-        static void CollectSubtreeNodes(Node *node, std::vector<Node *> &outNodes) {
-            if (node == nullptr) {
-                return;
-            }
-            outNodes.push_back(node);
-            for (Node *child: node->children) {
-                CollectSubtreeNodes(child, outNodes);
-            }
-        }
+        Node m_root{};
+        std::unordered_map<id_t, Node> m_nodes{};
+        std::vector<id_t> m_emptyChildren{};
     };
 }

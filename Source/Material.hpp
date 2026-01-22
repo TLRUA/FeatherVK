@@ -145,15 +145,15 @@ namespace FeatherVK {
         using Map = std::unordered_map<id_t, std::shared_ptr<Material>>;
 
         ~Material() {
-            auto device = Device::getDeviceSingleton()->device();
             for (auto &shaderModule: shaderModules) {
                 if (*(shaderModule->shaderModule) != VK_NULL_HANDLE && shaderModule->shaderModule != nullptr)
-                    vkDestroyShaderModule(device, *shaderModule->shaderModule, nullptr);
+                    vkDestroyShaderModule(m_vkDevice, *shaderModule->shaderModule, nullptr);
             }
 
         };
 
-        Material(id_t id,
+        Material(Device &device,
+                 id_t id,
                  std::vector<std::shared_ptr<ShaderModule>> &shaderModules,
                  std::vector<std::shared_ptr<DescriptorSetLayout>> &descriptorSetLayouts,
                  std::vector<std::shared_ptr<VkDescriptorSet>> &descriptorSets,
@@ -161,6 +161,7 @@ namespace FeatherVK {
                  std::vector<std::shared_ptr<Sampler>> &samplerPointers,
                  std::vector<std::shared_ptr<Buffer>> &bufferPointers,
                  std::string pipelineCategory) :
+                m_vkDevice(device.device()),
                 materialId(id),
                 shaderModules(std::move(shaderModules)),
                 descriptorSets(std::move(descriptorSets)),
@@ -199,6 +200,7 @@ namespace FeatherVK {
         }
 
     private:
+        VkDevice m_vkDevice{VK_NULL_HANDLE};
         id_t materialId;
         std::vector<std::shared_ptr<ShaderModule>> shaderModules;
         std::vector<std::shared_ptr<DescriptorSetLayout>> descriptorSetLayoutPointers;

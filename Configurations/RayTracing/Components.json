@@ -20,10 +20,6 @@
     "type": "CameraMovementComponent"
   },
   {
-    "id": 11,
-    "type": "RayTracingManagerComponent"
-  },
-  {
     "id": 12,
     "type": "MeshRendererComponent",
     "model": "cube.obj",

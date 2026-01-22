@@ -1,95 +1,93 @@
 [
   {
+    "id": 0,
     "name": "Sphere0",
     "transform": {
-      "id": 0,
-      "childrenIds": [1],
       "translation": [0,-1,0],
       "scale": [0.4,0.4,0.4],
       "rotation": [0,0,0]
     },
-    "componentIds":[1]
+    "componentIds": [1]
   },
   {
+    "id": 1,
+    "parentId": 0,
     "name": "Sphere1",
     "transform": {
-      "id": 1,
       "translation": [-1,-1,-1],
       "scale": [0.4,0.4,0.4],
       "rotation": [0,0,0]
     },
-    "componentIds":[12,16]
+    "componentIds": [12,16]
   },
   {
+    "id": 2,
     "name": "Sphere2",
     "transform": {
       "translation": [0.4,-1,-1],
       "scale": [0.3,0.3,0.3],
       "rotation": [0,0,0]
     },
-    "componentIds":[13,16]
+    "componentIds": [13,16]
   },
   {
+    "id": 3,
     "name": "Sphere3",
     "transform": {
       "translation": [1.6,-1,-1],
       "scale": [0.4,0.4,0.4],
       "rotation": [0,0,0]
     },
-    "componentIds":[14,16]
+    "componentIds": [14,16]
   },
   {
+    "id": 4,
     "name": "Vase",
     "transform": {
       "translation": [-2,-2,-2],
       "scale": [2,2,2],
       "rotation": [0,0,0]
     },
-    "componentIds":[16,15]
+    "componentIds": [16,15]
   },
   {
+    "id": 5,
     "name": "Ground",
     "transform": {
       "translation": [0,0,0],
       "scale": [4,1,4],
       "rotation": [0,0,0]
     },
-    "componentIds":[2]
+    "componentIds": [2]
   },
   {
+    "id": 6,
     "name": "MainCamera",
     "transform": {
-      "translation": [0, -1, -4],
+      "translation": [0,-1,-4],
       "scale": [0.1,1,1],
       "rotation": [0,0,0]
     },
-    "componentIds":[9,10]
+    "componentIds": [9,10]
   },
   {
-    "name": "RayTracingManager",
-    "transform": {
-      "translation": [0, 0, 0],
-      "scale": [1,1,1],
-      "rotation": [0,0,0]
-    },
-    "componentIds":[11]
-  },
-  {
+    "id": 7,
     "name": "DirectionalLight",
     "transform": {
-    "translation": [0, 0, 0],
-    "scale": [1,1,1],
-    "rotation": [-30,-30,0]
+      "translation": [0,0,0],
+      "scale": [1,1,1],
+      "rotation": [-30,-30,0]
     },
-    "componentIds":[50]
+    "componentIds": [50]
   },
   {
+    "id": 8,
     "name": "Point",
     "transform": {
-    "translation": [2, -0.7, 0.5],
-    "scale": [0.05,0.05,0.05],
-    "rotation": [-30,-30,0]
+      "translation": [2,-0.7,0.5],
+      "scale": [0.05,0.05,0.05],
+      "rotation": [-30,-30,0]
     },
-    "componentIds":[51,60]
+    "componentIds": [51,60]
   }
 ]

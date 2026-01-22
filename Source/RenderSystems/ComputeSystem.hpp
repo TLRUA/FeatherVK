@@ -44,8 +44,8 @@ namespace FeatherVK {
                     nullptr
             );
 
-            uint32_t groupCountX = (SCENE_WIDTH + 15) / 16;
-            uint32_t groupCountY = (SCENE_HEIGHT + 15) / 16;
+            uint32_t groupCountX = (frameInfo.sceneRenderExtent.width + 15) / 16;
+            uint32_t groupCountY = (frameInfo.sceneRenderExtent.height + 15) / 16;
             vkCmdDispatch(frameInfo.commandBuffer, groupCountX, groupCountY, 1);
 
             m_pushConstant.firstFrame = false;

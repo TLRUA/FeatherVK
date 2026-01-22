@@ -17,7 +17,7 @@ namespace FeatherVK {
         PostSystem(const RenderSystem &) = delete;
 
 
-        void render(FrameInfo &frameInfo) override {
+        void RenderWithImageIndex(FrameInfo &frameInfo, int imageIndex) {
             m_pipeline->bind(frameInfo.commandBuffer);
 
             std::vector<VkDescriptorSet> descriptorSets;
@@ -27,7 +27,7 @@ namespace FeatherVK {
                 }
             }
 
-            m_pushConstant.rayTracingImageIndex = frameInfo.frameIndex % 2;
+            m_pushConstant.rayTracingImageIndex = imageIndex;
             m_pushConstant.viewMatrix[m_pushConstant.rayTracingImageIndex] = frameInfo.globalUbo.viewMatrix;
             vkCmdPushConstants(frameInfo.commandBuffer, m_pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstant), &m_pushConstant);
 
@@ -44,6 +44,10 @@ namespace FeatherVK {
             vkCmdDraw(frameInfo.commandBuffer, 6, 1, 0, 0);
 
             m_pushConstant.firstFrame = false;
+        }
+
+        void render(FrameInfo &frameInfo) override {
+            RenderWithImageIndex(frameInfo, frameInfo.frameIndex % 2);
         }
 
     private:

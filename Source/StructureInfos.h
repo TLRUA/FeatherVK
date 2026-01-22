@@ -32,6 +32,19 @@ namespace FeatherVK {
         alignas(16) LightCategory lightCategory;
     };
 
+    struct ViewportRect {
+        float x{0.0f};
+        float y{0.0f};
+        float width{0.0f};
+        float height{0.0f};
+
+        [[nodiscard]] float Right() const { return x + width; }
+        [[nodiscard]] float Bottom() const { return y + height; }
+        [[nodiscard]] bool Contains(float px, float py) const {
+            return px >= x && px < Right() && py >= y && py < Bottom();
+        }
+    };
+
 #ifdef RAY_TRACING
     struct GlobalUbo {
         glm::mat4 viewMatrix{1.f};
@@ -78,6 +91,9 @@ namespace FeatherVK {
         Material::Map &materials;
         GlobalUbo &globalUbo;
         VkExtent2D extent;
+        VkExtent2D sceneRenderExtent;
+        ViewportRect scenePanelRect;
+        ViewportRect sceneViewportRect;
         id_t selectedEntityId;
         bool sceneUpdated;
 #ifdef RAY_TRACING

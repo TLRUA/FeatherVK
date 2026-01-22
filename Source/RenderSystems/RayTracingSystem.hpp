@@ -46,8 +46,8 @@ namespace FeatherVK {
                                           &m_pipeline->getMissRegion(),
                                           &m_pipeline->getHitRegion(),
                                           &m_pipeline->getCallableRegion(),
-                                          SCENE_HEIGHT,
-                                          SCENE_WIDTH,
+                                          frameInfo.sceneRenderExtent.width,
+                                          frameInfo.sceneRenderExtent.height,
                                           1
             );
         }

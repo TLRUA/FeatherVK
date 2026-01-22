@@ -105,7 +105,6 @@ namespace FeatherVK {
         pickPhysicalDevice();
         createLogicalDevice();
         createCommandPool();
-        deviceSingleton = this;
     }
 
     Device::~Device() {

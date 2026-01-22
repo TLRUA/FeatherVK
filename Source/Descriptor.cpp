@@ -1,5 +1,4 @@
 ﻿#include "Descriptor.h"
-#include "RayTracing/TLAS.hpp"
 // std
 #include <cassert>
 #include <stdexcept>

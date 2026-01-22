@@ -6,6 +6,7 @@
 #include "Device.hpp"
 #include "Image.h"
 #include "Buffer.h"
+#include "StructureInfos.h"
 
 namespace FeatherVK {
     class Renderer {
@@ -81,8 +82,22 @@ namespace FeatherVK {
         }
 
         float getAspectRatio() const {
-            const auto sceneExtent = myWindow.getCurrentSceneExtent();
+            const auto sceneExtent = getSceneRenderExtent();
             return static_cast<float>(sceneExtent.width) / static_cast<float>(sceneExtent.height);
+        }
+
+        bool UpdateSceneViewportLayout(const ViewportRect &scenePanelRect, const ViewportRect &sceneViewportRect);
+
+        [[nodiscard]] const ViewportRect &getScenePanelRect() const {
+            return m_scenePanelRect;
+        }
+
+        [[nodiscard]] const ViewportRect &getSceneViewportRect() const {
+            return m_sceneViewportRect;
+        }
+
+        [[nodiscard]] VkExtent2D getSceneRenderExtent() const {
+            return m_sceneRenderExtent;
         }
 
         const std::shared_ptr<Image> &getShadowImage() const;
@@ -169,6 +184,9 @@ namespace FeatherVK {
         VkFormat offscreenDepthFormat{VK_FORMAT_D32_SFLOAT};
         VkFormat pickingIdFormat{VK_FORMAT_R32_SINT};
         VkFormat pickingDepthFormat{VK_FORMAT_D32_SFLOAT};
+        ViewportRect m_scenePanelRect{};
+        ViewportRect m_sceneViewportRect{};
+        VkExtent2D m_sceneRenderExtent{static_cast<uint32_t>(SCENE_WIDTH), static_cast<uint32_t>(SCENE_HEIGHT)};
 
     };
 

@@ -25,6 +25,7 @@ namespace FeatherVK {
             MeshRendererComponent *meshRendererComponent = nullptr;
             if (!sceneRegistry.TryGetComponent(entityId, transformComponent) || transformComponent == nullptr ||
                 !sceneRegistry.TryGetComponent(entityId, meshRendererComponent) || meshRendererComponent == nullptr ||
+                !meshRendererComponent->IsVisible() ||
                 meshRendererComponent->GetModelPtr() == nullptr) {
                 return;
             }

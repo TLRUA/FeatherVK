@@ -28,14 +28,6 @@ namespace FeatherVK {
             return {static_cast<uint32_t>(m_windowWidth), static_cast<uint32_t>(m_windowHeight)};
         };
 
-
-        VkExtent2D getCurrentSceneExtent() {
-            const int sceneWidth = m_windowWidth - UI_LEFT_WIDTH - UI_LEFT_WIDTH_2;
-            return {
-                    static_cast<uint32_t>(sceneWidth > 0 ? sceneWidth : 1),
-                    static_cast<uint32_t>(m_windowHeight > 0 ? m_windowHeight : 1)};
-        };
-
         bool isWindowResized() {
             return isFrameBufferResized;
         }

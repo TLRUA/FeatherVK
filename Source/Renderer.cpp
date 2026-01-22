@@ -1,12 +1,49 @@
 ﻿#include <glm/fwd.hpp>
 #include <glm/ext/matrix_transform.hpp>
+#include <cmath>
 #include "Renderer.h"
 #include "Image.h"
 
 
 namespace FeatherVK {
+    namespace {
+        uint32_t ClampExtentDimension(float value) {
+            return static_cast<uint32_t>(std::max(1.0f, std::round(value)));
+        }
+
+        bool SameRect(const ViewportRect &lhs, const ViewportRect &rhs) {
+            return lhs.x == rhs.x &&
+                   lhs.y == rhs.y &&
+                   lhs.width == rhs.width &&
+                   lhs.height == rhs.height;
+        }
+
+        VkViewport ToViewport(const ViewportRect &rect) {
+            VkViewport viewport{};
+            viewport.x = rect.x;
+            viewport.y = rect.y;
+            viewport.width = rect.width;
+            viewport.height = rect.height;
+            viewport.minDepth = 0.0f;
+            viewport.maxDepth = 1.0f;
+            return viewport;
+        }
+
+        VkRect2D ToScissor(const ViewportRect &rect) {
+            VkRect2D scissor{};
+            scissor.offset = {static_cast<int32_t>(std::round(rect.x)), static_cast<int32_t>(std::round(rect.y))};
+            scissor.extent = {ClampExtentDimension(rect.width), ClampExtentDimension(rect.height)};
+            return scissor;
+        }
+    }
 
     Renderer::Renderer(MyWindow &window, Device &device1) : myWindow{window}, device{device1} {
+        m_scenePanelRect = {
+            static_cast<float>(UI_LEFT_WIDTH + UI_LEFT_WIDTH_2),
+            0.0f,
+            static_cast<float>(SCENE_WIDTH),
+            static_cast<float>(SCENE_HEIGHT)};
+        m_sceneViewportRect = m_scenePanelRect;
 
         recreateSwapChain();
         createCommandBuffers();
@@ -100,6 +137,33 @@ namespace FeatherVK {
         loadPickingResources();
     }
 
+    bool Renderer::UpdateSceneViewportLayout(const ViewportRect &scenePanelRect, const ViewportRect &sceneViewportRect) {
+        const VkExtent2D newSceneExtent{
+            ClampExtentDimension(sceneViewportRect.width),
+            ClampExtentDimension(sceneViewportRect.height)};
+        const bool sceneExtentChanged = newSceneExtent.width != m_sceneRenderExtent.width ||
+                                        newSceneExtent.height != m_sceneRenderExtent.height;
+        const bool scenePanelChanged = !SameRect(m_scenePanelRect, scenePanelRect);
+        const bool sceneViewportChanged = !SameRect(m_sceneViewportRect, sceneViewportRect);
+
+        if (!sceneExtentChanged && !scenePanelChanged && !sceneViewportChanged) {
+            return false;
+        }
+
+        m_scenePanelRect = scenePanelRect;
+        m_sceneViewportRect = sceneViewportRect;
+
+        if (!sceneExtentChanged) {
+            return false;
+        }
+
+        vkDeviceWaitIdle(device.device());
+        m_sceneRenderExtent = newSceneExtent;
+        loadOffscreenResources();
+        loadPickingResources();
+        return true;
+    }
+
     void Renderer::freeCommandBuffers() {
         if (commandBuffers.empty()) {
             return;
@@ -131,17 +195,8 @@ namespace FeatherVK {
 
         vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-        VkViewport viewport{};
-        viewport.x = UI_LEFT_WIDTH + UI_LEFT_WIDTH_2;
-        viewport.y = 0.0f;
-        viewport.width = static_cast<float>(myWindow.getCurrentSceneExtent().width);
-        viewport.height = static_cast<float>(myWindow.getCurrentSceneExtent().height);
-        viewport.minDepth = 0.0f;
-        viewport.maxDepth = 1.0f;
-
-        VkRect2D scissor{};
-        scissor.offset = {0, 0};
-        scissor.extent = swapChain->getSwapChainExtent();
+        const VkViewport viewport = ToViewport(m_sceneViewportRect);
+        const VkRect2D scissor = ToScissor(m_sceneViewportRect);
 
         vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
@@ -167,17 +222,8 @@ namespace FeatherVK {
 
         vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-        VkViewport viewport{};
-        viewport.x = UI_LEFT_WIDTH + UI_LEFT_WIDTH_2;
-        viewport.y = 0.0f;
-        viewport.width = static_cast<float>(myWindow.getCurrentSceneExtent().width);
-        viewport.height = static_cast<float>(myWindow.getCurrentSceneExtent().height);
-        viewport.minDepth = 0.0f;
-        viewport.maxDepth = 1.0f;
-
-        VkRect2D scissor{};
-        scissor.offset = {0, 0};
-        scissor.extent = swapChain->getSwapChainExtent();
+        const VkViewport viewport = ToViewport(m_sceneViewportRect);
+        const VkRect2D scissor = ToScissor(m_sceneViewportRect);
 
         vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
@@ -458,7 +504,7 @@ namespace FeatherVK {
     void Renderer::loadPickingResources() {
         freePickingResources();
 
-        const auto sceneExtent = myWindow.getCurrentSceneExtent();
+        const auto sceneExtent = m_sceneRenderExtent;
         if (sceneExtent.width == 0 || sceneExtent.height == 0) {
             return;
         }
@@ -683,8 +729,8 @@ namespace FeatherVK {
             imageCreateInfo.format = offscreenColorFormat;
             imageCreateInfo.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
             VkExtent3D imageExtent{};
-            imageExtent.height = SCENE_HEIGHT;
-            imageExtent.width = SCENE_WIDTH;
+            imageExtent.height = m_sceneRenderExtent.height;
+            imageExtent.width = m_sceneRenderExtent.width;
             imageExtent.depth = 1;
             imageCreateInfo.extent = imageExtent;
 

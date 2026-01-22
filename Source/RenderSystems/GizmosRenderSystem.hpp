@@ -2,6 +2,7 @@
 
 #include "RenderSystem.h"
 #include "../ECS/SceneRegistry.hpp"
+#include "../Managers/ModelRepository.hpp"
 
 namespace FeatherVK {
 
@@ -24,7 +25,10 @@ namespace FeatherVK {
 
         };
 
-        GizmosRenderSystem(Device &device,const VkRenderPass& renderPass, std::shared_ptr<Material> material)
+        GizmosRenderSystem(Device &device,
+                           const VkRenderPass& renderPass,
+                           std::shared_ptr<Material> material,
+                           ModelRepository &modelRepository)
                 : RenderSystem(device, renderPass, material) {
             ShaderBuilder shaderBuilder(device);
             m_pipelineLayout = VK_NULL_HANDLE;
@@ -33,12 +37,10 @@ namespace FeatherVK {
                 std::string axisModelName = "axis.obj";
                 std::string axisVertexShaderName = "axis.vert.spv";
                 std::string axisFragmentShaderName = "axis.frag.spv";
-                std::shared_ptr<Model> modelFromFile = Model::createModelFromFile(
-                        *Device::getDeviceSingleton(),
-                        Model::GetBaseModelsPath() + GIZMOS_MODEL_PATH + axisModelName);
-                Model::models.emplace(axisModelName, modelFromFile);
-                m_axisModel = modelFromFile;
-                m_axisTransform.SetScale(glm::vec3(0.4f));
+                m_axisModel = modelRepository.GetOrLoad(axisModelName, GIZMOS_MODEL_PATH + axisModelName);
+                constexpr float axisScale = 0.266666f;
+                m_axisTransform.SetScale(glm::vec3(axisScale));
+                m_axisTransform.SetWorldTransform(glm::vec3{0.0f}, glm::vec3{axisScale}, glm::vec3{0.0f});
                 m_axisMaterial = std::make_shared<Material>(*material);
                 const std::string vertexShaderPath = GIZMOS_SHADER_PATH + axisVertexShaderName;
                 const std::string fragmentShaderPath = GIZMOS_SHADER_PATH + axisFragmentShaderName;
@@ -189,10 +191,12 @@ namespace FeatherVK {
                                            0,
                                            sizeof(SimplePushConstantData),
                                            &push);
-                        const float axisSize = static_cast<float>(frameInfo.extent.width > GIZMOS_AXIS_RADIUS ? GIZMOS_AXIS_RADIUS : frameInfo.extent.width);
+                        const float axisSize = std::min(
+                            static_cast<float>(GIZMOS_AXIS_RADIUS),
+                            frameInfo.sceneViewportRect.width);
                         VkViewport viewport{};
-                        viewport.x = static_cast<float>(frameInfo.extent.width) - axisSize;
-                        viewport.y = 0.0f;
+                        viewport.x = frameInfo.sceneViewportRect.x + frameInfo.sceneViewportRect.width - axisSize;
+                        viewport.y = frameInfo.sceneViewportRect.y;
                         viewport.width = axisSize > 0.0f ? axisSize : 1.0f;
                         viewport.height = axisSize > 0.0f ? axisSize : 1.0f;
                         viewport.minDepth = 0.0f;
