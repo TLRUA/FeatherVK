@@ -4,12 +4,17 @@
 #define VALIDATION_ENABLED
 
 #include "MyWindow.hpp"
+#include "RHI/RHIDevice.hpp"
 #include <string>
 #include <vector>
 #include <map>
+#include <memory>
 #include <vulkan/vulkan.h>
 
 namespace FeatherVK {
+    namespace RHI {
+        class VulkanCommandContext;
+    }
 
     struct SwapChainSupportDetails {
         VkSurfaceCapabilitiesKHR capabilities;
@@ -26,7 +31,7 @@ namespace FeatherVK {
         bool isComplete() { return graphicsFamilyHasValue && presentFamilyHasValue; }
     };
 
-    class Device {
+    class Device : public RHI::RHIDevice {
     public:
 #ifdef VALIDATION_ENABLED
         const bool enableValidationLayers = true;
@@ -92,6 +97,12 @@ namespace FeatherVK {
         VkPipelineStageFlagBits pipelineStageForLayout(VkImageLayout layout);
 
         VkAccessFlags accessFlagsForImageLayout(VkImageLayout layout);
+
+        RHI::BackendType GetBackendType() const override { return RHI::BackendType::Vulkan; }
+
+        const char *GetDeviceName() const override { return properties.deviceName; }
+
+        RHI::RHICommandContext &GetImmediateContext() override;
         
         VkPhysicalDeviceExternalMemoryHostPropertiesEXT externalMemoryHostProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
         
@@ -171,6 +182,8 @@ namespace FeatherVK {
         SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device);
 
         void loadExtensionFunctions();
+
+        std::unique_ptr<RHI::VulkanCommandContext> m_immediateCommandContext;
 
 
     public:

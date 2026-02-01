@@ -14,6 +14,7 @@ namespace FeatherVK{
         if (vkCreateSampler(device.device(),&createInfo, nullptr,&sampler)!=VK_SUCCESS){
             throw std::runtime_error("failed to create sampler");
         }
+        m_rhiDesc.anisotropyEnabled = createInfo.anisotropyEnable == VK_TRUE;
     }
 
     void Sampler::setDefaultSamplerCreateInfo(VkSamplerCreateInfo &createInfo) const {

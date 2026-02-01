@@ -12,6 +12,7 @@
 #include "Sampler.h"
 #include "Image.h"
 #include "Buffer.h"
+#include "RHI/RHIResources.hpp"
 
 namespace FeatherVK {
 
@@ -175,6 +176,10 @@ namespace FeatherVK {
             return imagePointers;
         }
 
+        [[nodiscard]] std::vector<std::shared_ptr<RHI::RHITexture>> getRHITexturePointers() const {
+            return {imagePointers.begin(), imagePointers.end()};
+        }
+
         [[nodiscard]] std::vector<std::shared_ptr<ShaderModule>> &getShaderModulePointers() {
             return shaderModules;
         }
@@ -189,6 +194,14 @@ namespace FeatherVK {
 
         [[nodiscard]] const std::vector<std::shared_ptr<Buffer>> &getBufferPointers() const {
             return bufferPointers;
+        }
+
+        [[nodiscard]] std::vector<std::shared_ptr<RHI::RHISampler>> getRHISamplerPointers() const {
+            return {samplerPointers.begin(), samplerPointers.end()};
+        }
+
+        [[nodiscard]] std::vector<std::shared_ptr<RHI::RHIBuffer>> getRHIBufferPointers() const {
+            return {bufferPointers.begin(), bufferPointers.end()};
         }
 
         id_t getMaterialId() const {

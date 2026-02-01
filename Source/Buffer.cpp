@@ -30,6 +30,12 @@ namespace FeatherVK {
         alignmentSize = Device::getAlignment(instanceSize, minOffsetAlignment);
         bufferSize = alignmentSize * instanceCount;
         device.createBuffer(bufferSize, usageFlags, memoryPropertyFlags, buffer, memory);
+        m_rhiDesc.elementSize = static_cast<uint64_t>(instanceSize);
+        m_rhiDesc.elementCount = instanceCount;
+        m_rhiDesc.byteSize = static_cast<uint64_t>(bufferSize);
+        m_rhiDesc.hostVisible = (memoryPropertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
+        m_rhiDesc.deviceLocal = (memoryPropertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
+        m_rhiDesc.supportsDeviceAddress = (usageFlags & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0;
     }
 
     Buffer::~Buffer() {

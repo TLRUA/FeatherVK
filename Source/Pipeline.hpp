@@ -9,6 +9,7 @@
 #include "Device.hpp"
 #include "Model.hpp"
 #include "Material.hpp"
+#include "RHI/RHIResources.hpp"
 #include "Utils/Utils.hpp"
 
 namespace FeatherVK {
@@ -65,7 +66,7 @@ namespace FeatherVK {
     };
 
 
-    class Pipeline {
+    class Pipeline : public RHI::RHIPipelineState {
     public:
         const uint32_t GenShaderCount{1};
         const uint32_t MissShaderCount{2};
@@ -78,6 +79,10 @@ namespace FeatherVK {
 
         void operator=(const Pipeline &) = delete;
 
+        RHI::BackendType GetBackendType() const override { return RHI::BackendType::Vulkan; }
+
+        const RHI::PipelineDesc &GetDesc() const override { return m_rhiDesc; }
+
         static void setDefaultPipelineConfigureInfo(PipelineConfigureInfo &);
 
         static void enableAlphaBlending(PipelineConfigureInfo &);
@@ -87,9 +92,10 @@ namespace FeatherVK {
     private:
         Device &device;
 
-        VkPipeline m_pipeline;
+        VkPipeline m_pipeline = VK_NULL_HANDLE;
 
         std::shared_ptr<Material> m_material;
+        RHI::PipelineDesc m_rhiDesc{};
 
         void createGraphicsPipeline(const PipelineConfigureInfo &pipelineConfigureInfo);
 

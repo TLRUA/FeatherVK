@@ -2,10 +2,11 @@
 
 #include <memory>
 #include "Device.hpp"
+#include "RHI/RHIResources.hpp"
 
 namespace FeatherVK {
 
-    class Buffer {
+    class Buffer : public RHI::RHIBuffer {
     public:
         Buffer(
                 Device &device,
@@ -43,6 +44,8 @@ namespace FeatherVK {
 
         VkBuffer getBuffer() const { return buffer; }
 
+        RHI::BackendType GetBackendType() const override { return RHI::BackendType::Vulkan; }
+
         void *getMappedMemory() const { return mapped; }
 
         uint32_t getInstanceCount() const { return instanceCount; }
@@ -65,6 +68,8 @@ namespace FeatherVK {
         
         VkDeviceMemory getMemory() const { return memory; }
 
+        const RHI::BufferDesc &GetDesc() const override { return m_rhiDesc; }
+
     private:
 
         Device &Device;
@@ -78,6 +83,7 @@ namespace FeatherVK {
         VkDeviceSize alignmentSize;
         VkBufferUsageFlags usageFlags;
         VkMemoryPropertyFlags memoryPropertyFlags;
+        RHI::BufferDesc m_rhiDesc{};
     };
 
 }  // namespace 

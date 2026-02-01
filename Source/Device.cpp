@@ -6,6 +6,8 @@
 #include <unordered_set>
 #include <sstream>
 
+#include "RHI/Vulkan/VulkanCommandContext.hpp"
+
 namespace FeatherVK {
 
     namespace {
@@ -105,6 +107,7 @@ namespace FeatherVK {
         pickPhysicalDevice();
         createLogicalDevice();
         createCommandPool();
+        m_immediateCommandContext = std::make_unique<RHI::VulkanCommandContext>(*this);
     }
 
     Device::~Device() {
@@ -120,6 +123,10 @@ namespace FeatherVK {
 
         vkDestroySurfaceKHR(instance, surface_, nullptr);
         vkDestroyInstance(instance, nullptr);
+    }
+
+    RHI::RHICommandContext &Device::GetImmediateContext() {
+        return *m_immediateCommandContext;
     }
 
     void Device::createInstance() {

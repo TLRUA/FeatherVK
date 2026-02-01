@@ -4,14 +4,18 @@
 namespace FeatherVK {
     Pipeline::Pipeline(Device &device, const PipelineConfigureInfo &pipelineConfigureInfo, std::shared_ptr<Material> material)
             : device(device), m_material(material) {
+        m_rhiDesc.category = material->getPipelineCategory();
 #ifdef RAY_TRACING
         if (material->getPipelineCategory() == PipelineCategory.RayTracing) {
+            m_rhiDesc.type = RHI::PipelineType::RayTracing;
             createRayTracingPipeline(pipelineConfigureInfo);
         } else if (material->getPipelineCategory() == PipelineCategory.Compute) {
+            m_rhiDesc.type = RHI::PipelineType::Compute;
             createComputePipeline(pipelineConfigureInfo);
         } else
 #endif
         {
+            m_rhiDesc.type = RHI::PipelineType::Graphics;
             createGraphicsPipeline(pipelineConfigureInfo);
         }
     }

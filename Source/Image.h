@@ -8,6 +8,7 @@
 #include <string>
 #include <vulkan/vulkan.h>
 #include "Device.hpp"
+#include "RHI/RHIResources.hpp"
 #include "Sampler.h"
 
 namespace FeatherVK {
@@ -18,11 +19,11 @@ namespace FeatherVK {
     
     const int IMAGE_DEFAULT_EXTENT = 1024;
     
-    class Image {
+    class Image : public RHI::RHITexture {
     public:
-        VkImage image;
-        VkImageView imageView;
-        VkSampler sampler;
+        VkImage image = VK_NULL_HANDLE;
+        VkImageView imageView = VK_NULL_HANDLE;
+        VkSampler sampler = VK_NULL_HANDLE;
         
         explicit Image(Device &device, std::string imageCategory = ImageType.Default);
 
@@ -43,6 +44,10 @@ namespace FeatherVK {
 
         VkImage getImage() const { return this->image; };
 
+        RHI::BackendType GetBackendType() const override { return RHI::BackendType::Vulkan; }
+
+        const RHI::TextureDesc &GetDesc() const override { return m_rhiDesc; }
+
         static void setDefaultImageCreateInfo(VkImageCreateInfo &defaultCreateInfo);
 
         void setDefaultImageViewCreateInfo(VkImageViewCreateInfo &createInfo);
@@ -58,10 +63,13 @@ namespace FeatherVK {
         int texWidth, texHeight, texChannels;
         
         std::string imageType;
+        RHI::TextureDesc m_rhiDesc{};
         
         void createDefaultImage(const std::string& path, VkImageCreateInfo createInfo);
 
         void createCubeMapImage(const std::string &path, VkImageCreateInfo createInfo);
+
+        void UpdateRhiDesc(const VkImageCreateInfo &createInfo, bool srgb = false);
     };
 
 

@@ -30,6 +30,7 @@
 #include "../Managers/EditorSelectionService.hpp"
 #include "../Managers/HierarchyService.hpp"
 #include "../Managers/ModelRepository.hpp"
+#include "../RHI/RHIDevice.hpp"
 #include "../Managers/SceneComponentLoader.hpp"
 #include "../Managers/TransformService.hpp"
 #include "../Components/UIComponent.hpp"
@@ -103,6 +104,9 @@ namespace FeatherVK {
 
 
         Device &GetDevice() { return m_device; }
+
+        RHI::RHIDevice &GetRHI() { return m_device; }
+        const RHI::RHIDevice &GetRHI() const { return m_device; }
 
         MyWindow &GetWindow() { return m_window; }
 

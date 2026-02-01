@@ -5,6 +5,16 @@
 #include "Buffer.h"
 
 namespace FeatherVK {
+    void Image::UpdateRhiDesc(const VkImageCreateInfo &createInfo, bool srgb) {
+        m_rhiDesc.dimension = createInfo.imageType == VK_IMAGE_TYPE_2D ? RHI::TextureDimension::Texture2D : RHI::TextureDimension::Texture2D;
+        m_rhiDesc.extent = {createInfo.extent.width, createInfo.extent.height};
+        m_rhiDesc.arrayLayers = createInfo.arrayLayers;
+        m_rhiDesc.sampled = (createInfo.usage & VK_IMAGE_USAGE_SAMPLED_BIT) != 0;
+        m_rhiDesc.storage = (createInfo.usage & VK_IMAGE_USAGE_STORAGE_BIT) != 0;
+        m_rhiDesc.renderTarget = (createInfo.usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)) != 0;
+        m_rhiDesc.srgb = srgb;
+    }
+
     void Image::createDefaultImage(const std::string &path, VkImageCreateInfo createInfo) {
         stbi_uc *pixels = stbi_load(path.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
         VkDeviceSize imageSize = texWidth * texHeight * 4;
@@ -25,6 +35,7 @@ namespace FeatherVK {
 
         createInfo.extent.width = texWidth;
         createInfo.extent.height = texHeight;
+        UpdateRhiDesc(createInfo, createInfo.format == VK_FORMAT_R8G8B8A8_SRGB);
 
         device.createImageWithInfo(createInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, imageMemory);
 
@@ -74,6 +85,8 @@ namespace FeatherVK {
         createInfo.arrayLayers = 6;
         createInfo.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
         createInfo.imageType = VK_IMAGE_TYPE_2D;
+        UpdateRhiDesc(createInfo, createInfo.format == VK_FORMAT_R8G8B8A8_SRGB);
+        m_rhiDesc.dimension = RHI::TextureDimension::Cube;
 
         device.createImageWithInfo(createInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, imageMemory);
 
@@ -93,7 +106,9 @@ namespace FeatherVK {
 
     }
 
-    Image::Image(Device &device, std::string imageCategory) : device{device}, imageType(imageCategory) {}
+    Image::Image(Device &device, std::string imageCategory) : device{device}, imageType(std::move(imageCategory)) {
+        m_rhiDesc.dimension = imageType == ImageType.CubeMap ? RHI::TextureDimension::Cube : RHI::TextureDimension::Texture2D;
+    }
 
     Image::~Image() {
         vkDestroyImage(device.device(), image, nullptr);
@@ -183,6 +198,10 @@ namespace FeatherVK {
 
 
     void Image::createImage(VkImageCreateInfo createInfo) {
+        UpdateRhiDesc(createInfo, createInfo.format == VK_FORMAT_R8G8B8A8_SRGB);
+        if ((createInfo.flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) != 0) {
+            m_rhiDesc.dimension = RHI::TextureDimension::Cube;
+        }
         device.createImageWithInfo(createInfo, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, imageMemory);
     }
 
