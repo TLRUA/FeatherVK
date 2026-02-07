@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "RHI/RHICommands.hpp"
 #include "Utils/Utils.hpp"
 #include "Material.hpp"
 
@@ -87,6 +88,7 @@ namespace FeatherVK {
         float frameTime;
         float totalTime;
         VkCommandBuffer commandBuffer;
+        RHI::RHICommandList *commandList;
         ECS::SceneRegistry *sceneRegistry;
         Material::Map &materials;
         GlobalUbo &globalUbo;

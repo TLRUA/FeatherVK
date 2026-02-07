@@ -27,28 +27,12 @@ namespace FeatherVK {
         ShadowSystem &operator=(const ShadowSystem &) = delete;
 
         void renderShadow(FrameInfo &frameInfo) {
-            if (frameInfo.sceneRegistry == nullptr) {
+            if (frameInfo.sceneRegistry == nullptr || frameInfo.commandList == nullptr) {
                 return;
             }
 
-            pipeline->bind(frameInfo.commandBuffer);
-
-            std::vector<VkDescriptorSet> descriptorSets;
-            for (auto &descriptorSetPointer: material->getDescriptorSetPointers()) {
-                if (*descriptorSetPointer != nullptr) {
-                    descriptorSets.push_back(*descriptorSetPointer);
-                }
-            }
-            vkCmdBindDescriptorSets(
-                    frameInfo.commandBuffer,
-                    VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    pipelineLayout,
-                    0,
-                    material->getDescriptorSetLayoutPointers().size(),
-                    descriptorSets.data(),
-                    0,
-                    nullptr
-            );
+            frameInfo.commandList->BindPipeline(*pipeline);
+            frameInfo.commandList->BindResources(*pipeline, 0, material->getRHIBindSetPointers());
 
             auto &sceneRegistry = *frameInfo.sceneRegistry;
             for (const id_t entityId: sceneRegistry.View<MeshRendererComponent, TransformComponent>()) {
@@ -73,14 +57,9 @@ namespace FeatherVK {
 
                 ShadowPushConstant push{};
                 push.modelMatrix = transformComponent->mat4();
-                vkCmdPushConstants(frameInfo.commandBuffer, pipelineLayout,
-                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                                   0,
-                                   sizeof(ShadowPushConstant),
-                                   &push);
-                //too much draw call here, but currently I have no better ideas about how to batch all models together
-                meshRendererComponent->GetModelPtr()->bind(frameInfo.commandBuffer);
-                meshRendererComponent->GetModelPtr()->draw(frameInfo.commandBuffer);
+                frameInfo.commandList->PushConstants(*pipeline, RHI::ShaderStage::Vertex | RHI::ShaderStage::Fragment,
+                                                     0, sizeof(ShadowPushConstant), &push);
+                SubmitRenderMeshDraw(*frameInfo.commandList, meshRendererComponent->GetModelPtr()->GetRenderMesh());
             }
         }
 
@@ -121,11 +100,8 @@ namespace FeatherVK {
 
             VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
             pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-            pipelineLayoutCreateInfo.setLayoutCount = static_cast<uint32_t>(material->getDescriptorSetLayoutPointers().size());
-            std::vector<VkDescriptorSetLayout> descriptorSetLayouts;
-            for (auto &descriptorSetLayoutPointer: material->getDescriptorSetLayoutPointers()) {
-                descriptorSetLayouts.push_back(descriptorSetLayoutPointer->getDescriptorSetLayout());
-            }
+            const auto descriptorSetLayouts = CollectVkDescriptorSetLayouts(material->getRHIBindLayoutPointers());
+            pipelineLayoutCreateInfo.setLayoutCount = static_cast<uint32_t>(descriptorSetLayouts.size());
             pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayouts.data();
             pipelineLayoutCreateInfo.pushConstantRangeCount = 1;
             pipelineLayoutCreateInfo.pPushConstantRanges = &pushConstantRange;

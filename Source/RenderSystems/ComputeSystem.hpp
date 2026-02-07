@@ -20,33 +20,20 @@ namespace FeatherVK {
 
 
         void render(FrameInfo &frameInfo) override {
-            m_pipeline->bind(frameInfo.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE);
-
-            std::vector<VkDescriptorSet> descriptorSets;
-            for (auto &descriptorSetPointer: m_material->getDescriptorSetPointers()) {
-                if (descriptorSetPointer != nullptr) {
-                    descriptorSets.push_back(*descriptorSetPointer);
-                }
+            if (frameInfo.commandList == nullptr) {
+                return;
             }
+            frameInfo.commandList->BindPipeline(*m_pipeline);
 
             m_pushConstant.rayTracingImageIndex = frameInfo.frameIndex % 2;
             m_pushConstant.viewMatrix[m_pushConstant.rayTracingImageIndex] = frameInfo.globalUbo.viewMatrix;
             m_pushConstant.sceneUpdated = frameInfo.sceneUpdated;
-            vkCmdPushConstants(frameInfo.commandBuffer, m_pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PushConstant), &m_pushConstant);
-            vkCmdBindDescriptorSets(
-                    frameInfo.commandBuffer,
-                    VK_PIPELINE_BIND_POINT_COMPUTE,
-                    m_pipelineLayout,
-                    0,
-                    m_material->getDescriptorSetLayoutPointers().size(),
-                    descriptorSets.data(),
-                    0,
-                    nullptr
-            );
+            frameInfo.commandList->PushConstants(*m_pipeline, RHI::ShaderStage::Compute, 0, sizeof(PushConstant), &m_pushConstant);
+            BindMaterialResources(frameInfo);
 
             uint32_t groupCountX = (frameInfo.sceneRenderExtent.width + 15) / 16;
             uint32_t groupCountY = (frameInfo.sceneRenderExtent.height + 15) / 16;
-            vkCmdDispatch(frameInfo.commandBuffer, groupCountX, groupCountY, 1);
+            frameInfo.commandList->Dispatch(groupCountX, groupCountY, 1);
 
             m_pushConstant.firstFrame = false;
         }
@@ -57,12 +44,8 @@ namespace FeatherVK {
         void createPipelineLayout() override {
             VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
             pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-            pipelineLayoutCreateInfo.setLayoutCount = 1;
-
-            std::vector<VkDescriptorSetLayout> descriptorSetLayouts;
-            for (auto &descriptorSetLayoutPointer: m_material->getDescriptorSetLayoutPointers()) {
-                descriptorSetLayouts.push_back(descriptorSetLayoutPointer->getDescriptorSetLayout());
-            }
+            const auto descriptorSetLayouts = CollectVkDescriptorSetLayouts(m_material->getRHIBindLayoutPointers());
+            pipelineLayoutCreateInfo.setLayoutCount = static_cast<uint32_t>(descriptorSetLayouts.size());
             pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayouts.data();
 
             VkPushConstantRange pushConstantRange = {};

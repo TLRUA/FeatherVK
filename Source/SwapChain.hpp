@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "Device.hpp"
+#include "RHI/RHIPresentation.hpp"
 
 #include <vulkan/vulkan.h>
 
@@ -10,7 +11,7 @@
 
 namespace FeatherVK {
 
-    class SwapChain {
+    class SwapChain : public RHI::RHISwapchain {
     public:
         static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
         static constexpr bool ENABLE_SHADOW = true;
@@ -48,6 +49,16 @@ namespace FeatherVK {
         VkResult acquireNextImage(uint32_t *imageIndex);
 
         VkResult submitCommandBuffers(const VkCommandBuffer *buffers, uint32_t *imageIndex);
+
+        RHI::BackendType GetBackendType() const override { return RHI::BackendType::Vulkan; }
+
+        RHI::Extent2D GetExtent() const override { return {swapChainExtent.width, swapChainExtent.height}; }
+
+        uint32_t GetImageCount() const override { return static_cast<uint32_t>(swapChainImages.size()); }
+
+        RHI::SwapchainStatus AcquireNextImageRHI(uint32_t *imageIndex) override;
+
+        RHI::SwapchainStatus SubmitAndPresent(RHI::RHICommandList &commandList, uint32_t *imageIndex) override;
 
         bool compareSwapFormats(const SwapChain &swapChain) const {
             return swapChain.swapChainImageFormat == swapChainImageFormat &&

@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <glm/gtc/constants.hpp>
+#include "../Descriptor.h"
 #include "../Pipeline.hpp"
 #include "../Device.hpp"
 #include "../Model.hpp"
@@ -55,6 +56,8 @@ namespace FeatherVK {
         virtual void createPipeline(VkRenderPass renderPass);
 
         virtual void createPipelineLayout();
+
+        void BindMaterialResources(FrameInfo &frameInfo);
 
         //手动编译Shader，此时读取编译后的文件
         //路径是从可执行文件开始的，并非从根目录

@@ -8,18 +8,34 @@
 #include "Untils.h"
 #include <unordered_map>
 
-#define GLM_ENABLE_EXPERIMENTAL
-
-#include <glm/gtx/hash.hpp>
-
 namespace std {
     //模板特化
     template<>
     struct hash<FeatherVK::Model::Vertex> {
+        static size_t hashFloat(float value) {
+            return std::hash<float>{}(value);
+        }
+
+        static size_t hashVec2(const glm::vec2 &value) {
+            size_t seed = 0;
+            FeatherVK::hashCombine(seed, hashFloat(value.x), hashFloat(value.y));
+            return seed;
+        }
+
+        static size_t hashVec3(const glm::vec3 &value) {
+            size_t seed = 0;
+            FeatherVK::hashCombine(seed, hashFloat(value.x), hashFloat(value.y), hashFloat(value.z));
+            return seed;
+        }
+
         //重载哈希函数对象的调用运算符
         size_t operator()(FeatherVK::Model::Vertex const &vertex) const {
             size_t seed = 0;
-            FeatherVK::hashCombine(seed, vertex.position, vertex.color, vertex.normal, vertex.uv);
+            FeatherVK::hashCombine(seed,
+                                   hashVec3(vertex.position),
+                                   hashVec3(vertex.color),
+                                   hashVec3(vertex.normal),
+                                   hashVec2(vertex.uv));
             return seed;
         }
     };
@@ -37,27 +53,12 @@ namespace FeatherVK {
         m_maxRadius = builder.maxRadius;
     }
 
-    void Model::draw(VkCommandBuffer commandBuffer) {
-        if (hasIndexBuffer) {
-            vkCmdDrawIndexed(commandBuffer, indexCount, 1, 0, 0, 0);
-        } else {
-            vkCmdDraw(commandBuffer, vertexCount, 1, 0, 0);
-        }
-    }
-
-    void Model::bind(VkCommandBuffer commandBuffer) {
-        VkBuffer buffers[] = {vertexBuffer->getBuffer()};
-        VkDeviceSize offsets[] = {0};
-        vkCmdBindVertexBuffers(commandBuffer, 0, 1, buffers, offsets);
-
-        if (hasIndexBuffer) {
-            vkCmdBindIndexBuffer(commandBuffer, indexBuffer->getBuffer(), 0, VK_INDEX_TYPE_UINT32);
-        }
-    }
-
     void Model::createIndexBuffers(const std::vector<uint32_t> &indices) {
         indexCount = static_cast<uint32_t>(indices.size());
         hasIndexBuffer = !indices.empty();
+        m_renderMesh.indexed = hasIndexBuffer;
+        m_renderMesh.indexCount = indexCount;
+        m_renderMesh.indexBuffer = nullptr;
         if (!hasIndexBuffer)return;
 
         VkDeviceSize bufferSize = sizeof(indices[0]) * indexCount;
@@ -81,6 +82,7 @@ namespace FeatherVK {
 #endif
 
         device.copyBuffer(stagingBuffer.getBuffer(), indexBuffer->getBuffer(), bufferSize);
+        m_renderMesh.indexBuffer = indexBuffer.get();
     }
 
     std::vector<VkVertexInputBindingDescription> Model::Vertex::getBindingDescriptions() {

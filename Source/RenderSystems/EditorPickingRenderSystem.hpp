@@ -41,15 +41,12 @@ namespace FeatherVK {
             push.idCarrier = transformComponent->normalMatrix();
             push.idCarrier[3][3] = static_cast<float>(entityId);
 
-            vkCmdPushConstants(frameInfo.commandBuffer,
-                               m_pipelineLayout,
-                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                               0,
-                               sizeof(PickingPushConstantData),
-                               &push);
+            frameInfo.commandList->PushConstants(*m_pipeline, RHI::ShaderStage::Vertex | RHI::ShaderStage::Fragment,
+                                                 0, sizeof(PickingPushConstantData), &push);
 
-            meshRendererComponent->GetModelPtr()->bind(frameInfo.commandBuffer);
-            meshRendererComponent->GetModelPtr()->draw(frameInfo.commandBuffer);
+            if (frameInfo.commandList != nullptr) {
+                SubmitRenderMeshDraw(*frameInfo.commandList, meshRendererComponent->GetModelPtr()->GetRenderMesh());
+            }
         }
 
     protected:
@@ -62,12 +59,7 @@ namespace FeatherVK {
             VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo{};
             pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 
-            const auto descriptorSetLayouts = m_material->getDescriptorSetLayoutPointers();
-            std::vector<VkDescriptorSetLayout> layouts;
-            layouts.reserve(descriptorSetLayouts.size());
-            for (auto &descriptorSetLayoutPointer: descriptorSetLayouts) {
-                layouts.push_back(descriptorSetLayoutPointer->getDescriptorSetLayout());
-            }
+            const auto layouts = CollectVkDescriptorSetLayouts(m_material->getRHIBindLayoutPointers());
 
             pipelineLayoutCreateInfo.setLayoutCount = static_cast<uint32_t>(layouts.size());
             pipelineLayoutCreateInfo.pSetLayouts = layouts.data();
@@ -110,27 +102,11 @@ namespace FeatherVK {
         }
 
         void BindCommonDescriptors(FrameInfo &frameInfo) {
-            m_pipeline->bind(frameInfo.commandBuffer);
-
-            std::vector<VkDescriptorSet> descriptorSets;
-            for (auto &descriptorSetPointer: m_material->getDescriptorSetPointers()) {
-                if (descriptorSetPointer != nullptr) {
-                    descriptorSets.push_back(*descriptorSetPointer);
-                }
+            if (frameInfo.commandList == nullptr) {
+                return;
             }
-
-            if (!descriptorSets.empty()) {
-                vkCmdBindDescriptorSets(
-                        frameInfo.commandBuffer,
-                        VK_PIPELINE_BIND_POINT_GRAPHICS,
-                        m_pipelineLayout,
-                        0,
-                        static_cast<uint32_t>(descriptorSets.size()),
-                        descriptorSets.data(),
-                        0,
-                        nullptr
-                );
-            }
+            frameInfo.commandList->BindPipeline(*m_pipeline);
+            BindMaterialResources(frameInfo);
         }
     };
 }

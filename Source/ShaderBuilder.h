@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <memory>
 #include "Device.hpp"
+#include "RHI/RHIShader.hpp"
 #include "Utils/ProjectPaths.hpp"
 
 namespace FeatherVK {
@@ -15,11 +16,11 @@ namespace FeatherVK {
 
         ShaderBuilder(Device &device) : device(device) {};
 
-        std::shared_ptr<VkShaderModule> createShaderModule(const std::string &shaderName);
+        std::shared_ptr<RHI::RHIShaderModule> createShaderModule(const std::string &shaderName);
 
 #ifndef RAY_TRACING
 
-        std::shared_ptr<VkShaderModule> getShaderModulePointer(const std::string &shaderName);
+        std::shared_ptr<RHI::RHIShaderModule> getShaderModulePointer(const std::string &shaderName);
 
 #endif
 
@@ -28,7 +29,7 @@ namespace FeatherVK {
     private:
         static std::string GetBaseShaderPath() { return ProjectPaths::ShadersDir(); }
 
-        std::unordered_map<std::string, std::shared_ptr<VkShaderModule>> shaderModuleMap;
+        std::unordered_map<std::string, std::shared_ptr<RHI::RHIShaderModule>> shaderModuleMap;
 
         Device &device;
     };

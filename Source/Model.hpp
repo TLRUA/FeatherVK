@@ -2,6 +2,7 @@
 
 #include <glm/glm.hpp>
 #include "Buffer.h"
+#include "RenderMesh.hpp"
 #include "Utils/ProjectPaths.hpp"
 #include <memory>
 #include <iostream>
@@ -51,10 +52,6 @@ namespace FeatherVK {
 
         Model(Device &device, const Builder &builder);
 
-        void bind(VkCommandBuffer commandBuffer);
-
-        void draw(VkCommandBuffer commandBuffer);
-
         std::unique_ptr<Buffer> &getVertexBuffer() { return vertexBuffer; }
 
         std::unique_ptr<Buffer> &getIndexBuffer() { return indexBuffer; }
@@ -78,6 +75,8 @@ namespace FeatherVK {
         std::vector<uint32_t> &GetIndices() { return m_indices; }
 
         const std::vector<uint32_t> &GetIndices() const { return m_indices; }
+
+        const RenderMesh &GetRenderMesh() const { return m_renderMesh; }
         
         void RefreshVertexBuffer(const std::vector<Vertex> &vertices){
             vertexCount = static_cast<uint32_t>(vertices.size());
@@ -91,6 +90,8 @@ namespace FeatherVK {
             stagingBuffer.writeToBuffer((void *) vertices.data());
             
             device.copyBuffer(stagingBuffer.getBuffer(), vertexBuffer->getBuffer(), bufferSize);
+            m_renderMesh.vertexBuffer = vertexBuffer.get();
+            m_renderMesh.vertexCount = vertexCount;
         }
         
         void createVertexBuffers(const std::vector<Vertex> &vertices){
@@ -118,6 +119,8 @@ namespace FeatherVK {
             );
 #endif
             device.copyBuffer(stagingBuffer.getBuffer(), vertexBuffer->getBuffer(), bufferSize);
+            m_renderMesh.vertexBuffer = vertexBuffer.get();
+            m_renderMesh.vertexCount = vertexCount;
         }
 
         void createIndexBuffers(const std::vector<uint32_t> &indices);
@@ -151,6 +154,7 @@ namespace FeatherVK {
         std::vector<uint32_t> m_indices{};
         
         float m_maxRadius;
+        RenderMesh m_renderMesh{};
     };
 }
 

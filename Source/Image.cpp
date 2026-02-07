@@ -13,6 +13,11 @@ namespace FeatherVK {
         m_rhiDesc.storage = (createInfo.usage & VK_IMAGE_USAGE_STORAGE_BIT) != 0;
         m_rhiDesc.renderTarget = (createInfo.usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)) != 0;
         m_rhiDesc.srgb = srgb;
+        m_viewDesc.dimension = m_rhiDesc.dimension;
+        m_viewDesc.aspectMask = (createInfo.usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0
+                                    ? RHI::TextureAspect::Depth
+                                    : RHI::TextureAspect::Color;
+        m_viewDesc.layerCount = createInfo.arrayLayers;
     }
 
     void Image::createDefaultImage(const std::string &path, VkImageCreateInfo createInfo) {
@@ -139,6 +144,16 @@ namespace FeatherVK {
         if (vkCreateImageView(device.device(), &createInfo, nullptr, &imageView) != VK_SUCCESS) {
             throw std::runtime_error("failed to create image view");
         }
+        m_viewDesc.dimension = createInfo.viewType == VK_IMAGE_VIEW_TYPE_CUBE
+                                   ? RHI::TextureDimension::Cube
+                                   : RHI::TextureDimension::Texture2D;
+        m_viewDesc.aspectMask = (createInfo.subresourceRange.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) != 0
+                                    ? RHI::TextureAspect::Depth
+                                    : RHI::TextureAspect::Color;
+        m_viewDesc.baseMipLevel = createInfo.subresourceRange.baseMipLevel;
+        m_viewDesc.levelCount = createInfo.subresourceRange.levelCount;
+        m_viewDesc.baseArrayLayer = createInfo.subresourceRange.baseArrayLayer;
+        m_viewDesc.layerCount = createInfo.subresourceRange.layerCount;
     }
 
     void Image::setDefaultImageViewCreateInfo(VkImageViewCreateInfo &imageViewCreateInfo) {
@@ -151,6 +166,15 @@ namespace FeatherVK {
         imageViewCreateInfo.subresourceRange.levelCount = 1;
         imageViewCreateInfo.subresourceRange.baseArrayLayer = 0;
         imageViewCreateInfo.subresourceRange.baseMipLevel = 0;
+
+        m_viewDesc.dimension = imageViewCreateInfo.viewType == VK_IMAGE_VIEW_TYPE_CUBE
+                                   ? RHI::TextureDimension::Cube
+                                   : RHI::TextureDimension::Texture2D;
+        m_viewDesc.aspectMask = RHI::TextureAspect::Color;
+        m_viewDesc.baseMipLevel = imageViewCreateInfo.subresourceRange.baseMipLevel;
+        m_viewDesc.levelCount = imageViewCreateInfo.subresourceRange.levelCount;
+        m_viewDesc.baseArrayLayer = imageViewCreateInfo.subresourceRange.baseArrayLayer;
+        m_viewDesc.layerCount = imageViewCreateInfo.subresourceRange.layerCount;
 
     }
 

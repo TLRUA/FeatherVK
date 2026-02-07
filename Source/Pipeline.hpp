@@ -83,6 +83,8 @@ namespace FeatherVK {
 
         const RHI::PipelineDesc &GetDesc() const override { return m_rhiDesc; }
 
+        VkPipelineLayout getPipelineLayout() const { return m_pipelineLayout; }
+
         static void setDefaultPipelineConfigureInfo(PipelineConfigureInfo &);
 
         static void enableAlphaBlending(PipelineConfigureInfo &);
@@ -93,6 +95,7 @@ namespace FeatherVK {
         Device &device;
 
         VkPipeline m_pipeline = VK_NULL_HANDLE;
+        VkPipelineLayout m_pipelineLayout = VK_NULL_HANDLE;
 
         std::shared_ptr<Material> m_material;
         RHI::PipelineDesc m_rhiDesc{};

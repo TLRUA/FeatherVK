@@ -27,13 +27,8 @@ namespace FeatherVK {
 
             VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
             pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-            pipelineLayoutCreateInfo.setLayoutCount = static_cast<uint32_t>(m_material->getDescriptorSetLayoutPointers().size());
-
-            std::vector<VkDescriptorSetLayout> descriptorSetLayouts;
-            for (auto &descriptorSetLayoutPointer: m_material->getDescriptorSetLayoutPointers()) {
-                descriptorSetLayouts.push_back(descriptorSetLayoutPointer->getDescriptorSetLayout());
-            }
-
+            const auto descriptorSetLayouts = CollectVkDescriptorSetLayouts(m_material->getRHIBindLayoutPointers());
+            pipelineLayoutCreateInfo.setLayoutCount = static_cast<uint32_t>(descriptorSetLayouts.size());
             pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayouts.data();
             pipelineLayoutCreateInfo.pushConstantRangeCount = 1;
             pipelineLayoutCreateInfo.pPushConstantRanges = &pushConstantRange;
@@ -65,24 +60,11 @@ namespace FeatherVK {
         }
 
         void render(FrameInfo &frameInfo, id_t entityId, ECS::SceneRegistry &sceneRegistry) override {
-            m_pipeline->bind(frameInfo.commandBuffer);
-
-            std::vector<VkDescriptorSet> descriptorSets;
-            for (auto &descriptorSetPointer: m_material->getDescriptorSetPointers())
-                if (descriptorSetPointer != nullptr) {
-                    descriptorSets.push_back(*descriptorSetPointer);
-                }
-
-            vkCmdBindDescriptorSets(
-                    frameInfo.commandBuffer,
-                    VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    m_pipelineLayout,
-                    0,
-                    m_material->getDescriptorSetLayoutPointers().size(),
-                    descriptorSets.data(),
-                    0,
-                    nullptr
-            );
+            if (frameInfo.commandList == nullptr) {
+                return;
+            }
+            frameInfo.commandList->BindPipeline(*m_pipeline);
+            BindMaterialResources(frameInfo);
 
             TransformComponent *transformComponent = nullptr;
             MeshRendererComponent *meshRendererComponent = nullptr;
@@ -103,13 +85,9 @@ namespace FeatherVK {
                 }
             }
             push.modelMatrix = transformComponent->mat4();
-            vkCmdPushConstants(frameInfo.commandBuffer, m_pipelineLayout,
-                               VK_SHADER_STAGE_ALL_GRAPHICS,
-                               0,
-                               sizeof(GrassPushConstant),
-                               &push);
-            meshRendererComponent->GetModelPtr()->bind(frameInfo.commandBuffer);
-            meshRendererComponent->GetModelPtr()->draw(frameInfo.commandBuffer);
+            frameInfo.commandList->PushConstants(*m_pipeline, RHI::ShaderStage::AllGraphics,
+                                                 0, sizeof(GrassPushConstant), &push);
+            SubmitRenderMeshDraw(*frameInfo.commandList, meshRendererComponent->GetModelPtr()->GetRenderMesh());
         }
 
         static constexpr id_t InvalidEntityId = std::numeric_limits<id_t>::max();

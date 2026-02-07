@@ -3,6 +3,7 @@
 #include <cmath>
 #include "Renderer.h"
 #include "Image.h"
+#include "RHI/Vulkan/VulkanCommandList.hpp"
 
 
 namespace FeatherVK {
@@ -44,6 +45,7 @@ namespace FeatherVK {
             static_cast<float>(SCENE_WIDTH),
             static_cast<float>(SCENE_HEIGHT)};
         m_sceneViewportRect = m_scenePanelRect;
+        m_currentCommandList = std::make_unique<RHI::VulkanCommandList>(device);
 
         recreateSwapChain();
         createCommandBuffers();
@@ -89,6 +91,10 @@ namespace FeatherVK {
         if (vkBeginCommandBuffer(commandBuffer, &commandBufferBeginInfo) != VK_SUCCESS) {
             throw std::runtime_error("failed to begin command buffer");
         }
+        auto *vulkanCommandList = dynamic_cast<RHI::VulkanCommandList *>(m_currentCommandList.get());
+        if (vulkanCommandList != nullptr) {
+            vulkanCommandList->SetCommandBuffer(commandBuffer);
+        }
         return commandBuffer;
     }
 
@@ -110,6 +116,10 @@ namespace FeatherVK {
         }
         isFrameStarted = false;
         currentFrameIndex = (currentFrameIndex + 1) % SwapChain::MAX_FRAMES_IN_FLIGHT;
+        auto *vulkanCommandList = dynamic_cast<RHI::VulkanCommandList *>(m_currentCommandList.get());
+        if (vulkanCommandList != nullptr) {
+            vulkanCommandList->SetCommandBuffer(VK_NULL_HANDLE);
+        }
     }
 
     void Renderer::recreateSwapChain() {

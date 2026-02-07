@@ -1,4 +1,5 @@
-﻿#include "SwapChain.hpp"
+#include "SwapChain.hpp"
+#include "RHI/Vulkan/VulkanCommandList.hpp"
 
 // std
 #include <array>
@@ -117,6 +118,17 @@ namespace FeatherVK {
         return result;
     }
 
+    RHI::SwapchainStatus SwapChain::AcquireNextImageRHI(uint32_t *imageIndex) {
+        const auto result = acquireNextImage(imageIndex);
+        if (result == VK_SUCCESS) {
+            return RHI::SwapchainStatus::Success;
+        }
+        if (result == VK_SUBOPTIMAL_KHR) {
+            return RHI::SwapchainStatus::Suboptimal;
+        }
+        return RHI::SwapchainStatus::OutOfDate;
+    }
+
     VkResult SwapChain::submitCommandBuffers(
             const VkCommandBuffer *buffers, uint32_t *imageIndex) {
         if (imagesInFlight[*imageIndex] != VK_NULL_HANDLE) {
@@ -169,6 +181,23 @@ namespace FeatherVK {
         currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 
         return result;
+    }
+
+    RHI::SwapchainStatus SwapChain::SubmitAndPresent(RHI::RHICommandList &commandList, uint32_t *imageIndex) {
+        auto *vulkanCommandList = dynamic_cast<RHI::VulkanCommandList *>(&commandList);
+        if (vulkanCommandList == nullptr) {
+            throw std::runtime_error("RHI command list is not backed by the Vulkan backend");
+        }
+
+        const VkCommandBuffer commandBuffer = vulkanCommandList->GetVkCommandBuffer();
+        const auto result = submitCommandBuffers(&commandBuffer, imageIndex);
+        if (result == VK_SUCCESS) {
+            return RHI::SwapchainStatus::Success;
+        }
+        if (result == VK_SUBOPTIMAL_KHR) {
+            return RHI::SwapchainStatus::Suboptimal;
+        }
+        return RHI::SwapchainStatus::OutOfDate;
     }
 
     void SwapChain::createSwapChain() {
@@ -525,4 +554,6 @@ namespace FeatherVK {
 
 
 }  // namespace lve
+
+
 

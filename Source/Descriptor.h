@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "Device.hpp"
+#include "RHI/RHIBinding.hpp"
 
 // std
 #include <memory>
@@ -9,7 +10,7 @@
 
 namespace FeatherVK {
 
-    class DescriptorSetLayout {
+    class DescriptorSetLayout : public RHI::RHIBindLayout {
     public:
         class Builder {
         public:
@@ -37,10 +38,15 @@ namespace FeatherVK {
 
         VkDescriptorSetLayout getDescriptorSetLayout() const { return descriptorSetLayout; }
 
+        RHI::BackendType GetBackendType() const override { return RHI::BackendType::Vulkan; }
+
+        const std::vector<RHI::BindLayoutEntry> &GetEntries() const override { return m_rhiEntries; }
+
     private:
         Device &Device;
         VkDescriptorSetLayout descriptorSetLayout;
         std::vector<VkDescriptorSetLayoutBinding> bindings;
+        std::vector<RHI::BindLayoutEntry> m_rhiEntries{};
 
         friend class DescriptorWriter;
     };
@@ -94,6 +100,24 @@ namespace FeatherVK {
         friend class DescriptorWriter;
     };
 
+    class DescriptorSetHandle : public RHI::RHIBindSet {
+    public:
+        DescriptorSetHandle(std::shared_ptr<DescriptorSetLayout> layout, std::shared_ptr<VkDescriptorSet> descriptorSet)
+            : m_layout(std::move(layout)), m_descriptorSet(std::move(descriptorSet)) {}
+
+        RHI::BackendType GetBackendType() const override { return RHI::BackendType::Vulkan; }
+
+        const RHI::RHIBindLayout &GetLayout() const override { return *m_layout; }
+
+        VkDescriptorSet GetVkDescriptorSet() const { return m_descriptorSet == nullptr ? VK_NULL_HANDLE : *m_descriptorSet; }
+
+        const std::shared_ptr<VkDescriptorSet> &GetDescriptorSetPtr() const { return m_descriptorSet; }
+
+    private:
+        std::shared_ptr<DescriptorSetLayout> m_layout;
+        std::shared_ptr<VkDescriptorSet> m_descriptorSet;
+    };
+
     class DescriptorWriter {
     public:
         DescriptorWriter(std::shared_ptr<DescriptorSetLayout> setLayout, DescriptorPool &pool);
@@ -111,7 +135,11 @@ namespace FeatherVK {
 
         bool build(std::shared_ptr<VkDescriptorSet> &setPtr);
 
+        bool build(std::shared_ptr<DescriptorSetHandle> &setPtr);
+
         void overwrite(VkDescriptorSet &set);
+
+        void overwrite(DescriptorSetHandle &set);
 
     private:
         std::shared_ptr<DescriptorSetLayout> setLayout;
@@ -121,6 +149,10 @@ namespace FeatherVK {
         DescriptorPool &pool;
         std::vector<std::shared_ptr<VkWriteDescriptorSet>> writes;
     };
+
+    VkDescriptorSetLayout GetVkDescriptorSetLayout(const RHI::RHIBindLayout &layout);
+
+    std::vector<VkDescriptorSetLayout> CollectVkDescriptorSetLayouts(const std::vector<std::shared_ptr<RHI::RHIBindLayout>> &layouts);
 
 }  // namespace 
 

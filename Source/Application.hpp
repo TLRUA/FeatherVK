@@ -75,6 +75,7 @@ namespace FeatherVK {
                             frameTime,
                             totalTime,
                             commandBuffer,
+                            &renderer.getCurrentRHICommandList(),
                             &sceneRegistry,
                             materials,
                             m_ubo,

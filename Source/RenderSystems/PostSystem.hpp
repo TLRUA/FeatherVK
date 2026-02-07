@@ -18,30 +18,16 @@ namespace FeatherVK {
 
 
         void RenderWithImageIndex(FrameInfo &frameInfo, int imageIndex) {
-            m_pipeline->bind(frameInfo.commandBuffer);
-
-            std::vector<VkDescriptorSet> descriptorSets;
-            for (auto &descriptorSetPointer: m_material->getDescriptorSetPointers()) {
-                if (descriptorSetPointer != nullptr) {
-                    descriptorSets.push_back(*descriptorSetPointer);
-                }
+            if (frameInfo.commandList == nullptr) {
+                return;
             }
+            frameInfo.commandList->BindPipeline(*m_pipeline);
 
             m_pushConstant.rayTracingImageIndex = imageIndex;
             m_pushConstant.viewMatrix[m_pushConstant.rayTracingImageIndex] = frameInfo.globalUbo.viewMatrix;
-            vkCmdPushConstants(frameInfo.commandBuffer, m_pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstant), &m_pushConstant);
-
-            vkCmdBindDescriptorSets(
-                    frameInfo.commandBuffer,
-                    VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    m_pipelineLayout,
-                    0,
-                    m_material->getDescriptorSetLayoutPointers().size(),
-                    descriptorSets.data(),
-                    0,
-                    nullptr
-            );
-            vkCmdDraw(frameInfo.commandBuffer, 6, 1, 0, 0);
+            frameInfo.commandList->PushConstants(*m_pipeline, RHI::ShaderStage::Fragment, 0, sizeof(PushConstant), &m_pushConstant);
+            BindMaterialResources(frameInfo);
+            frameInfo.commandList->Draw(6, 1, 0, 0);
 
             m_pushConstant.firstFrame = false;
         }
@@ -56,12 +42,8 @@ namespace FeatherVK {
         void createPipelineLayout() override {
             VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
             pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-            pipelineLayoutCreateInfo.setLayoutCount = 1;
-
-            std::vector<VkDescriptorSetLayout> descriptorSetLayouts;
-            for (auto &descriptorSetLayoutPointer: m_material->getDescriptorSetLayoutPointers()) {
-                descriptorSetLayouts.push_back(descriptorSetLayoutPointer->getDescriptorSetLayout());
-            }
+            const auto descriptorSetLayouts = CollectVkDescriptorSetLayouts(m_material->getRHIBindLayoutPointers());
+            pipelineLayoutCreateInfo.setLayoutCount = static_cast<uint32_t>(descriptorSetLayouts.size());
             pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayouts.data();
 
             VkPushConstantRange pushConstantRange = {};

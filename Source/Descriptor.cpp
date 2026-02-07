@@ -4,6 +4,71 @@
 #include <stdexcept>
 
 namespace FeatherVK {
+    namespace {
+        const DescriptorSetLayout &RequireVulkanBindLayout(const RHI::RHIBindLayout &layout) {
+            auto *vulkanLayout = dynamic_cast<const DescriptorSetLayout *>(&layout);
+            if (vulkanLayout == nullptr) {
+                throw std::runtime_error("RHI bind layout is not backed by the Vulkan backend");
+            }
+            return *vulkanLayout;
+        }
+
+        RHI::BindResourceType ToRhiBindResourceType(const VkDescriptorType descriptorType) {
+            switch (descriptorType) {
+                case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+                    return RHI::BindResourceType::UniformBuffer;
+                case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+                    return RHI::BindResourceType::StorageBuffer;
+                case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+                    return RHI::BindResourceType::CombinedImageSampler;
+                case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+                    return RHI::BindResourceType::StorageImage;
+#ifdef RAY_TRACING
+                case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+                    return RHI::BindResourceType::AccelerationStructure;
+#endif
+                default:
+                    return RHI::BindResourceType::UniformBuffer;
+            }
+        }
+
+        RHI::ShaderStage ToRhiShaderStage(const VkShaderStageFlags stageFlags) {
+            RHI::ShaderStage mask = RHI::ShaderStage::None;
+            if ((stageFlags & VK_SHADER_STAGE_VERTEX_BIT) != 0) {
+                mask = mask | RHI::ShaderStage::Vertex;
+            }
+            if ((stageFlags & VK_SHADER_STAGE_FRAGMENT_BIT) != 0) {
+                mask = mask | RHI::ShaderStage::Fragment;
+            }
+            if ((stageFlags & VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT) != 0) {
+                mask = mask | RHI::ShaderStage::TessellationControl;
+            }
+            if ((stageFlags & VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT) != 0) {
+                mask = mask | RHI::ShaderStage::TessellationEvaluation;
+            }
+            if ((stageFlags & VK_SHADER_STAGE_GEOMETRY_BIT) != 0) {
+                mask = mask | RHI::ShaderStage::Geometry;
+            }
+            if ((stageFlags & VK_SHADER_STAGE_COMPUTE_BIT) != 0) {
+                mask = mask | RHI::ShaderStage::Compute;
+            }
+#ifdef RAY_TRACING
+            if ((stageFlags & VK_SHADER_STAGE_RAYGEN_BIT_KHR) != 0) {
+                mask = mask | RHI::ShaderStage::RayGen;
+            }
+            if ((stageFlags & VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR) != 0) {
+                mask = mask | RHI::ShaderStage::RayClosestHit;
+            }
+            if ((stageFlags & VK_SHADER_STAGE_MISS_BIT_KHR) != 0) {
+                mask = mask | RHI::ShaderStage::RayMiss;
+            }
+            if ((stageFlags & VK_SHADER_STAGE_ANY_HIT_BIT_KHR) != 0) {
+                mask = mask | RHI::ShaderStage::RayAnyHit;
+            }
+#endif
+            return mask;
+        }
+    }
 
     DescriptorSetLayout::Builder &DescriptorSetLayout::Builder::addBinding(
             uint32_t binding,
@@ -34,6 +99,14 @@ namespace FeatherVK {
     DescriptorSetLayout::DescriptorSetLayout(
             class Device &Device, const std::vector<VkDescriptorSetLayoutBinding> &bindings)
             : Device{Device}, bindings{bindings} {
+        m_rhiEntries.reserve(bindings.size());
+        for (const auto &binding: bindings) {
+            m_rhiEntries.push_back({
+                binding.binding,
+                ToRhiBindResourceType(binding.descriptorType),
+                ToRhiShaderStage(binding.stageFlags),
+                binding.descriptorCount});
+        }
 
         VkDescriptorSetLayoutCreateInfo descriptorSetLayoutInfo{};
         descriptorSetLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -214,6 +287,15 @@ namespace FeatherVK {
         return true;
     }
 
+    bool DescriptorWriter::build(std::shared_ptr<DescriptorSetHandle> &setPtr) {
+        auto rawSet = std::make_shared<VkDescriptorSet>();
+        if (!build(rawSet)) {
+            return false;
+        }
+        setPtr = std::make_shared<DescriptorSetHandle>(setLayout, rawSet);
+        return true;
+    }
+
     void DescriptorWriter::overwrite(VkDescriptorSet &set) {
         std::vector<VkWriteDescriptorSet> writeVector;
         for (auto &write: writes) {
@@ -221,6 +303,26 @@ namespace FeatherVK {
             writeVector.push_back(*write);
         }
         vkUpdateDescriptorSets(pool.Device.device(), writes.size(), writeVector.data(), 0, nullptr);
+    }
+
+    void DescriptorWriter::overwrite(DescriptorSetHandle &set) {
+        auto descriptorSet = set.GetVkDescriptorSet();
+        overwrite(descriptorSet);
+    }
+
+    VkDescriptorSetLayout GetVkDescriptorSetLayout(const RHI::RHIBindLayout &layout) {
+        return RequireVulkanBindLayout(layout).getDescriptorSetLayout();
+    }
+
+    std::vector<VkDescriptorSetLayout> CollectVkDescriptorSetLayouts(const std::vector<std::shared_ptr<RHI::RHIBindLayout>> &layouts) {
+        std::vector<VkDescriptorSetLayout> vkLayouts{};
+        vkLayouts.reserve(layouts.size());
+        for (const auto &layout: layouts) {
+            if (layout != nullptr) {
+                vkLayouts.push_back(GetVkDescriptorSetLayout(*layout));
+            }
+        }
+        return vkLayouts;
     }
 
 } 

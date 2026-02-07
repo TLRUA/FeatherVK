@@ -79,13 +79,8 @@ namespace FeatherVK {
         void createPipelineLayout(GizmosType gizmosType) {
             VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
             pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-            pipelineLayoutCreateInfo.setLayoutCount = static_cast<uint32_t>(m_material->getDescriptorSetLayoutPointers().size());
-
-            std::vector<VkDescriptorSetLayout> descriptorSetLayouts;
-            for (auto &descriptorSetLayoutPointer: m_material->getDescriptorSetLayoutPointers()) {
-                descriptorSetLayouts.push_back(descriptorSetLayoutPointer->getDescriptorSetLayout());
-            }
-
+            const auto descriptorSetLayouts = CollectVkDescriptorSetLayouts(m_material->getRHIBindLayoutPointers());
+            pipelineLayoutCreateInfo.setLayoutCount = static_cast<uint32_t>(descriptorSetLayouts.size());
             pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayouts.data();
             pipelineLayoutCreateInfo.pushConstantRangeCount = 1;
             VkPushConstantRange pushConstantRange{};
@@ -161,36 +156,20 @@ namespace FeatherVK {
         };
 
         void render(FrameInfo &frameInfo, GizmosType gizmosType) {
-
-            std::vector<VkDescriptorSet> descriptorSets;
-            for (auto &descriptorSetPointer: m_material->getDescriptorSetPointers()) {
-                if (descriptorSetPointer != nullptr) {
-                    descriptorSets.push_back(*descriptorSetPointer);
-                }
+            if (frameInfo.commandList == nullptr) {
+                return;
             }
             switch (gizmosType) {
                 case GizmosType::Axis: {
-                    vkCmdBindDescriptorSets(
-                            frameInfo.commandBuffer,
-                            VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            m_axisPipelineLayout,
-                            0,
-                            m_material->getDescriptorSetLayoutPointers().size(),
-                            descriptorSets.data(),
-                            0,
-                            nullptr
-                    );
+                    frameInfo.commandList->BindPipeline(*m_axisPipeline);
+                    frameInfo.commandList->BindResources(*m_axisPipeline, 0, m_axisMaterial->getRHIBindSetPointers());
                     if (m_axisModel != nullptr) {
-                        m_axisPipeline->bind(frameInfo.commandBuffer);
                         SimplePushConstantData push{};
                         push.modelMatrix = m_axisTransform.mat4();
                         push.normalMatrix = m_axisTransform.normalMatrix();
 
-                        vkCmdPushConstants(frameInfo.commandBuffer, m_axisPipelineLayout,
-                                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                                           0,
-                                           sizeof(SimplePushConstantData),
-                                           &push);
+                        frameInfo.commandList->PushConstants(*m_axisPipeline, RHI::ShaderStage::Vertex | RHI::ShaderStage::Fragment,
+                                                             0, sizeof(SimplePushConstantData), &push);
                         const float axisSize = std::min(
                             static_cast<float>(GIZMOS_AXIS_RADIUS),
                             frameInfo.sceneViewportRect.width);
@@ -201,68 +180,41 @@ namespace FeatherVK {
                         viewport.height = axisSize > 0.0f ? axisSize : 1.0f;
                         viewport.minDepth = 0.0f;
                         viewport.maxDepth = 1.0f;
-                        vkCmdSetViewport(frameInfo.commandBuffer, 0, 1, &viewport);
-                        m_axisModel->bind(frameInfo.commandBuffer);
-                        m_axisModel->draw(frameInfo.commandBuffer);
+                        frameInfo.commandList->SetViewport({viewport.x, viewport.y, viewport.width, viewport.height, viewport.minDepth, viewport.maxDepth});
+                        SubmitRenderMeshDraw(*frameInfo.commandList, m_axisModel->GetRenderMesh());
                     };
                     break;
                 }
 
                 case GizmosType::EdgeDetectionStencil: {
-                    vkCmdBindDescriptorSets(
-                            frameInfo.commandBuffer,
-                            VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            m_edgeDetectionPipelineLayout,
-                            0,
-                            m_edgeDetectionStencilMaterial->getDescriptorSetLayoutPointers().size(),
-                            descriptorSets.data(),
-                            0,
-                            nullptr
-                    );
+                    frameInfo.commandList->BindPipeline(*m_edgeDetectionStencilPipeline);
+                    frameInfo.commandList->BindResources(*m_edgeDetectionStencilPipeline, 0, m_edgeDetectionStencilMaterial->getRHIBindSetPointers());
                     TransformComponent *selectedTransform = nullptr;
                     MeshRendererComponent *meshRendererComponent = nullptr;
                     if (TryGetSelectedRenderData(frameInfo, selectedTransform, meshRendererComponent)) {
-                        m_edgeDetectionStencilPipeline->bind(frameInfo.commandBuffer);
                         SimplePushConstantData push{};
                         push.modelMatrix = selectedTransform->mat4();
                         push.normalMatrix = selectedTransform->normalMatrix();
 
-                        vkCmdPushConstants(frameInfo.commandBuffer, m_edgeDetectionPipelineLayout,
-                                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT,
-                                           0,
-                                           sizeof(SimplePushConstantData),
-                                           &push);
-                        meshRendererComponent->GetModelPtr()->bind(frameInfo.commandBuffer);
-                        meshRendererComponent->GetModelPtr()->draw(frameInfo.commandBuffer);
+                        frameInfo.commandList->PushConstants(*m_edgeDetectionStencilPipeline, RHI::ShaderStage::Vertex | RHI::ShaderStage::Geometry,
+                                                             0, sizeof(SimplePushConstantData), &push);
+                        SubmitRenderMeshDraw(*frameInfo.commandList, meshRendererComponent->GetModelPtr()->GetRenderMesh());
                     }
                     break;
                 }
 
                 case GizmosType::EdgeDetection: {
-                    vkCmdBindDescriptorSets(
-                            frameInfo.commandBuffer,
-                            VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            m_edgeDetectionPipelineLayout,
-                            0,
-                            m_edgeDetectionMaterial->getDescriptorSetLayoutPointers().size(),
-                            descriptorSets.data(),
-                            0,
-                            nullptr
-                    );
+                    frameInfo.commandList->BindPipeline(*m_edgeDetectionPipeline);
+                    frameInfo.commandList->BindResources(*m_edgeDetectionPipeline, 0, m_edgeDetectionMaterial->getRHIBindSetPointers());
                     TransformComponent *selectedTransform = nullptr;
                     MeshRendererComponent *meshRendererComponent = nullptr;
                     if (TryGetSelectedRenderData(frameInfo, selectedTransform, meshRendererComponent)) {
-                        m_edgeDetectionPipeline->bind(frameInfo.commandBuffer);
                         SimplePushConstantData push{};
                         push.modelMatrix = selectedTransform->mat4();
                         push.normalMatrix = selectedTransform->normalMatrix();
-                        vkCmdPushConstants(frameInfo.commandBuffer, m_edgeDetectionPipelineLayout,
-                                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT,
-                                           0,
-                                           sizeof(SimplePushConstantData),
-                                           &push);
-                        meshRendererComponent->GetModelPtr()->bind(frameInfo.commandBuffer);
-                        meshRendererComponent->GetModelPtr()->draw(frameInfo.commandBuffer);
+                        frameInfo.commandList->PushConstants(*m_edgeDetectionPipeline, RHI::ShaderStage::Vertex | RHI::ShaderStage::Geometry,
+                                                             0, sizeof(SimplePushConstantData), &push);
+                    SubmitRenderMeshDraw(*frameInfo.commandList, meshRendererComponent->GetModelPtr()->GetRenderMesh());
                     }
                     break;
                 }

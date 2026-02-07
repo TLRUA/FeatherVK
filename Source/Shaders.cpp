@@ -5,6 +5,7 @@
 #include <fstream>
 #include <iostream>
 #include "ShaderBuilder.h"
+#include "RHI/Vulkan/VulkanShaderModule.hpp"
 
 namespace FeatherVK {
     std::vector<char> ShaderBuilder::readFile(const std::string &filepath) {
@@ -25,7 +26,7 @@ namespace FeatherVK {
         return buffer;
     }
 
-    std::shared_ptr<VkShaderModule> ShaderBuilder::createShaderModule(const std::string& shaderName) {
+    std::shared_ptr<RHI::RHIShaderModule> ShaderBuilder::createShaderModule(const std::string& shaderName) {
         //judge whether there exists the same shader to create
         //This is disabled in RayTracing due to SBT. The geometries have strict rules to correspond with the shaders.
 #ifndef RAY_TRACING
@@ -40,18 +41,19 @@ namespace FeatherVK {
         createInfo.codeSize = code.size();
         createInfo.pCode = reinterpret_cast<const uint32_t *>(code.data());
 
-        auto shaderModule=std::make_shared<VkShaderModule>();
-        if (vkCreateShaderModule(device.device(), &createInfo, nullptr, shaderModule.get()) != VK_SUCCESS) {
+        VkShaderModule shaderModule = VK_NULL_HANDLE;
+        if (vkCreateShaderModule(device.device(), &createInfo, nullptr, &shaderModule) != VK_SUCCESS) {
             throw std::runtime_error("failed to create shader module");
         }
+        auto shaderModulePtr = std::make_shared<RHI::VulkanShaderModule>(device, shaderName, shaderModule);
 #ifndef RAY_TRACING
-        shaderModuleMap.emplace(shaderName, shaderModule);
+        shaderModuleMap.emplace(shaderName, shaderModulePtr);
 #endif
-        return shaderModule;
+        return shaderModulePtr;
     }
 
 #ifndef RAY_TRACING
-    std::shared_ptr<VkShaderModule> ShaderBuilder::getShaderModulePointer(const std::string& shaderName) {
+    std::shared_ptr<RHI::RHIShaderModule> ShaderBuilder::getShaderModulePointer(const std::string& shaderName) {
         auto count = shaderModuleMap.count(shaderName);
         if (count <= 0) {
             createShaderModule(shaderName);

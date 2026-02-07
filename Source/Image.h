@@ -9,6 +9,7 @@
 #include <vulkan/vulkan.h>
 #include "Device.hpp"
 #include "RHI/RHIResources.hpp"
+#include "RHI/RHITextureView.hpp"
 #include "Sampler.h"
 
 namespace FeatherVK {
@@ -19,7 +20,7 @@ namespace FeatherVK {
     
     const int IMAGE_DEFAULT_EXTENT = 1024;
     
-    class Image : public RHI::RHITexture {
+    class Image : public RHI::RHITexture, public RHI::RHITextureView {
     public:
         VkImage image = VK_NULL_HANDLE;
         VkImageView imageView = VK_NULL_HANDLE;
@@ -48,6 +49,10 @@ namespace FeatherVK {
 
         const RHI::TextureDesc &GetDesc() const override { return m_rhiDesc; }
 
+        const RHI::TextureViewDesc &GetViewDesc() const override { return m_viewDesc; }
+
+        const RHI::RHITexture &GetTexture() const override { return *this; }
+
         static void setDefaultImageCreateInfo(VkImageCreateInfo &defaultCreateInfo);
 
         void setDefaultImageViewCreateInfo(VkImageViewCreateInfo &createInfo);
@@ -64,6 +69,7 @@ namespace FeatherVK {
         
         std::string imageType;
         RHI::TextureDesc m_rhiDesc{};
+        RHI::TextureViewDesc m_viewDesc{};
         
         void createDefaultImage(const std::string& path, VkImageCreateInfo createInfo);
 

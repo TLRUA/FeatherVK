@@ -6,6 +6,8 @@
 #include "Device.hpp"
 #include "Image.h"
 #include "Buffer.h"
+#include "RHI/RHICommands.hpp"
+#include "RHI/RHIPresentation.hpp"
 #include "StructureInfos.h"
 
 namespace FeatherVK {
@@ -62,6 +64,15 @@ namespace FeatherVK {
         [[nodiscard]] VkCommandBuffer getCurrentCommandBuffer() const {
             assert(isFrameStarted && "Cannot get command buffer when frame is not in progress");
             return commandBuffers[currentFrameIndex];
+        }
+
+        RHI::RHICommandList &getCurrentRHICommandList() const {
+            assert(m_currentCommandList != nullptr && "RHI command list is not initialized");
+            return *m_currentCommandList;
+        }
+
+        RHI::RHISwapchain &getRHISwapchain() const {
+            return *swapChain;
         }
 
         const VkRenderPass &getSwapChainRenderPass() {
@@ -150,6 +161,7 @@ namespace FeatherVK {
         MyWindow &myWindow;
         Device &device;
         std::unique_ptr<SwapChain> swapChain;
+        std::unique_ptr<RHI::RHICommandList> m_currentCommandList;
         std::vector<VkCommandBuffer> commandBuffers;
 
         uint32_t currentImageIndex;

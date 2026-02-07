@@ -1,9 +1,21 @@
 ﻿#include "Pipeline.hpp"
 #include "Material.hpp"
+#include "RHI/Vulkan/VulkanShaderModule.hpp"
 
 namespace FeatherVK {
+    namespace {
+        VkShaderModule GetVkShaderModule(const std::shared_ptr<RHI::RHIShaderModule> &shaderModule) {
+            auto vulkanShaderModule = std::dynamic_pointer_cast<RHI::VulkanShaderModule>(shaderModule);
+            if (vulkanShaderModule == nullptr) {
+                throw std::runtime_error("RHI shader module is not backed by the Vulkan backend");
+            }
+            return vulkanShaderModule->GetVkShaderModule();
+        }
+    }
+
     Pipeline::Pipeline(Device &device, const PipelineConfigureInfo &pipelineConfigureInfo, std::shared_ptr<Material> material)
             : device(device), m_material(material) {
+        m_pipelineLayout = pipelineConfigureInfo.pipelineLayout;
         m_rhiDesc.category = material->getPipelineCategory();
 #ifdef RAY_TRACING
         if (material->getPipelineCategory() == PipelineCategory.RayTracing) {
@@ -33,7 +45,7 @@ namespace FeatherVK {
         computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
         computePipelineCreateInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         computePipelineCreateInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        computePipelineCreateInfo.stage.module = *m_material->getShaderModulePointers()[0]->shaderModule;
+        computePipelineCreateInfo.stage.module = GetVkShaderModule(m_material->getShaderModulePointers()[0]->shaderModule);
         computePipelineCreateInfo.stage.pName = "main";
         computePipelineCreateInfo.layout = pipelineConfigureInfo.pipelineLayout;
         
@@ -86,7 +98,7 @@ namespace FeatherVK {
                     m_rayTracingGroups.back().anyHitShader = i;
                     break;
             }
-            shaderStageCreateInfo[i].module = *m_material->getShaderModulePointers()[i]->shaderModule;
+            shaderStageCreateInfo[i].module = GetVkShaderModule(m_material->getShaderModulePointers()[i]->shaderModule);
             shaderStageCreateInfo[i].pName = "main";
             shaderStageCreateInfo[i].flags = 0;
             shaderStageCreateInfo[i].pNext = nullptr;
@@ -187,7 +199,7 @@ namespace FeatherVK {
                     shaderStageCreateInfo[i].stage = VK_SHADER_STAGE_GEOMETRY_BIT;
                     break;
             }
-            shaderStageCreateInfo[i].module = *m_material->getShaderModulePointers()[i]->shaderModule;
+            shaderStageCreateInfo[i].module = GetVkShaderModule(m_material->getShaderModulePointers()[i]->shaderModule);
             shaderStageCreateInfo[i].pName = "main";
             shaderStageCreateInfo[i].flags = 0;
             shaderStageCreateInfo[i].pNext = nullptr;

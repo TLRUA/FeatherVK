@@ -32,12 +32,9 @@ namespace FeatherVK {
 
         VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
         pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipelineLayoutCreateInfo.setLayoutCount = static_cast<uint32_t>(m_material->getDescriptorSetLayoutPointers().size());
-        std::vector<VkDescriptorSetLayout> descriptorSetLayouts;
-        for (auto &descriptorSetLayoutPointer: m_material->getDescriptorSetLayoutPointers()) {
-            descriptorSetLayouts.push_back(descriptorSetLayoutPointer->getDescriptorSetLayout());
-        }
-
+        const auto &rhiBindLayouts = m_material->getRHIBindLayoutPointers();
+        const auto descriptorSetLayouts = CollectVkDescriptorSetLayouts(rhiBindLayouts);
+        pipelineLayoutCreateInfo.setLayoutCount = static_cast<uint32_t>(descriptorSetLayouts.size());
         pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayouts.data();
         pipelineLayoutCreateInfo.pushConstantRangeCount = pushConstantRange.size == 0 ? 0 : 1;
         pipelineLayoutCreateInfo.pPushConstantRanges = &pushConstantRange;
@@ -46,6 +43,13 @@ namespace FeatherVK {
             throw std::runtime_error("failed to create m_pipeline layout");
         }
 
+    }
+
+    void RenderSystem::BindMaterialResources(FrameInfo &frameInfo) {
+        if (frameInfo.commandList == nullptr) {
+            return;
+        }
+        frameInfo.commandList->BindResources(*m_pipeline, 0, m_material->getRHIBindSetPointers());
     }
 
     void RenderSystem::createPipeline(VkRenderPass renderPass) {
@@ -74,27 +78,14 @@ namespace FeatherVK {
 
 
     void RenderSystem::render(FrameInfo &frameInfo, id_t entityId, ECS::SceneRegistry &sceneRegistry) {
-        m_pipeline->bind(frameInfo.commandBuffer);
-
-        std::vector<VkDescriptorSet> descriptorSets;
-        for (auto &descriptorSetPointer: m_material->getDescriptorSetPointers()) {
-            if (descriptorSetPointer != nullptr) {
-                descriptorSets.push_back(*descriptorSetPointer);
-            }
+        if (frameInfo.commandList == nullptr) {
+            return;
         }
-        vkCmdBindDescriptorSets(
-                frameInfo.commandBuffer,
-                VK_PIPELINE_BIND_POINT_GRAPHICS,
-                m_pipelineLayout,
-                0,
-                m_material->getDescriptorSetLayoutPointers().size(),
-                descriptorSets.data(),
-                0,
-                nullptr
-        );
+        frameInfo.commandList->BindPipeline(*m_pipeline);
+        BindMaterialResources(frameInfo);
 
         if (m_material->getPipelineCategory() == "Overlay") {
-            vkCmdDraw(frameInfo.commandBuffer, 6, 1, 0, 0);
+            frameInfo.commandList->Draw(6, 1, 0, 0);
         } else if (m_material->getPipelineCategory() == "Light") {
             PointLightPushConstant pointLightPushConstant{};
 
@@ -108,10 +99,9 @@ namespace FeatherVK {
             pointLightPushConstant.position = glm::vec4(transformComponent->GetTranslation(), 1.f);
             pointLightPushConstant.color = glm::vec4(lightComponent->GetColor(), lightComponent->GetLightIntensity());
             pointLightPushConstant.radius = transformComponent->GetScale().x;
-            vkCmdPushConstants(frameInfo.commandBuffer, m_pipelineLayout,
-                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                               sizeof(PointLightPushConstant), &pointLightPushConstant);
-            vkCmdDraw(frameInfo.commandBuffer, 6, 1, 0, 0);
+            frameInfo.commandList->PushConstants(*m_pipeline, RHI::ShaderStage::Vertex | RHI::ShaderStage::Fragment,
+                                                 0, sizeof(PointLightPushConstant), &pointLightPushConstant);
+            frameInfo.commandList->Draw(6, 1, 0, 0);
         } else if (m_material->getPipelineCategory() == "Opaque") {
             TransformComponent *transformComponent = nullptr;
             MeshRendererComponent *meshRendererComponent = nullptr;
@@ -126,13 +116,9 @@ namespace FeatherVK {
             push.modelMatrix = transformComponent->mat4();
             push.normalMatrix = transformComponent->normalMatrix();
 
-            vkCmdPushConstants(frameInfo.commandBuffer, m_pipelineLayout,
-                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                               0,
-                               sizeof(SimplePushConstantData),
-                               &push);
-            meshRendererComponent->GetModelPtr()->bind(frameInfo.commandBuffer);
-            meshRendererComponent->GetModelPtr()->draw(frameInfo.commandBuffer);
+            frameInfo.commandList->PushConstants(*m_pipeline, RHI::ShaderStage::Vertex | RHI::ShaderStage::Fragment,
+                                                 0, sizeof(SimplePushConstantData), &push);
+            SubmitRenderMeshDraw(*frameInfo.commandList, meshRendererComponent->GetModelPtr()->GetRenderMesh());
         }
     }
 

@@ -12,7 +12,9 @@
 #include "Sampler.h"
 #include "Image.h"
 #include "Buffer.h"
+#include "RHI/RHIBinding.hpp"
 #include "RHI/RHIResources.hpp"
+#include "RHI/RHIShader.hpp"
 
 namespace FeatherVK {
 
@@ -41,10 +43,10 @@ namespace FeatherVK {
     };
 
     typedef struct ShaderModule {
-        std::shared_ptr<VkShaderModule> shaderModule;
+        std::shared_ptr<RHI::RHIShaderModule> shaderModule;
         ShaderCategory shaderCategory;
 
-        ShaderModule(std::shared_ptr<VkShaderModule> shaderModule, ShaderCategory shaderCategory) {
+        ShaderModule(std::shared_ptr<RHI::RHIShaderModule> shaderModule, ShaderCategory shaderCategory) {
             this->shaderModule = std::move(shaderModule);
             this->shaderCategory = shaderCategory;
         }
@@ -145,13 +147,7 @@ namespace FeatherVK {
         using id_t = signed int;
         using Map = std::unordered_map<id_t, std::shared_ptr<Material>>;
 
-        ~Material() {
-            for (auto &shaderModule: shaderModules) {
-                if (*(shaderModule->shaderModule) != VK_NULL_HANDLE && shaderModule->shaderModule != nullptr)
-                    vkDestroyShaderModule(m_vkDevice, *shaderModule->shaderModule, nullptr);
-            }
-
-        };
+        ~Material() = default;
 
         Material(Device &device,
                  id_t id,
@@ -162,7 +158,6 @@ namespace FeatherVK {
                  std::vector<std::shared_ptr<Sampler>> &samplerPointers,
                  std::vector<std::shared_ptr<Buffer>> &bufferPointers,
                  std::string pipelineCategory) :
-                m_vkDevice(device.device()),
                 materialId(id),
                 shaderModules(std::move(shaderModules)),
                 descriptorSets(std::move(descriptorSets)),
@@ -170,7 +165,16 @@ namespace FeatherVK {
                 imagePointers(std::move(imagePointers)),
                 samplerPointers(std::move(samplerPointers)),
                 bufferPointers(std::move(bufferPointers)),
-                pipelineCategory(std::move(pipelineCategory)) {};
+                pipelineCategory(std::move(pipelineCategory)) {
+            m_rhiBindLayoutPointers.assign(descriptorSetLayoutPointers.begin(), descriptorSetLayoutPointers.end());
+            m_rhiBindSetPointers.reserve(this->descriptorSetLayoutPointers.size());
+            for (size_t i = 0; i < this->descriptorSetLayoutPointers.size() && i < this->descriptorSets.size(); ++i) {
+                if (this->descriptorSetLayoutPointers[i] == nullptr || this->descriptorSets[i] == nullptr) {
+                    continue;
+                }
+                m_rhiBindSetPointers.push_back(std::make_shared<DescriptorSetHandle>(this->descriptorSetLayoutPointers[i], this->descriptorSets[i]));
+            }
+        };
 
         [[nodiscard]] std::vector<std::shared_ptr<Image>> getImagePointers() const {
             return imagePointers;
@@ -180,8 +184,21 @@ namespace FeatherVK {
             return {imagePointers.begin(), imagePointers.end()};
         }
 
+        [[nodiscard]] std::vector<std::shared_ptr<RHI::RHITextureView>> getRHITextureViewPointers() const {
+            return {imagePointers.begin(), imagePointers.end()};
+        }
+
         [[nodiscard]] std::vector<std::shared_ptr<ShaderModule>> &getShaderModulePointers() {
             return shaderModules;
+        }
+
+        [[nodiscard]] std::vector<std::shared_ptr<RHI::RHIShaderModule>> getRHIShaderModules() const {
+            std::vector<std::shared_ptr<RHI::RHIShaderModule>> shaderModulePointers{};
+            shaderModulePointers.reserve(shaderModules.size());
+            for (const auto &shaderModule: shaderModules) {
+                shaderModulePointers.push_back(shaderModule->shaderModule);
+            }
+            return shaderModulePointers;
         }
 
         [[nodiscard]] std::vector<std::shared_ptr<DescriptorSetLayout>> getDescriptorSetLayoutPointers() const {
@@ -190,6 +207,14 @@ namespace FeatherVK {
 
         [[nodiscard]] std::vector<std::shared_ptr<VkDescriptorSet>> getDescriptorSetPointers() const {
             return descriptorSets;
+        }
+
+        [[nodiscard]] const std::vector<std::shared_ptr<RHI::RHIBindLayout>> &getRHIBindLayoutPointers() const {
+            return m_rhiBindLayoutPointers;
+        }
+
+        [[nodiscard]] const std::vector<std::shared_ptr<RHI::RHIBindSet>> &getRHIBindSetPointers() const {
+            return m_rhiBindSetPointers;
         }
 
         [[nodiscard]] const std::vector<std::shared_ptr<Buffer>> &getBufferPointers() const {
@@ -213,11 +238,12 @@ namespace FeatherVK {
         }
 
     private:
-        VkDevice m_vkDevice{VK_NULL_HANDLE};
         id_t materialId;
         std::vector<std::shared_ptr<ShaderModule>> shaderModules;
         std::vector<std::shared_ptr<DescriptorSetLayout>> descriptorSetLayoutPointers;
         std::vector<std::shared_ptr<VkDescriptorSet>> descriptorSets;
+        std::vector<std::shared_ptr<RHI::RHIBindLayout>> m_rhiBindLayoutPointers;
+        std::vector<std::shared_ptr<RHI::RHIBindSet>> m_rhiBindSetPointers;
         std::vector<std::shared_ptr<Image>> imagePointers;
         std::vector<std::shared_ptr<Sampler>> samplerPointers;
         std::vector<std::shared_ptr<Buffer>> bufferPointers;

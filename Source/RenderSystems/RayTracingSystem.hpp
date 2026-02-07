@@ -18,28 +18,14 @@ namespace FeatherVK {
         RayTracingSystem(Device &device,const VkRenderPass& renderPass, std::shared_ptr<Material> material) : RenderSystem(device, nullptr, material) {};
 
         void rayTrace(FrameInfo &frameInfo) {
-            m_pipeline->bind(frameInfo.commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR);
-
-            std::vector<VkDescriptorSet> descriptorSets;
-            for (auto &descriptorSetPointer: m_material->getDescriptorSetPointers()) {
-                if (descriptorSetPointer != nullptr) {
-                    descriptorSets.push_back(*descriptorSetPointer);
-                }
+            if (frameInfo.commandList == nullptr) {
+                return;
             }
+            frameInfo.commandList->BindPipeline(*m_pipeline);
 
             m_pushConstant.rayTracingImageIndex = frameInfo.frameIndex % 2;
-            vkCmdPushConstants(frameInfo.commandBuffer, m_pipelineLayout, VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(PushConstant), &m_pushConstant);
-
-            vkCmdBindDescriptorSets(
-                    frameInfo.commandBuffer,
-                    VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
-                    m_pipelineLayout,
-                    0,
-                    descriptorSets.size(),
-                    descriptorSets.data(),
-                    0,
-                    nullptr
-            );
+            frameInfo.commandList->PushConstants(*m_pipeline, RHI::ShaderStage::RayGen, 0, sizeof(PushConstant), &m_pushConstant);
+            BindMaterialResources(frameInfo);
 
             Device::pfn_vkCmdTraceRaysKHR(frameInfo.commandBuffer,
                                           &m_pipeline->getGenRegion(),
@@ -67,12 +53,8 @@ namespace FeatherVK {
         void createPipelineLayout() override {
             VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
             pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-            pipelineLayoutCreateInfo.setLayoutCount = static_cast<uint32_t>(m_material->getDescriptorSetLayoutPointers().size());
-
-            std::vector<VkDescriptorSetLayout> descriptorSetLayouts;
-            for (auto &descriptorSetLayoutPointer: m_material->getDescriptorSetLayoutPointers()) {
-                descriptorSetLayouts.push_back(descriptorSetLayoutPointer->getDescriptorSetLayout());
-            }
+            const auto descriptorSetLayouts = CollectVkDescriptorSetLayouts(m_material->getRHIBindLayoutPointers());
+            pipelineLayoutCreateInfo.setLayoutCount = static_cast<uint32_t>(descriptorSetLayouts.size());
             pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayouts.data();
 
             VkPushConstantRange pushConstantRange{VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(PushConstant)};
