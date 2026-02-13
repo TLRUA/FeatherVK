@@ -4,6 +4,8 @@
 #include <glm/gtc/constants.hpp>
 #include "../Descriptor.h"
 #include "../Pipeline.hpp"
+#include "../RenderCore/MaterialBindings.hpp"
+#include "../RenderCore/PipelineLibrary.hpp"
 #include "../Device.hpp"
 #include "../Model.hpp"
 #include "../StructureInfos.h"
@@ -26,7 +28,10 @@ namespace FeatherVK {
     class RenderSystem {
 
     public:
-        RenderSystem(Device &device, const VkRenderPass &renderPass, const std::shared_ptr<Material> material);
+        RenderSystem(Device &device,
+                     const VkRenderPass &renderPass,
+                     const std::shared_ptr<Material> material,
+                     RenderCore::PipelineLibrary &pipelineLibrary);
 
         virtual void Init();
 
@@ -62,10 +67,11 @@ namespace FeatherVK {
         //手动编译Shader，此时读取编译后的文件
         //路径是从可执行文件开始的，并非从根目录
         Device &device;
-        std::unique_ptr<Pipeline> m_pipeline;
+        std::shared_ptr<Pipeline> m_pipeline;
         VkPipelineLayout m_pipelineLayout;
         std::shared_ptr<Material> m_material;
         VkRenderPass m_renderPass;
+        RenderCore::PipelineLibrary &m_pipelineLibrary;
 
     };
 

@@ -11,9 +11,9 @@
 #include "../Material.hpp"
 #include "../MyWindow.hpp"
 #include "../Pipeline.hpp"
+#include "../RenderCore/RenderCore.hpp"
 #include "../Renderer.h"
 #include "../Sampler.h"
-#include "../ShaderBuilder.h"
 #include "../Utils/JsonUtils.hpp"
 
 #include "../Utils/ProjectPaths.hpp"
@@ -126,6 +126,9 @@ namespace FeatherVK {
         const ECS::SceneRegistry &GetSceneRegistry() const { return m_sceneRegistry; }
 
         Renderer &GetRenderer() { return m_renderer; }
+
+        RenderCore::CoreServices &GetRenderCore() { return m_renderCore; }
+        const RenderCore::CoreServices &GetRenderCore() const { return m_renderCore; }
 
         bool SyncSceneViewportLayout(const ViewportRect &scenePanelRect, const ViewportRect &sceneViewportRect) {
             const bool sceneExtentChanged = m_renderer.UpdateSceneViewportLayout(scenePanelRect, sceneViewportRect);
@@ -268,6 +271,7 @@ namespace FeatherVK {
         }
 
         void loadMaterials() {
+            auto &shaderLibrary = m_renderCore.GetShaderLibrary();
 
             uint32_t minUniformOffsetAlignment = std::lcm(m_device.properties.limits.minUniformBufferOffsetAlignment,
                                                           m_device.properties.limits.nonCoherentAtomSize);
@@ -295,13 +299,13 @@ namespace FeatherVK {
 
             //Generate Shader
             const std::string rayGenShaderPath = "RayTracing/raytrace.rgen.spv";
-            shaderModulePointers.push_back(std::make_shared<ShaderModule>(m_shaderBuilder.createShaderModule(rayGenShaderPath), ShaderCategory::rayGen));
+            shaderModulePointers.push_back(shaderLibrary.LoadStage(rayGenShaderPath, ShaderCategory::rayGen));
 
             //Miss Shader
             const std::string rayMissShaderPath = "RayTracing/raytrace.rmiss.spv";
-            shaderModulePointers.push_back(std::make_shared<ShaderModule>(m_shaderBuilder.createShaderModule(rayMissShaderPath), ShaderCategory::rayMiss));
+            shaderModulePointers.push_back(shaderLibrary.LoadStage(rayMissShaderPath, ShaderCategory::rayMiss));
             const std::string rayMiss2ShaderPath = "RayTracing/raytraceShadow.rmiss.spv";
-            shaderModulePointers.push_back(std::make_shared<ShaderModule>(m_shaderBuilder.createShaderModule(rayMiss2ShaderPath), ShaderCategory::rayMiss2));
+            shaderModulePointers.push_back(shaderLibrary.LoadStage(rayMiss2ShaderPath, ShaderCategory::rayMiss2));
 
             //Load materials
             std::unordered_map<int, glm::vec2> textureEntries{};
@@ -313,10 +317,10 @@ namespace FeatherVK {
                     const rapidjson::Value &object = materialsDocument[i];
                     const int id = object["id"].GetInt();
                     const std::string rayClosestShaderName = object["rayClosestHitShader"].GetString();
-                    shaderModulePointers.push_back(std::make_shared<ShaderModule>(m_shaderBuilder.createShaderModule(rayClosestShaderName), ShaderCategory::rayClosestHit));
+                    shaderModulePointers.push_back(shaderLibrary.LoadStage(rayClosestShaderName, ShaderCategory::rayClosestHit));
                     if (object.HasMember("rayAnyHitShader")) {
                         const std::string rayAnyHitShaderName = object["rayAnyHitShader"].GetString();
-                        shaderModulePointers.push_back(std::make_shared<ShaderModule>(m_shaderBuilder.createShaderModule(rayAnyHitShaderName), ShaderCategory::rayAnyHit));
+                        shaderModulePointers.push_back(shaderLibrary.LoadStage(rayAnyHitShaderName, ShaderCategory::rayAnyHit));
                     }
 
                     idShaderOffsetMap.emplace(id, shaderGroupOffset);
@@ -532,8 +536,8 @@ namespace FeatherVK {
                     build(postDescriptorSet);
 
             std::vector<std::shared_ptr<ShaderModule>> shaderModulePointers{
-                    std::make_shared<ShaderModule>(m_shaderBuilder.createShaderModule(PostVertexShaderName), ShaderCategory::vertex),
-                    std::make_shared<ShaderModule>(m_shaderBuilder.createShaderModule(PostFragmentShaderName), ShaderCategory::fragment),
+                    shaderLibrary.LoadStage(PostVertexShaderName, ShaderCategory::vertex),
+                    shaderLibrary.LoadStage(PostFragmentShaderName, ShaderCategory::fragment),
             };
             std::vector<std::shared_ptr<DescriptorSetLayout>> descriptorSetLayoutPointers{postSystemDescriptorSetLayoutPtr};
             std::vector<std::shared_ptr<VkDescriptorSet>> descriptorSetPointers{postDescriptorSet};
@@ -595,7 +599,7 @@ namespace FeatherVK {
                     build(postDescriptorSet);
 
             std::vector<std::shared_ptr<ShaderModule>> shaderModulePointers{
-                    std::make_shared<ShaderModule>(m_shaderBuilder.createShaderModule(RayTracingDenoiseComputeShaderName), ShaderCategory::compute),
+                    shaderLibrary.LoadStage(RayTracingDenoiseComputeShaderName, ShaderCategory::compute),
             };
             std::vector<std::shared_ptr<DescriptorSetLayout>> descriptorSetLayoutPointers{computeSystemDescriptorSetLayoutPtr};
             std::vector<std::shared_ptr<VkDescriptorSet>> descriptorSetPointers{postDescriptorSet};
@@ -632,32 +636,25 @@ namespace FeatherVK {
                     const std::string vertexShaderName = object["vertexShader"].GetString();
                     const std::string fragmentShaderName = object["fragmentShader"].GetString();
 
-                    m_shaderBuilder.createShaderModule(vertexShaderName);
-                    m_shaderBuilder.createShaderModule(fragmentShaderName);
                     std::vector<std::shared_ptr<ShaderModule>> shaderModulePointers{
-                            std::make_shared<ShaderModule>(m_shaderBuilder.getShaderModulePointer(vertexShaderName),
-                                                           ShaderCategory::vertex),
-                            std::make_shared<ShaderModule>(m_shaderBuilder.getShaderModulePointer(fragmentShaderName),
-                                                           ShaderCategory::fragment)};
+                            shaderLibrary.LoadStage(vertexShaderName, ShaderCategory::vertex),
+                            shaderLibrary.LoadStage(fragmentShaderName, ShaderCategory::fragment)};
 
                     const bool tessEnabled = object.HasMember("tessellationControlShader");
                     if (tessEnabled) {
                         const std::string tessellationControlShaderName = object["tessellationControlShader"].GetString();
                         const std::string tessellationEvaluationShaderName = object["tessellationEvaluationShader"].GetString();
-                        shaderModulePointers.emplace_back(std::make_shared<ShaderModule>(
-                                m_shaderBuilder.getShaderModulePointer(tessellationControlShaderName),
-                                ShaderCategory::tessellationControl));
-                        shaderModulePointers.emplace_back(std::make_shared<ShaderModule>(
-                                m_shaderBuilder.getShaderModulePointer(tessellationEvaluationShaderName),
-                                ShaderCategory::tessellationEvaluation));
+                        shaderModulePointers.emplace_back(
+                                shaderLibrary.LoadStage(tessellationControlShaderName, ShaderCategory::tessellationControl));
+                        shaderModulePointers.emplace_back(
+                                shaderLibrary.LoadStage(tessellationEvaluationShaderName, ShaderCategory::tessellationEvaluation));
                     }
 
                     const bool geomEnabled = object.HasMember("geometryShader");
                     if (geomEnabled) {
                         const std::string geometryShaderName = object["geometryShader"].GetString();
                         shaderModulePointers.emplace_back(
-                                std::make_shared<ShaderModule>(m_shaderBuilder.getShaderModulePointer(geometryShaderName),
-                                                               ShaderCategory::geometry));
+                                shaderLibrary.LoadStage(geometryShaderName, ShaderCategory::geometry));
                     }
 
                     auto textureNames = object["texture"].GetArray();
@@ -935,7 +932,7 @@ namespace FeatherVK {
         InputState m_inputState{};
         Device m_device{m_window};
         Renderer m_renderer{m_window, m_device};
-        ShaderBuilder m_shaderBuilder{m_device};
+        RenderCore::CoreServices m_renderCore{m_device};
         std::shared_ptr<DescriptorPool> m_globalPool;
         ModelRepository m_modelRepository;
         SceneComponentLoader m_sceneComponentLoader;

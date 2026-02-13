@@ -15,7 +15,10 @@ namespace FeatherVK {
             int rayTracingImageIndex;
         };
 
-        RayTracingSystem(Device &device,const VkRenderPass& renderPass, std::shared_ptr<Material> material) : RenderSystem(device, nullptr, material) {};
+        RayTracingSystem(Device &device,
+                         const VkRenderPass &renderPass,
+                         std::shared_ptr<Material> material,
+                         RenderCore::PipelineLibrary &pipelineLibrary) : RenderSystem(device, nullptr, material, pipelineLibrary) {};
 
         void rayTrace(FrameInfo &frameInfo) {
             if (frameInfo.commandList == nullptr) {
@@ -51,27 +54,22 @@ namespace FeatherVK {
         PushConstant m_pushConstant{};
 
         void createPipelineLayout() override {
-            VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
-            pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-            const auto descriptorSetLayouts = CollectVkDescriptorSetLayouts(m_material->getRHIBindLayoutPointers());
-            pipelineLayoutCreateInfo.setLayoutCount = static_cast<uint32_t>(descriptorSetLayouts.size());
-            pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayouts.data();
-
             VkPushConstantRange pushConstantRange{VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(PushConstant)};
-            pipelineLayoutCreateInfo.pushConstantRangeCount = 1;
-            pipelineLayoutCreateInfo.pPushConstantRanges = &pushConstantRange;
-
-            if (vkCreatePipelineLayout(device.device(), &pipelineLayoutCreateInfo, nullptr, &m_pipelineLayout) !=
-                VK_SUCCESS) {
-                throw std::runtime_error("failed to create m_pipeline layout");
-            };
+            RenderCore::MaterialBindingsView materialBindings{*m_material};
+            m_pipelineLayout = m_pipelineLibrary.GetOrCreateLayout(
+                    "RayTracing/Layout/" + std::to_string(materialBindings.MaterialId()),
+                    materialBindings.GetBindLayouts(),
+                    {pushConstantRange});
         }
 
         void createPipeline(VkRenderPass renderPass) override {
             PipelineConfigureInfo pipelineConfigureInfo{};
             Pipeline::setDefaultPipelineConfigureInfo(pipelineConfigureInfo);
             pipelineConfigureInfo.pipelineLayout = m_pipelineLayout;
-            m_pipeline = std::make_unique<Pipeline>(device, pipelineConfigureInfo, m_material);
+            m_pipeline = m_pipelineLibrary.GetOrCreatePipeline(
+                    "RayTracing/Pipeline/" + std::to_string(m_material->getMaterialId()),
+                    pipelineConfigureInfo,
+                    m_material);
         };
 
 

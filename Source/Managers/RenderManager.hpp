@@ -13,7 +13,7 @@
 #include "../RenderSystems/ShadowSystem.hpp"
 #include "../RenderSystems/SkyBoxSystem.hpp"
 #include "../Components/RayTracingInstanceComponent.hpp"
-#include "../ShaderBuilder.h"
+#include "../RenderCore/FrameData.hpp"
 #include "ResourceManager.hpp"
 
 namespace FeatherVK {
@@ -33,6 +33,7 @@ namespace FeatherVK {
         RenderManager &operator=(const RenderManager &) = delete;
 
         void CreateRenderSystems(Material::Map &materials, Device &device, Renderer &renderer) {
+            auto &pipelineLibrary = m_resourceManager->GetRenderCore().GetPipelineLibrary();
             for (auto &materialPair: materials) {
                 auto material = materialPair.second;
                 const auto pipelineCategory = material->getPipelineCategory();
@@ -42,21 +43,22 @@ namespace FeatherVK {
                         device,
                         renderer.getSwapChainRenderPass(),
                         material,
-                        m_resourceManager->GetModelRepository());
+                        m_resourceManager->GetModelRepository(),
+                        m_resourceManager->GetRenderCore());
                     continue;
                 }
 
 #ifdef RAY_TRACING
                 if (pipelineCategory == PipelineCategory.RayTracing) {
-                    m_rayTracingSystem = std::make_shared<RayTracingSystem>(device, nullptr, materialPair.second);
+                    m_rayTracingSystem = std::make_shared<RayTracingSystem>(device, nullptr, materialPair.second, pipelineLibrary);
                     m_rayTracingSystem->Init();
                 }
                 if (pipelineCategory == PipelineCategory.Post) {
-                    m_postSystem = std::make_shared<PostSystem>(device, renderer.getSwapChainRenderPass(), materialPair.second);
+                    m_postSystem = std::make_shared<PostSystem>(device, renderer.getSwapChainRenderPass(), materialPair.second, pipelineLibrary);
                     m_postSystem->Init();
                 }
                 if (pipelineCategory == PipelineCategory.Compute) {
-                    m_computeSystem = std::make_shared<ComputeSystem>(device, nullptr, materialPair.second);
+                    m_computeSystem = std::make_shared<ComputeSystem>(device, nullptr, materialPair.second, pipelineLibrary);
                     m_computeSystem->Init();
                 }
 #else
@@ -66,17 +68,17 @@ namespace FeatherVK {
 
                 std::shared_ptr<RenderSystem> renderSystem;
                 if (pipelineCategory == PipelineCategory.Shadow) {
-                    m_shadowSystem = std::make_shared<ShadowSystem>(device, renderer.getShadowRenderPass(), material);
+                    m_shadowSystem = std::make_shared<ShadowSystem>(device, renderer.getShadowRenderPass(), material, pipelineLibrary);
                     continue;
                 }
 
                 if (pipelineCategory == PipelineCategory.TessellationGeometry) {
-                    renderSystem = std::make_shared<GrassSystem>(device, renderer.getSwapChainRenderPass(), material);
+                    renderSystem = std::make_shared<GrassSystem>(device, renderer.getSwapChainRenderPass(), material, pipelineLibrary);
                 } else if (pipelineCategory == PipelineCategory.SkyBox) {
-                    renderSystem = std::make_shared<SkyBoxSystem>(device, renderer.getSwapChainRenderPass(), material);
+                    renderSystem = std::make_shared<SkyBoxSystem>(device, renderer.getSwapChainRenderPass(), material, pipelineLibrary);
                 } else if (pipelineCategory == PipelineCategory.Opaque || pipelineCategory == PipelineCategory.Overlay
                            || pipelineCategory == PipelineCategory.Light || pipelineCategory == PipelineCategory.Transparent) {
-                    renderSystem = std::make_shared<RenderSystem>(device, renderer.getSwapChainRenderPass(), material);
+                    renderSystem = std::make_shared<RenderSystem>(device, renderer.getSwapChainRenderPass(), material, pipelineLibrary);
                 }
 
                 if (renderSystem != nullptr) {
@@ -106,6 +108,7 @@ namespace FeatherVK {
         }
 
         void UpdateRendering(Renderer &renderer, FrameInfo &frameInfo) {
+            [[maybe_unused]] auto renderFrame = RenderCore::BuildFrameContext(frameInfo);
             UpdateUbo(frameInfo);
 
             const auto frameIndex = frameInfo.frameIndex;
@@ -228,10 +231,10 @@ namespace FeatherVK {
                 return;
             }
 
-            ShaderBuilder shaderBuilder(device);
+            auto &shaderLibrary = m_resourceManager->GetRenderCore().GetShaderLibrary();
             std::vector<std::shared_ptr<ShaderModule>> shaderModulePointers{
-                    std::make_shared<ShaderModule>(shaderBuilder.createShaderModule("Editor/ObjectId.vert.spv"), ShaderCategory::vertex),
-                    std::make_shared<ShaderModule>(shaderBuilder.createShaderModule("Editor/ObjectId.frag.spv"), ShaderCategory::fragment)
+                    shaderLibrary.LoadStage("Editor/ObjectId.vert.spv", ShaderCategory::vertex),
+                    shaderLibrary.LoadStage("Editor/ObjectId.frag.spv", ShaderCategory::fragment)
             };
 
             auto descriptorSetLayoutPointers = gizmosMaterialEntry->second->getDescriptorSetLayoutPointers();
@@ -255,7 +258,8 @@ namespace FeatherVK {
             m_editorPickingRenderSystem = std::make_shared<EditorPickingRenderSystem>(
                     device,
                     renderer.getPickingRenderPass(),
-                    m_editorPickingMaterial);
+                    m_editorPickingMaterial,
+                    m_resourceManager->GetRenderCore().GetPipelineLibrary());
         }
 
         void RenderEditorPickingPass(Renderer &renderer, FrameInfo &frameInfo) {

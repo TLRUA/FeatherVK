@@ -12,6 +12,7 @@
 #include "Device.hpp"
 #include "GUI.hpp"
 #include "Image.h"
+#include "RenderCore/FrameData.hpp"
 #include "Managers/LogicManager.hpp"
 #include "Managers/RenderManager.hpp"
 #include "Managers/ResourceManager.hpp"
@@ -70,6 +71,7 @@ namespace FeatherVK {
 
                 if (auto commandBuffer = renderer.beginFrame()) {
                     int frameIndex = renderer.getFrameIndex();
+                    const auto renderView = renderer.GetRenderView();
                     FrameInfo frameInfo{
                             frameIndex,
                             frameTime,
@@ -80,9 +82,9 @@ namespace FeatherVK {
                             materials,
                             m_ubo,
                             windowExtent,
-                            renderer.getSceneRenderExtent(),
-                            renderer.getScenePanelRect(),
-                            renderer.getSceneViewportRect(),
+                            renderView.renderExtent,
+                            renderView.panelRect,
+                            renderView.viewportRect,
                             m_resourceManager->GetEditorSelectionService().GetSelectedId(),
                             false};
 

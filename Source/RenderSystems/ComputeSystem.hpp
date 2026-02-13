@@ -13,8 +13,11 @@ namespace FeatherVK {
             alignas(16)glm::mat4 viewMatrix[2];
         };
 
-        ComputeSystem(Device &device,const VkRenderPass& renderPass, std::shared_ptr<Material> material) :
-                RenderSystem(device, renderPass, material) {};
+        ComputeSystem(Device &device,
+                      const VkRenderPass &renderPass,
+                      std::shared_ptr<Material> material,
+                      RenderCore::PipelineLibrary &pipelineLibrary) :
+                RenderSystem(device, renderPass, material, pipelineLibrary) {};
 
         ComputeSystem(const RenderSystem &) = delete;
 
@@ -42,29 +45,25 @@ namespace FeatherVK {
         PushConstant m_pushConstant{};
 
         void createPipelineLayout() override {
-            VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
-            pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-            const auto descriptorSetLayouts = CollectVkDescriptorSetLayouts(m_material->getRHIBindLayoutPointers());
-            pipelineLayoutCreateInfo.setLayoutCount = static_cast<uint32_t>(descriptorSetLayouts.size());
-            pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayouts.data();
-
             VkPushConstantRange pushConstantRange = {};
             pushConstantRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
             pushConstantRange.offset = 0;
             pushConstantRange.size = sizeof(PushConstant);
-            pipelineLayoutCreateInfo.pushConstantRangeCount = 1;
-            pipelineLayoutCreateInfo.pPushConstantRanges = &pushConstantRange;
-            if (vkCreatePipelineLayout(device.device(), &pipelineLayoutCreateInfo, nullptr, &m_pipelineLayout) !=
-                VK_SUCCESS) {
-                throw std::runtime_error("failed to create m_pipeline layout");
-            };
+            RenderCore::MaterialBindingsView materialBindings{*m_material};
+            m_pipelineLayout = m_pipelineLibrary.GetOrCreateLayout(
+                    "Compute/Layout/" + std::to_string(materialBindings.MaterialId()),
+                    materialBindings.GetBindLayouts(),
+                    {pushConstantRange});
         }
 
         void createPipeline(VkRenderPass renderPass) override {
             PipelineConfigureInfo pipelineConfigureInfo{};
             Pipeline::setDefaultPipelineConfigureInfo(pipelineConfigureInfo);
             pipelineConfigureInfo.pipelineLayout = m_pipelineLayout;
-            m_pipeline = std::make_unique<Pipeline>(device, pipelineConfigureInfo, m_material);
+            m_pipeline = m_pipelineLibrary.GetOrCreatePipeline(
+                    "Compute/Pipeline/" + std::to_string(m_material->getMaterialId()),
+                    pipelineConfigureInfo,
+                    m_material);
         };;
 
     };

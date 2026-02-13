@@ -11,8 +11,11 @@ namespace FeatherVK {
 
     class EditorPickingRenderSystem : public RenderSystem {
     public:
-        EditorPickingRenderSystem(Device &device, const VkRenderPass &renderPass, const std::shared_ptr<Material> &material)
-                : RenderSystem(device, renderPass, material) {
+        EditorPickingRenderSystem(Device &device,
+                                  const VkRenderPass &renderPass,
+                                  const std::shared_ptr<Material> &material,
+                                  RenderCore::PipelineLibrary &pipelineLibrary)
+                : RenderSystem(device, renderPass, material, pipelineLibrary) {
             Init();
         }
 
@@ -56,19 +59,11 @@ namespace FeatherVK {
             pushConstantRange.offset = 0;
             pushConstantRange.size = sizeof(PickingPushConstantData);
 
-            VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo{};
-            pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-
-            const auto layouts = CollectVkDescriptorSetLayouts(m_material->getRHIBindLayoutPointers());
-
-            pipelineLayoutCreateInfo.setLayoutCount = static_cast<uint32_t>(layouts.size());
-            pipelineLayoutCreateInfo.pSetLayouts = layouts.data();
-            pipelineLayoutCreateInfo.pushConstantRangeCount = 1;
-            pipelineLayoutCreateInfo.pPushConstantRanges = &pushConstantRange;
-
-            if (vkCreatePipelineLayout(device.device(), &pipelineLayoutCreateInfo, nullptr, &m_pipelineLayout) != VK_SUCCESS) {
-                throw std::runtime_error("failed to create editor picking pipeline layout");
-            }
+            RenderCore::MaterialBindingsView materialBindings{*m_material};
+            m_pipelineLayout = m_pipelineLibrary.GetOrCreateLayout(
+                    "EditorPicking/Layout/" + std::to_string(materialBindings.MaterialId()),
+                    materialBindings.GetBindLayouts(),
+                    {pushConstantRange});
         }
 
         void createPipeline(VkRenderPass renderPass) override {
@@ -81,11 +76,10 @@ namespace FeatherVK {
             pipelineConfigureInfo.renderPass = renderPass;
             pipelineConfigureInfo.pipelineLayout = m_pipelineLayout;
 
-            m_pipeline = std::make_unique<Pipeline>(
-                    device,
+            m_pipeline = m_pipelineLibrary.GetOrCreatePipeline(
+                    "EditorPicking/Pipeline/" + std::to_string(m_material->getMaterialId()),
                     pipelineConfigureInfo,
-                    m_material
-            );
+                    m_material);
         }
 
     private:

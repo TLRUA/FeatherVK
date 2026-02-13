@@ -7,7 +7,10 @@
 namespace FeatherVK {
     class GrassSystem : public RenderSystem {
     public:
-        GrassSystem(Device &device,const VkRenderPass& renderPass,std::shared_ptr<Material>& material) : RenderSystem(device, renderPass, material) {
+        GrassSystem(Device &device,
+                    const VkRenderPass &renderPass,
+                    std::shared_ptr<Material> &material,
+                    RenderCore::PipelineLibrary &pipelineLibrary) : RenderSystem(device, renderPass, material, pipelineLibrary) {
         }
 
     private:
@@ -25,17 +28,11 @@ namespace FeatherVK {
             pushConstantRange.offset = 0;
             pushConstantRange.size = sizeof(GrassPushConstant);
 
-            VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
-            pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-            const auto descriptorSetLayouts = CollectVkDescriptorSetLayouts(m_material->getRHIBindLayoutPointers());
-            pipelineLayoutCreateInfo.setLayoutCount = static_cast<uint32_t>(descriptorSetLayouts.size());
-            pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayouts.data();
-            pipelineLayoutCreateInfo.pushConstantRangeCount = 1;
-            pipelineLayoutCreateInfo.pPushConstantRanges = &pushConstantRange;
-            if (vkCreatePipelineLayout(device.device(), &pipelineLayoutCreateInfo, nullptr, &m_pipelineLayout) !=
-                VK_SUCCESS) {
-                throw std::runtime_error("failed to create m_pipeline layout");
-            }
+            RenderCore::MaterialBindingsView materialBindings{*m_material};
+            m_pipelineLayout = m_pipelineLibrary.GetOrCreateLayout(
+                    "Grass/Layout/" + std::to_string(materialBindings.MaterialId()),
+                    materialBindings.GetBindLayouts(),
+                    {pushConstantRange});
         }
 
         void createPipeline(VkRenderPass renderPass) override {
@@ -52,11 +49,10 @@ namespace FeatherVK {
 
             pipelineConfigureInfo.renderPass = renderPass;
             pipelineConfigureInfo.pipelineLayout = m_pipelineLayout;
-            m_pipeline = std::make_unique<Pipeline>(
-                    device,
+            m_pipeline = m_pipelineLibrary.GetOrCreatePipeline(
+                    "Grass/Pipeline/" + std::to_string(m_material->getMaterialId()),
                     pipelineConfigureInfo,
-                    m_material
-            );
+                    m_material);
         }
 
         void render(FrameInfo &frameInfo, id_t entityId, ECS::SceneRegistry &sceneRegistry) override {

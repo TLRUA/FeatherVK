@@ -3,6 +3,7 @@
 #include "RenderSystem.h"
 #include "../ECS/SceneRegistry.hpp"
 #include "../Managers/ModelRepository.hpp"
+#include "../RenderCore/RenderCore.hpp"
 
 namespace FeatherVK {
 
@@ -19,18 +20,16 @@ namespace FeatherVK {
 
     class GizmosRenderSystem : public RenderSystem {
     public:
-        ~GizmosRenderSystem() {
-            vkDestroyPipelineLayout(device.device(), m_axisPipelineLayout, nullptr);
-            vkDestroyPipelineLayout(device.device(), m_edgeDetectionPipelineLayout, nullptr);
-
-        };
+        ~GizmosRenderSystem() = default;
 
         GizmosRenderSystem(Device &device,
                            const VkRenderPass& renderPass,
                            std::shared_ptr<Material> material,
-                           ModelRepository &modelRepository)
-                : RenderSystem(device, renderPass, material) {
-            ShaderBuilder shaderBuilder(device);
+                           ModelRepository &modelRepository,
+                           RenderCore::CoreServices &renderCore)
+                : RenderSystem(device, renderPass, material, renderCore.GetPipelineLibrary()),
+                  m_renderCore(renderCore) {
+            auto &shaderLibrary = m_renderCore.GetShaderLibrary();
             m_pipelineLayout = VK_NULL_HANDLE;
             // Axis
             {
@@ -44,8 +43,8 @@ namespace FeatherVK {
                 m_axisMaterial = std::make_shared<Material>(*material);
                 const std::string vertexShaderPath = GIZMOS_SHADER_PATH + axisVertexShaderName;
                 const std::string fragmentShaderPath = GIZMOS_SHADER_PATH + axisFragmentShaderName;
-                m_axisMaterial->getShaderModulePointers().push_back(std::make_shared<ShaderModule>(shaderBuilder.createShaderModule(vertexShaderPath), ShaderCategory::vertex));
-                m_axisMaterial->getShaderModulePointers().push_back(std::make_shared<ShaderModule>(shaderBuilder.createShaderModule(fragmentShaderPath), ShaderCategory::fragment));
+                m_axisMaterial->getShaderModulePointers().push_back(shaderLibrary.LoadStage(vertexShaderPath, ShaderCategory::vertex));
+                m_axisMaterial->getShaderModulePointers().push_back(shaderLibrary.LoadStage(fragmentShaderPath, ShaderCategory::fragment));
                 createPipelineLayout(GizmosType::Axis);
                 createPipeline(renderPass, m_axisPipeline, m_axisMaterial, m_axisPipelineLayout, GizmosType::Axis);
             }
@@ -60,14 +59,14 @@ namespace FeatherVK {
                 const std::string vertexShaderPath = GIZMOS_SHADER_PATH + vertexShaderName;
 //                const std::string geometryShaderPath = GIZMOS_SHADER_PATH + geometryShaderName;
                 const std::string fragmentShaderPath = GIZMOS_SHADER_PATH + fragmentShaderName;
-                m_edgeDetectionMaterial->getShaderModulePointers().push_back(std::make_shared<ShaderModule>(shaderBuilder.createShaderModule(vertexShaderPath), ShaderCategory::vertex));
+                m_edgeDetectionMaterial->getShaderModulePointers().push_back(shaderLibrary.LoadStage(vertexShaderPath, ShaderCategory::vertex));
 //                m_edgeDetectionMaterial->getShaderModulePointers().push_back(std::make_shared<ShaderModule>(shaderBuilder.createShaderModule(geometryShaderPath), ShaderCategory::geometry));
-                m_edgeDetectionMaterial->getShaderModulePointers().push_back(std::make_shared<ShaderModule>(shaderBuilder.createShaderModule(fragmentShaderPath), ShaderCategory::fragment));
+                m_edgeDetectionMaterial->getShaderModulePointers().push_back(shaderLibrary.LoadStage(fragmentShaderPath, ShaderCategory::fragment));
 
                 std::string stencilVertexShaderName = "MyShader.vert.spv";
                 const std::string stencilVertexShaderPath = stencilVertexShaderName;
-                m_edgeDetectionStencilMaterial->getShaderModulePointers().push_back(std::make_shared<ShaderModule>(shaderBuilder.createShaderModule(stencilVertexShaderPath), ShaderCategory::vertex));
-                m_edgeDetectionStencilMaterial->getShaderModulePointers().push_back(std::make_shared<ShaderModule>(shaderBuilder.createShaderModule(fragmentShaderPath), ShaderCategory::fragment));
+                m_edgeDetectionStencilMaterial->getShaderModulePointers().push_back(shaderLibrary.LoadStage(stencilVertexShaderPath, ShaderCategory::vertex));
+                m_edgeDetectionStencilMaterial->getShaderModulePointers().push_back(shaderLibrary.LoadStage(fragmentShaderPath, ShaderCategory::fragment));
 
                 createPipelineLayout(GizmosType::EdgeDetection);
 
@@ -77,32 +76,25 @@ namespace FeatherVK {
         };
 
         void createPipelineLayout(GizmosType gizmosType) {
-            VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
-            pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-            const auto descriptorSetLayouts = CollectVkDescriptorSetLayouts(m_material->getRHIBindLayoutPointers());
-            pipelineLayoutCreateInfo.setLayoutCount = static_cast<uint32_t>(descriptorSetLayouts.size());
-            pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayouts.data();
-            pipelineLayoutCreateInfo.pushConstantRangeCount = 1;
             VkPushConstantRange pushConstantRange{};
             pushConstantRange.size = sizeof(SimplePushConstantData);
+            RenderCore::MaterialBindingsView materialBindings{*m_material};
             switch (gizmosType) {
                 case GizmosType::Axis:
                     pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-                    pipelineLayoutCreateInfo.pPushConstantRanges = &pushConstantRange;
-                    if (vkCreatePipelineLayout(device.device(), &pipelineLayoutCreateInfo, nullptr, &m_axisPipelineLayout) !=
-                        VK_SUCCESS) {
-                        throw std::runtime_error("failed to create Gizmos Axis layout");
-                    };
+                    m_axisPipelineLayout = m_pipelineLibrary.GetOrCreateLayout(
+                            "Gizmos/Axis/Layout/" + std::to_string(materialBindings.MaterialId()),
+                            materialBindings.GetBindLayouts(),
+                            {pushConstantRange});
                     break;
                 case GizmosType::EdgeDetectionStencil:
                 case GizmosType::EdgeDetection:
                     pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT;
                     pushConstantRange.size = sizeof(SimplePushConstantData);
-                    pipelineLayoutCreateInfo.pPushConstantRanges = &pushConstantRange;
-                    if (vkCreatePipelineLayout(device.device(), &pipelineLayoutCreateInfo, nullptr, &m_edgeDetectionPipelineLayout) !=
-                        VK_SUCCESS) {
-                        throw std::runtime_error("failed to create Gizmos Edge Detection layout");
-                    };
+                    m_edgeDetectionPipelineLayout = m_pipelineLibrary.GetOrCreateLayout(
+                            "Gizmos/Edge/Layout/" + std::to_string(materialBindings.MaterialId()),
+                            materialBindings.GetBindLayouts(),
+                            {pushConstantRange});
                     break;
             }
         }
@@ -148,11 +140,15 @@ namespace FeatherVK {
             }
             pipelineConfigureInfo.renderPass = renderPass;
             pipelineConfigureInfo.pipelineLayout = pipelineLayout;
-            pipeline = std::make_shared<Pipeline>(
-                    device,
+            const std::string pipelineKey = gizmosType == GizmosType::Axis
+                                                ? "Gizmos/Axis/Pipeline"
+                                                : gizmosType == GizmosType::EdgeDetectionStencil
+                                                      ? "Gizmos/EdgeStencil/Pipeline"
+                                                      : "Gizmos/Edge/Pipeline";
+            pipeline = m_pipelineLibrary.GetOrCreatePipeline(
+                    pipelineKey,
                     pipelineConfigureInfo,
-                    material
-            );
+                    material);
         };
 
         void render(FrameInfo &frameInfo, GizmosType gizmosType) {
@@ -262,6 +258,7 @@ namespace FeatherVK {
         std::shared_ptr<Material> m_edgeDetectionMaterial;
         std::shared_ptr<Material> m_edgeDetectionStencilMaterial;
         const float m_scaleFactor = 1.1f;
+        RenderCore::CoreServices &m_renderCore;
     };
 }
 

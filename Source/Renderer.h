@@ -6,6 +6,8 @@
 #include "Device.hpp"
 #include "Image.h"
 #include "Buffer.h"
+#include "RenderCore/FrameData.hpp"
+#include "RenderCore/RenderResources.hpp"
 #include "RHI/RHICommands.hpp"
 #include "RHI/RHIPresentation.hpp"
 #include "StructureInfos.h"
@@ -111,12 +113,24 @@ namespace FeatherVK {
             return m_sceneRenderExtent;
         }
 
+        [[nodiscard]] RenderCore::RenderView GetRenderView() const {
+            const float aspectRatio = m_sceneRenderExtent.height == 0
+                                          ? 1.0f
+                                          : static_cast<float>(m_sceneRenderExtent.width) /
+                                                static_cast<float>(m_sceneRenderExtent.height);
+            return {m_scenePanelRect, m_sceneViewportRect, m_sceneRenderExtent, aspectRatio};
+        }
+
         const std::shared_ptr<Image> &getShadowImage() const;
 
         const std::shared_ptr<Sampler> &getShadowSampler() const;
 
         const std::shared_ptr<Image> &getOffscreenImageColor(int index) const {
             return m_offscreenImageColors[index];
+        }
+
+        [[nodiscard]] RenderCore::RenderTargetView GetSceneColorTarget(int index) const {
+            return RenderCore::MakeRenderTargetView(m_offscreenImageColors[index], m_sceneRenderExtent, m_offscreenSampler);
         }
 
         const std::shared_ptr<Image> &getViewPosImageColor(int index) const {

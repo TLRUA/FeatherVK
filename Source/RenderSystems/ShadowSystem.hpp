@@ -6,6 +6,8 @@
 #include "../Device.hpp"
 #include "../Model.hpp"
 #include "../StructureInfos.h"
+#include "../RenderCore/MaterialBindings.hpp"
+#include "../RenderCore/PipelineLibrary.hpp"
 #include "../ECS/SceneRegistry.hpp"
 #include "../Components/TransformComponent.hpp"
 #include "../Components/MeshRendererComponent.hpp"
@@ -13,14 +15,16 @@
 namespace FeatherVK {
     class ShadowSystem {
     public:
-        ShadowSystem(Device &device, const VkRenderPass& renderPass, const std::shared_ptr<Material>& material) : device{device}, material{material} {
+        ShadowSystem(Device &device,
+                     const VkRenderPass &renderPass,
+                     const std::shared_ptr<Material> &material,
+                     RenderCore::PipelineLibrary &pipelineLibrary) :
+                     device{device}, material{material}, m_pipelineLibrary{pipelineLibrary} {
             createPipelineLayout();
             createPipeline(renderPass);
         }
 
-        ~ShadowSystem() {
-            vkDestroyPipelineLayout(device.device(), pipelineLayout, nullptr);
-        }
+        ~ShadowSystem() = default;
 
         ShadowSystem(const ShadowSystem &) = delete;
 
@@ -32,7 +36,8 @@ namespace FeatherVK {
             }
 
             frameInfo.commandList->BindPipeline(*pipeline);
-            frameInfo.commandList->BindResources(*pipeline, 0, material->getRHIBindSetPointers());
+            RenderCore::MaterialBindingsView materialBindings{*material};
+            frameInfo.commandList->BindResources(*pipeline, 0, materialBindings.GetBindSets());
 
             auto &sceneRegistry = *frameInfo.sceneRegistry;
             for (const id_t entityId: sceneRegistry.View<MeshRendererComponent, TransformComponent>()) {
@@ -98,17 +103,11 @@ namespace FeatherVK {
             pushConstantRange.offset = 0;
             pushConstantRange.size = sizeof(ShadowPushConstant);
 
-            VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
-            pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-            const auto descriptorSetLayouts = CollectVkDescriptorSetLayouts(material->getRHIBindLayoutPointers());
-            pipelineLayoutCreateInfo.setLayoutCount = static_cast<uint32_t>(descriptorSetLayouts.size());
-            pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayouts.data();
-            pipelineLayoutCreateInfo.pushConstantRangeCount = 1;
-            pipelineLayoutCreateInfo.pPushConstantRanges = &pushConstantRange;
-            if (vkCreatePipelineLayout(device.device(), &pipelineLayoutCreateInfo, nullptr, &pipelineLayout) !=
-                VK_SUCCESS) {
-                throw std::runtime_error("failed to create m_pipeline layout");
-            }
+            RenderCore::MaterialBindingsView materialBindings{*material};
+            pipelineLayout = m_pipelineLibrary.GetOrCreateLayout(
+                    "Shadow/Layout/" + std::to_string(materialBindings.MaterialId()),
+                    materialBindings.GetBindLayouts(),
+                    {pushConstantRange});
 
         }
 
@@ -133,19 +132,19 @@ namespace FeatherVK {
 //        pipelineConfigureInfo.vertexBindingDescriptions.push_back(bindingDescription[0]);
             pipelineConfigureInfo.renderPass = renderPass;
             pipelineConfigureInfo.pipelineLayout = pipelineLayout;
-            pipeline = std::make_unique<Pipeline>(
-                    device,
+            pipeline = m_pipelineLibrary.GetOrCreatePipeline(
+                    "Shadow/Pipeline/" + std::to_string(material->getMaterialId()),
                     pipelineConfigureInfo,
-                    material
-            );
+                    material);
         }
 
         //手动编译Shader，此时读取编译后的文件
         //路径是从可执行文件开始的，并非从根目录
         Device &device;
-        std::unique_ptr<Pipeline> pipeline;
+        std::shared_ptr<Pipeline> pipeline;
         VkPipelineLayout pipelineLayout;
         std::shared_ptr<Material> material;
+        RenderCore::PipelineLibrary &m_pipelineLibrary;
     };
 
 
