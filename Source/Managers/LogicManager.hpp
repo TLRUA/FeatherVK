@@ -54,12 +54,12 @@ namespace FeatherVK {
             RendererInfo rendererInfo{renderer.getAspectRatio(), renderer.FOV_Y, renderer.NEAR_CLIP, renderer.FAR_CLIP};
 
             m_transformHierarchySystem->Update(sceneRegistry, m_resourceManager->GetHierarchyService(), m_resourceManager->GetTransformService());
-            m_editorInteractionSystem->Update(frameInfo);
             m_rigidBodySystem->Initialize(sceneRegistry);
             m_objectMovementSystem->Update(sceneRegistry);
             m_cameraMovementSystem->Update(sceneRegistry, frameInfo, rendererInfo);
             m_transformHierarchySystem->Update(sceneRegistry, m_resourceManager->GetHierarchyService(), m_resourceManager->GetTransformService());
             m_cameraSystem->Update(sceneRegistry, frameInfo, rendererInfo);
+            m_editorInteractionSystem->Update(frameInfo);
             FixedUpdateComponents(frameInfo);
             m_transformHierarchySystem->Update(sceneRegistry, m_resourceManager->GetHierarchyService(), m_resourceManager->GetTransformService());
         }

@@ -51,6 +51,7 @@ namespace FeatherVK {
         m_vertices = builder.vertices;
         m_indices = builder.indices;
         m_maxRadius = builder.maxRadius;
+        m_localBoundsCenter = CalculateBoundsCenter(m_vertices);
     }
 
     void Model::createIndexBuffers(const std::vector<uint32_t> &indices) {
@@ -203,6 +204,21 @@ namespace FeatherVK {
             }
         }
         
+    }
+
+    glm::vec3 Model::CalculateBoundsCenter(const std::vector<Vertex> &vertices) {
+        if (vertices.empty()) {
+            return glm::vec3{0.0f};
+        }
+
+        glm::vec3 minBounds = vertices.front().position;
+        glm::vec3 maxBounds = vertices.front().position;
+        for (const auto &vertex: vertices) {
+            minBounds = glm::min(minBounds, vertex.position);
+            maxBounds = glm::max(maxBounds, vertex.position);
+        }
+
+        return (minBounds + maxBounds) * 0.5f;
     }
 }
 

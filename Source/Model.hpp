@@ -80,6 +80,8 @@ namespace FeatherVK {
         
         void RefreshVertexBuffer(const std::vector<Vertex> &vertices){
             vertexCount = static_cast<uint32_t>(vertices.size());
+            m_vertices = vertices;
+            m_localBoundsCenter = CalculateBoundsCenter(m_vertices);
 
             uint32_t vertexSize = sizeof(vertices[0]);
             uint32_t bufferSize = vertexSize * vertexCount;
@@ -129,7 +131,10 @@ namespace FeatherVK {
         
         void SetMaxRadius(float maxRadius) { m_maxRadius = maxRadius; }
 
+        glm::vec3 GetLocalBoundsCenter() const { return m_localBoundsCenter; }
+
     private:
+        static glm::vec3 CalculateBoundsCenter(const std::vector<Vertex> &vertices);
 
 #ifdef RAY_TRACING
         const VkBufferUsageFlags flags = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
@@ -154,6 +159,7 @@ namespace FeatherVK {
         std::vector<uint32_t> m_indices{};
         
         float m_maxRadius;
+        glm::vec3 m_localBoundsCenter{0.0f};
         RenderMesh m_renderMesh{};
     };
 }

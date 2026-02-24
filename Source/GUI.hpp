@@ -1,10 +1,13 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -212,6 +215,15 @@ namespace FeatherVK {
         inline static ViewportRect sceneContentRect{};
         inline static ViewportRect committedScenePanelRect{};
         inline static ViewportRect committedSceneContentRect{};
+        inline static constexpr id_t InvalidEntityId = std::numeric_limits<id_t>::max();
+
+        struct HierarchyRenameState {
+            id_t entityId{InvalidEntityId};
+            std::array<char, 256> buffer{};
+            bool requestFocus{false};
+        };
+
+        inline static HierarchyRenameState hierarchyRenameState{};
 
         static float SnapToPixel(float value) {
             return std::max(0.0f, std::round(value));
@@ -336,6 +348,9 @@ namespace FeatherVK {
                                         TransformService &transformService,
                                         FrameInfo &frameInfo) {
             (void)transformService;
+            if (sceneRegistry == nullptr || !sceneRegistry->IsAlive(hierarchyRenameState.entityId)) {
+                CancelHierarchyRename();
+            }
             ImGuiWindowFlags window_flags = 0;
             window_flags |= ImGuiWindowFlags_NoMove;
             window_flags |= ImGuiWindowFlags_NoResize;
@@ -451,18 +466,55 @@ namespace FeatherVK {
                     flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
                 }
 
-                const bool isOpen = ImGui::TreeNodeEx(
-                    reinterpret_cast<void *>(static_cast<intptr_t>(entityId)),
-                    flags,
-                    "%s",
-                    entityName.c_str());
+                ImGui::PushID(static_cast<int>(entityId));
+                const bool isOpen = ImGui::TreeNodeEx("##HierarchyNode", flags);
 
-                if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+                const bool treeNodeClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+
+                if (!IsHierarchyRenameActive(entityId)) {
+                    ImGui::SameLine();
+                    ImGui::TextUnformatted(entityName.c_str());
+                    if (ImGui::IsItemClicked(ImGuiMouseButton_Left) || treeNodeClicked) {
+                        selectionService.Select(entityId);
+                    }
+                    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                        BeginHierarchyRename(entityId, sceneRegistry, selectionService);
+                    }
+                } else {
+                    ImGui::SameLine();
+                    const float renameWidth = std::max(80.0f, ImGui::GetContentRegionAvail().x - 24.0f);
+                    ImGui::SetNextItemWidth(renameWidth);
+                    if (hierarchyRenameState.requestFocus) {
+                        ImGui::SetKeyboardFocusHere();
+                        hierarchyRenameState.requestFocus = false;
+                    }
+
+                    const bool confirm = ImGui::InputText(
+                        "##HierarchyRenameInput",
+                        hierarchyRenameState.buffer.data(),
+                        hierarchyRenameState.buffer.size(),
+                        ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_EnterReturnsTrue);
+                    const bool cancel = ImGui::IsItemActive() && ImGui::IsKeyPressed(ImGuiKey_Escape);
+                    const bool deactivated = ImGui::IsItemDeactivated();
+
+                    if (treeNodeClicked || ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+                        selectionService.Select(entityId);
+                    }
+
+                    if (cancel) {
+                        CancelHierarchyRename();
+                    } else if (confirm || deactivated) {
+                        CommitHierarchyRename(sceneRegistry);
+                    }
+                }
+
+                if (treeNodeClicked && !IsHierarchyRenameActive(entityId)) {
                     selectionService.Select(entityId);
                 }
 
-                ShowHierarchyNodeContextMenu(entityId, selectionService, entityCommandService);
+                ShowHierarchyNodeContextMenu(entityId, sceneRegistry, selectionService, entityCommandService);
                 DrawSelectionRect(entityId, sceneRegistry);
+                ImGui::PopID();
 
                 if (!grandChildren.empty() && isOpen) {
                     ShowHierarchyChildren(hierarchyService, entityId, sceneRegistry, selectionService, entityCommandService);
@@ -472,11 +524,15 @@ namespace FeatherVK {
         }
 
         static void ShowHierarchyNodeContextMenu(id_t entityId,
+                                                 ECS::SceneRegistry &sceneRegistry,
                                                  EditorSelectionService &selectionService,
                                                  EntityCommandService &entityCommandService) {
             const std::string popupName = "HierarchyEntityContext##" + std::to_string(entityId);
             if (ImGui::BeginPopupContextItem(popupName.c_str(), ImGuiPopupFlags_MouseButtonRight)) {
                 selectionService.Select(entityId);
+                if (ImGui::MenuItem("Rename")) {
+                    BeginHierarchyRename(entityId, sceneRegistry, selectionService);
+                }
                 if (ImGui::BeginMenu("Create Child")) {
                     ShowCreateEntityMenu(entityCommandService, entityId);
                     ImGui::EndMenu();
@@ -544,7 +600,6 @@ namespace FeatherVK {
 
         static void DrawSelectionRect(id_t entityId, ECS::SceneRegistry &sceneRegistry) {
             auto extent = ImGui::GetContentRegionAvail();
-            ImGui::PushID(static_cast<int>(entityId));
             ImGui::SameLine(extent.x);
 
             const bool currentActive = sceneRegistry.IsEntityActive(entityId);
@@ -557,8 +612,52 @@ namespace FeatherVK {
             if (requestedActive != currentActive) {
                 sceneRegistry.SetEntityActive(entityId, requestedActive);
             }
+        }
 
-            ImGui::PopID();
+        static bool IsHierarchyRenameActive(id_t entityId) {
+            return hierarchyRenameState.entityId == entityId;
+        }
+
+        static void BeginHierarchyRename(id_t entityId,
+                                         ECS::SceneRegistry &sceneRegistry,
+                                         EditorSelectionService &selectionService) {
+            if (!sceneRegistry.IsAlive(entityId)) {
+                return;
+            }
+
+            selectionService.Select(entityId);
+            hierarchyRenameState.entityId = entityId;
+            hierarchyRenameState.requestFocus = true;
+            const std::string &entityName = sceneRegistry.GetEntityName(entityId);
+            std::snprintf(
+                hierarchyRenameState.buffer.data(),
+                hierarchyRenameState.buffer.size(),
+                "%s",
+                entityName.c_str());
+        }
+
+        static void CancelHierarchyRename() {
+            hierarchyRenameState = {};
+        }
+
+        static void CommitHierarchyRename(ECS::SceneRegistry &sceneRegistry) {
+            if (!sceneRegistry.IsAlive(hierarchyRenameState.entityId)) {
+                CancelHierarchyRename();
+                return;
+            }
+
+            std::string newName = hierarchyRenameState.buffer.data();
+            TrimInPlace(newName);
+            if (!newName.empty()) {
+                sceneRegistry.SetEntityName(hierarchyRenameState.entityId, std::move(newName));
+            }
+            CancelHierarchyRename();
+        }
+
+        static void TrimInPlace(std::string &value) {
+            const auto notSpace = [](unsigned char ch) { return !std::isspace(ch); };
+            value.erase(value.begin(), std::find_if(value.begin(), value.end(), notSpace));
+            value.erase(std::find_if(value.rbegin(), value.rend(), notSpace).base(), value.end());
         }
     };
 }
