@@ -50,6 +50,7 @@ namespace FeatherVK {
                 if (!sceneRegistry.TryGetComponent(entityId, transformComponent) || transformComponent == nullptr ||
                     !sceneRegistry.TryGetComponent(entityId, meshRendererComponent) || meshRendererComponent == nullptr ||
                     !meshRendererComponent->IsVisible() ||
+                    !meshRendererComponent->IsOnDefaultRenderLayer() ||
                     !meshRendererComponent->CastsShadow() ||
                     meshRendererComponent->GetModelPtr() == nullptr) {
                     continue;

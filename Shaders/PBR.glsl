@@ -4,9 +4,12 @@ const float MIN_FLOAT_VALUE = 0.0001f;
 //Reference from: https://rtarun9.github.io/blogs/physically_based_rendering/
 
 float normalDistributionFunction(const vec3 normal, const vec3 halfWayVector, float roughness) {
-    float alpha = roughness * roughness;
+    float alpha = max(roughness * roughness, MIN_FLOAT_VALUE);
     float alpha2 = alpha * alpha;
-    float NdotH = dot(normal, halfWayVector);
+    float NdotH = clamp(dot(normal, halfWayVector), 0.0, 1.0);
+    if (NdotH <= 0.0) {
+        return 0.0;
+    }
     return alpha2 / max(PI * pow(NdotH * NdotH * (alpha2 - 1.0) + 1.0, 2.0f), MIN_FLOAT_VALUE);
 }
 
@@ -36,18 +39,24 @@ float smithGeometryFunction(const vec3 normal, const vec3 viewDirection, const v
 vec3 cookTorrenceBRDF(const vec3 normal, const vec3 viewDirection, const vec3 pixelToLightDirection, const vec3 albedo, const float roughnessFactor,
 const float metallicFactor)
 {
+    const float roughness = clamp(roughnessFactor, 0.045, 1.0);
     const vec3 halfWayVector = normalize(viewDirection + pixelToLightDirection);
+    const float nDotV = clamp(dot(normal, viewDirection), 0.0, 1.0);
+    const float nDotL = clamp(dot(normal, pixelToLightDirection), 0.0, 1.0);
+    if (nDotV <= 0.0 || nDotL <= 0.0) {
+        return vec3(0.0);
+    }
 
     const vec3 f0 = mix(vec3(0.04f, 0.04f, 0.04f), albedo.xyz, metallicFactor);
 
     // Using cook torrance BRDF for specular lighting.
     const vec3 fresnel = fresnelSchlickFunction(max(dot(viewDirection, halfWayVector), 0.0f), f0);
 
-    const float normalDistribution = normalDistributionFunction(normal, halfWayVector, roughnessFactor);
-    const float geometryFunction = smithGeometryFunction(normal, viewDirection, pixelToLightDirection, roughnessFactor);
+    const float normalDistribution = normalDistributionFunction(normal, halfWayVector, roughness);
+    const float geometryFunction = smithGeometryFunction(normal, viewDirection, pixelToLightDirection, roughness);
 
     vec3 specularBRDF = (normalDistribution * geometryFunction * fresnel) /
-    max(4.0f * clamp(dot(viewDirection, normal),0,1) * clamp(dot(pixelToLightDirection, normal),0,1), MIN_FLOAT_VALUE);
+    max(4.0f * nDotV * nDotL, MIN_FLOAT_VALUE);
 
     vec3 kS = fresnel;
 

@@ -7,6 +7,7 @@
 layout (set = 0, binding = 0) uniform accelerationStructureEXT topLevelAS;
 layout (set = 0, binding = 1, rgba32f) uniform image2D image[2];
 layout (set = 0, binding = 2, rgba32f) uniform image2D worldPosImage[2];
+layout (set = 0, binding = 3, rgba32f) uniform image2D shadowTermImage[2];
 
 layout (location = 0) rayPayloadEXT hitPayLoad payload;
 
@@ -31,22 +32,29 @@ void main()
     payload.accumulatedDistance = 0;
     payload.bounceCount = 0;
     payload.isBouncing = false;
+    payload.throughput = vec3(1.0);
+    payload.primaryShadowVisibility = 1.0;
+    payload.primaryDirectLighting = vec3(0.0);
     payload.closestHitWorldPos = vec4(0);
     payload.recursionDepth = 0;
 
-    traceRayEXT(topLevelAS, // acceleration structure
-                rayFlags, // rayFlags
-                0xFF, // cullMask
-                0, // sbtRecordOffset
-                0, // sbtRecordStride
-                0, // missIndex
-                origin.xyz, // ray origin
-                tMin, // ray min range
-                direction.xyz, // ray direction
-                tMax, // ray max range
-                0               // payload (location = 0)
+    traceRayEXT(topLevelAS,
+                rayFlags,
+                DEFAULT_RENDER_LAYER_MASK,
+                0,
+                0,
+                0,
+                origin.xyz,
+                tMin,
+                direction.xyz,
+                tMax,
+                0
     );
-    vec3 gammaColor = pow(payload.hitValue, vec3(1.0f / 2.2));
-    imageStore(image[pushConstant.rayTracingImageIndex], ivec2(gl_LaunchIDEXT.xy), vec4(gammaColor, 1.0));
+
+    vec3 linearColor = max(payload.hitValue, vec3(0.0));
+    imageStore(image[pushConstant.rayTracingImageIndex], ivec2(gl_LaunchIDEXT.xy), vec4(linearColor, 1.0));
     imageStore(worldPosImage[pushConstant.rayTracingImageIndex], ivec2(gl_LaunchIDEXT.xy), payload.closestHitWorldPos);
+    imageStore(shadowTermImage[pushConstant.rayTracingImageIndex],
+               ivec2(gl_LaunchIDEXT.xy),
+               vec4(max(payload.primaryDirectLighting, vec3(0.0)), clamp(payload.primaryShadowVisibility, 0.0, 1.0)));
 }

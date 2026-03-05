@@ -10,7 +10,11 @@ void main()
     vec3 cubeMapUV = gl_WorldRayDirectionEXT;
     cubeMapUV.y = -cubeMapUV.y;
     vec3 skyBoxColor = texture(skyboxSampler, cubeMapUV).rgb;
-    payLoad.hitValue += (1 - payLoad.opacity) * skyBoxColor;
+    if (payLoad.isBouncing) {
+        payLoad.hitValue += skyBoxColor * payLoad.throughput;
+    } else {
+        payLoad.hitValue += (1 - payLoad.opacity) * skyBoxColor;
+    }
     if (payLoad.recursionDepth == 0)
     {
         payLoad.closestHitWorldPos = vec4(0, 0, 0, 0);

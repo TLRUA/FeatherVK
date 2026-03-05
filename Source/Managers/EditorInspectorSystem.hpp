@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <limits>
 
 #include <glm/glm.hpp>
@@ -143,16 +144,24 @@ namespace FeatherVK {
             }
             ImGui::Text("Material:    %d", component->GetMaterialID());
 
-            if (ImGui::Checkbox("Visible", &component->visible)) {
+            bool visible = component->IsVisible();
+            if (ImGui::Checkbox("Visible", &visible)) {
+                component->SetVisible(visible);
                 frameInfo.sceneUpdated = true;
             }
-            if (ImGui::Checkbox("Cast Shadow", &component->castShadow)) {
+            bool castShadow = component->CastsShadow();
+            if (ImGui::Checkbox("Cast Shadow", &castShadow)) {
+                component->SetCastShadow(castShadow);
                 frameInfo.sceneUpdated = true;
             }
-            if (ImGui::Checkbox("Receive Shadow", &component->receiveShadow)) {
+            bool receiveShadow = component->ReceivesShadow();
+            if (ImGui::Checkbox("Receive Shadow", &receiveShadow)) {
+                component->SetReceiveShadow(receiveShadow);
                 frameInfo.sceneUpdated = true;
             }
-            if (ImGui::InputScalar("Render Layer", ImGuiDataType_U32, &component->renderLayer)) {
+            uint32_t renderLayer = component->GetRenderLayer();
+            if (ImGui::InputScalar("Render Layer", ImGuiDataType_U32, &renderLayer)) {
+                component->SetRenderLayer(std::min(renderLayer, 7u));
                 frameInfo.sceneUpdated = true;
             }
 
@@ -166,58 +175,65 @@ namespace FeatherVK {
                 rayTracingInstance->IsValid() &&
                 static_cast<size_t>(rayTracingInstance->instanceId) < gameObjectDescs->size() &&
                 ImGui::TreeNode("PBR")) {
-                EntityDesc &desc = gameObjectDescs->at(rayTracingInstance->instanceId);
-                auto validProperty = PBRLoader::GetValidProperty(desc.pbr);
+                const EntityDesc &desc = gameObjectDescs->at(rayTracingInstance->instanceId);
+                PBR editablePbr = component->HasPbrOverride() ? *component->GetPbrOverride() : desc.pbr;
+                auto validProperty = PBRLoader::GetValidProperty(editablePbr);
+                bool pbrChanged = false;
                 for (const auto &item: validProperty) {
                     switch (item) {
                         case 0:
                             ImGui::Text("Albedo:");
                             ImGui::SameLine(120);
                             ImGui::SetNextItemWidth(140);
-                            if (ImGui::InputFloat3("##Albedo", &desc.pbr.albedo.x)) {
-                                frameInfo.sceneUpdated = true;
+                            if (ImGui::InputFloat3("##Albedo", &editablePbr.albedo.x)) {
+                                pbrChanged = true;
                             }
-                            Utils::ClampVec3(desc.pbr.albedo, 0, 1);
+                            Utils::ClampVec3(editablePbr.albedo, 0, 1);
                             break;
                         case 2:
                             ImGui::Text("Metallic:");
                             ImGui::SameLine(120);
                             ImGui::SetNextItemWidth(140);
-                            if (ImGui::InputFloat("##Metallic", &desc.pbr.metallic)) {
-                                frameInfo.sceneUpdated = true;
+                            if (ImGui::InputFloat("##Metallic", &editablePbr.metallic)) {
+                                pbrChanged = true;
                             }
-                            Utils::ClampFloat(desc.pbr.metallic, 0, 1);
+                            Utils::ClampFloat(editablePbr.metallic, 0, 1);
                             break;
                         case 3:
                             ImGui::Text("Roughness:");
                             ImGui::SameLine(120);
                             ImGui::SetNextItemWidth(140);
-                            if (ImGui::InputFloat("##Roughness", &desc.pbr.roughness)) {
-                                frameInfo.sceneUpdated = true;
+                            if (ImGui::InputFloat("##Roughness", &editablePbr.roughness)) {
+                                pbrChanged = true;
                             }
-                            Utils::ClampFloat(desc.pbr.roughness, 0, 1);
+                            Utils::ClampFloat(editablePbr.roughness, 0, 1);
                             break;
                         case 4:
                             ImGui::Text("Opacity:");
                             ImGui::SameLine(120);
                             ImGui::SetNextItemWidth(140);
-                            if (ImGui::InputFloat("##Opacity", &desc.pbr.opacity)) {
-                                frameInfo.sceneUpdated = true;
+                            if (ImGui::InputFloat("##Opacity", &editablePbr.opacity)) {
+                                pbrChanged = true;
                             }
-                            Utils::ClampFloat(desc.pbr.opacity, 0, 1);
+                            Utils::ClampFloat(editablePbr.opacity, 0, 1);
                             break;
                         case 6:
                             ImGui::Text("Emissive:");
                             ImGui::SameLine(120);
                             ImGui::SetNextItemWidth(140);
-                            if (ImGui::InputFloat3("##Emissive", &desc.pbr.emissive.x)) {
-                                frameInfo.sceneUpdated = true;
+                            if (ImGui::InputFloat3("##Emissive", &editablePbr.emissive.x)) {
+                                pbrChanged = true;
                             }
-                            Utils::ClampVec3(desc.pbr.emissive, 0, 1);
+                            Utils::ClampVec3(editablePbr.emissive, 0, 1);
                             break;
                         default:
                             break;
                     }
+                }
+                if (pbrChanged) {
+                    component->SetPbrOverride(editablePbr);
+                    gameObjectDescs->at(rayTracingInstance->instanceId).pbr = editablePbr;
+                    frameInfo.sceneUpdated = true;
                 }
                 ImGui::TreePop();
             }

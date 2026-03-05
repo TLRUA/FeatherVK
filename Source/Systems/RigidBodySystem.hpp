@@ -127,21 +127,15 @@ namespace FeatherVK {
             rigidBody.inverseMass =
                 rigidBody.totalMass > RigidBodyComponent::EPSILON ? 1.0f / rigidBody.totalMass : 0.0f;
 
-            auto &vertices = model->GetVertices();
+            const auto &vertices = model->GetVertices();
             if (vertices.empty()) {
                 throw std::runtime_error("RigidBodyComponent needs a non-empty model");
             }
 
             glm::vec3 minBounds{0.0f};
             glm::vec3 maxBounds{0.0f};
-            float maxRadius = 0.0f;
-
-            const bool shouldCenterModel = m_centeredModels.insert(model.get()).second;
             for (size_t index = 0; index < vertices.size(); ++index) {
-                auto &vertex = vertices[index];
-                if (shouldCenterModel) {
-                    vertex.position -= massCenter;
-                }
+                const auto &vertex = vertices[index];
 
                 if (index == 0) {
                     minBounds = vertex.position;
@@ -150,16 +144,10 @@ namespace FeatherVK {
                     minBounds = glm::min(minBounds, vertex.position);
                     maxBounds = glm::max(maxBounds, vertex.position);
                 }
-                maxRadius = glm::max(maxRadius, glm::length(vertex.position));
             }
 
             rigidBody.localAabb.min = minBounds;
             rigidBody.localAabb.max = maxBounds;
-
-            if (shouldCenterModel) {
-                model->RefreshVertexBuffer(vertices);
-                model->SetMaxRadius(maxRadius);
-            }
 
             rigidBody.initialized = true;
         }
@@ -239,6 +227,5 @@ namespace FeatherVK {
         }
 
         TransformService &m_transformService;
-        std::unordered_set<Model *> m_centeredModels{};
     };
 }

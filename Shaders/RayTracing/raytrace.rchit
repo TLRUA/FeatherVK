@@ -12,6 +12,22 @@ hitAttributeEXT vec3 attribs;
 layout (set = 0, binding = 0) uniform accelerationStructureEXT topLevelAS;
 layout (set = 1, binding = 1, std430) readonly buffer EntityDescBuffer {EntityDesc entityDescs[];} entityDescBuffer;
 layout (set = 1, binding = 2) uniform sampler2D textureSamplers[];
+layout (set = 1, binding = 3) uniform samplerCube skyboxSampler;
+
+const float PrimaryRayBias = 0.005;
+const float ShadowRayBias = 0.01;
+const float MinimumBounceThroughput = 0.02;
+const int ShadowSampleCount = 5;
+const int EnvironmentDiffuseSampleCount = 9;
+const float DirectionalLightAngularRadius = 0.0025;
+const float PointLightRadiusScale = 0.01;
+const float MinimumPointLightRadius = 0.02;
+const vec2 ShadowKernel[4] = vec2[](
+    vec2(-0.375, -0.125),
+    vec2(0.125, -0.375),
+    vec2(-0.125, 0.375),
+    vec2(0.375, 0.125)
+);
 
 PBR reloadPBR(PBR rawPBR, ivec2 textureEntry, vec2 uv, vec3 normal, mat3 TBN) {
     PBR pbr;
@@ -70,12 +86,136 @@ PBR reloadPBR(PBR rawPBR, ivec2 textureEntry, vec2 uv, vec3 normal, mat3 TBN) {
     return pbr;
 }
 
+float maxComponent(vec3 value) {
+    return max(value.x, max(value.y, value.z));
+}
+
+float luminance(vec3 color) {
+    return dot(color, vec3(0.2126, 0.7152, 0.0722));
+}
+
+vec3 sampleEnvironmentRadiance(vec3 direction) {
+    vec3 cubeMapUV = normalize(direction);
+    cubeMapUV.y = -cubeMapUV.y;
+    return texture(skyboxSampler, cubeMapUV).rgb;
+}
+
+vec3 offsetRayOrigin(vec3 origin, vec3 normal, vec3 direction, float bias) {
+    float signValue = dot(direction, normal) >= 0.0 ? 1.0 : -1.0;
+    return origin + normal * (bias * signValue);
+}
+
+float computeAdaptiveShadowBias(vec3 geometricNormal, vec3 lightDirection) {
+    float normalToLight = clamp(dot(geometricNormal, lightDirection), 0.0, 1.0);
+    return mix(ShadowRayBias * 4.0, ShadowRayBias, normalToLight);
+}
+
+float traceShadowVisibility(vec3 worldPos, vec3 geometricNormal, vec3 lightDirection, float maxDistance) {
+    float shadowBias = computeAdaptiveShadowBias(geometricNormal, lightDirection);
+    float tMin = shadowBias;
+    float tMax = max(maxDistance - shadowBias, tMin + 0.001);
+    vec3 origin = offsetRayOrigin(worldPos, geometricNormal, lightDirection, shadowBias);
+    uint flags = gl_RayFlagsSkipClosestHitShaderEXT | gl_RayFlagsCullBackFacingTrianglesEXT | gl_RayFlagsTerminateOnFirstHitEXT;
+    shadowPayload.opaqueShadowed = true;
+    shadowPayload.opacity = 0.0;
+    traceRayEXT(topLevelAS, flags, DEFAULT_RENDER_LAYER_MASK, 0, 0, 1, origin, tMin, lightDirection, tMax, 1);
+    if (shadowPayload.opaqueShadowed) {
+        return 0.0;
+    }
+    return clamp(1.0 - shadowPayload.opacity, 0.0, 1.0);
+}
+
+vec3 sampleShadowDirection(vec3 worldPos, Light light, vec3 baseDirection, float baseDistance, vec2 kernelOffset, out float sampleDistance) {
+    mat3 basis = orthonormalBasis(baseDirection);
+    vec3 offsetDirection = basis[0] * kernelOffset.x + basis[1] * kernelOffset.y;
+    if (light.lightCategory == 0) {
+        float lightRadius = max(MinimumPointLightRadius, baseDistance * PointLightRadiusScale);
+        vec3 sampledLightPosition = light.position.xyz + offsetDirection * lightRadius;
+        vec3 sampledToLight = sampledLightPosition - worldPos;
+        sampleDistance = length(sampledToLight);
+        return sampledToLight / max(sampleDistance, 0.0001);
+    }
+
+    sampleDistance = baseDistance;
+    return normalize(baseDirection + offsetDirection * DirectionalLightAngularRadius);
+}
+
+const int FirstBounceReflectionSamples = 4;
+
+vec3 safeNormalize(vec3 value, vec3 fallback) {
+    float lengthSquared = dot(value, value);
+    return lengthSquared > 1e-10 ? value * inversesqrt(lengthSquared) : fallback;
+}
+
+mat3 buildObjectTBN(vec3 deltaPos1, vec3 deltaPos2, vec2 deltaUV1, vec2 deltaUV2, vec3 objectNormal) {
+    vec3 safeNormal = safeNormalize(objectNormal, vec3(0.0, 0.0, 1.0));
+    float determinant = deltaUV1.x * deltaUV2.y - deltaUV1.y * deltaUV2.x;
+    if (abs(determinant) < 1e-8) {
+        return orthonormalBasis(safeNormal);
+    }
+
+    mat3 fallbackBasis = orthonormalBasis(safeNormal);
+    vec3 tangent = (deltaPos1 * deltaUV2.y - deltaPos2 * deltaUV1.y) / determinant;
+    tangent = safeNormalize(tangent - safeNormal * dot(tangent, safeNormal), fallbackBasis[0]);
+    float handedness = determinant < 0.0 ? -1.0 : 1.0;
+    vec3 bitangent = safeNormalize(cross(safeNormal, tangent) * handedness, fallbackBasis[1]);
+    return mat3(tangent, bitangent, safeNormal);
+}
+
+int reflectionSampleCount(int bounceCount) {
+    return bounceCount == 0 ? FirstBounceReflectionSamples : 1;
+}
+
+vec3 buildReflectionDirection(vec3 worldNormal, vec3 pixelToView, float roughness, float sampleSeed) {
+    vec3 perfectReflection = safeNormalize(reflect(-pixelToView, worldNormal), worldNormal);
+    vec3 sampledReflection = sampleGGXReflection(worldNormal, pixelToView, roughness, sampleSeed);
+    return safeNormalize(sampledReflection, perfectReflection);
+}
+
+vec3 estimateDiffuseIrradiance(vec3 worldNormal) {
+    vec3 normal = safeNormalize(worldNormal, vec3(0.0, 1.0, 0.0));
+    mat3 basis = orthonormalBasis(normal);
+    vec3 irradiance = sampleEnvironmentRadiance(normal) * 0.25;
+    float totalWeight = 0.25;
+
+    const vec2 sampleDisk[8] = vec2[](
+        vec2(0.7071, 0.0),
+        vec2(-0.7071, 0.0),
+        vec2(0.0, 0.7071),
+        vec2(0.0, -0.7071),
+        vec2(0.5, 0.5),
+        vec2(-0.5, 0.5),
+        vec2(0.5, -0.5),
+        vec2(-0.5, -0.5)
+    );
+
+    for (int i = 0; i < EnvironmentDiffuseSampleCount - 1; ++i) {
+        vec2 disk = sampleDisk[i];
+        float z = sqrt(max(1.0 - dot(disk, disk), 0.0));
+        vec3 sampleDirection = normalize(basis * vec3(disk, z));
+        float weight = max(dot(normal, sampleDirection), 0.0);
+        irradiance += sampleEnvironmentRadiance(sampleDirection) * weight;
+        totalWeight += weight;
+    }
+
+    return irradiance / max(totalWeight, 0.0001);
+}
+
+vec3 evaluateEnvironmentDiffuse(vec3 worldNormal, vec3 pixelToView, PBR pbr) {
+    vec3 f0 = baseReflectivity(pbr.albedo, pbr.metallic);
+    vec3 fresnel = fresnelSchlickFunction(max(dot(worldNormal, pixelToView), 0.0), f0);
+    vec3 diffuseWeight = (vec3(1.0) - fresnel) * (1.0 - pbr.metallic);
+    return diffuseWeight * pbr.albedo * estimateDiffuseIrradiance(worldNormal) * pbr.AO;
+}
+
 void main()
 {
     payLoad.recursionDepth++;
-    if (payLoad.recursionDepth >= MAX_RECURSION_DEPTH - 1) {
+    if (payLoad.recursionDepth >= MAX_RECURSION_DEPTH) {
+        payLoad.recursionDepth--;
         return;
     }
+
     EntityDesc entityDesc = entityDescBuffer.entityDescs[gl_InstanceCustomIndexEXT];
     VerticesBuffer verticesBuffer = VerticesBuffer(entityDesc.verticesAddress);
     IndicesBuffer indicesBuffer = IndicesBuffer(entityDesc.indicesAddress);
@@ -97,32 +237,46 @@ void main()
     vec3 deltaPos2 = v2.position - v0.position;
     vec2 deltaUV1 = v1.uv - v0.uv;
     vec2 deltaUV2 = v2.uv - v0.uv;
-    float r = 1.0f / (deltaUV1.x * deltaUV2.y - deltaUV1.y * deltaUV2.x);
-    vec3 tangent = normalize((deltaPos1 * deltaUV2.y - deltaPos2 * deltaUV1.y) * r);
-    vec3 bitangent = normalize((deltaPos2 * deltaUV1.x - deltaPos1 * deltaUV2.x) * r);
-
-    mat3 TBN = mat3(tangent, bitangent, normalize(cross(tangent, bitangent)));
+    mat3 TBN = buildObjectTBN(deltaPos1, deltaPos2, deltaUV1, deltaUV2, normal);
 
     PBR pbr = reloadPBR(entityDesc.pbr, entityDesc.textureEntry, uv, normal, TBN);
-    vec3 worldNormal = normalize(vec3(pbr.normal * gl_WorldToObjectEXT));
+    pbr.roughness = clamp(pbr.roughness, 0.02, 1.0);
+    pbr.opacity = clamp(pbr.opacity, 0.0, 1.0);
+    mat3 worldNormalMatrix = transpose(mat3(gl_WorldToObjectEXT));
+    vec3 objectShadingNormal = safeNormalize(pbr.normal, normal);
+    vec3 objectGeometricNormal = safeNormalize(cross(deltaPos1, deltaPos2), normal);
+    vec3 worldNormal = safeNormalize(worldNormalMatrix * objectShadingNormal, vec3(0.0, 1.0, 0.0));
+    vec3 worldGeometricNormal = safeNormalize(worldNormalMatrix * objectGeometricNormal, worldNormal);
+    worldGeometricNormal = faceforward(worldGeometricNormal, gl_WorldRayDirectionEXT, worldGeometricNormal);
+    if (dot(worldNormal, worldGeometricNormal) < 0.0) {
+        worldNormal = -worldNormal;
+    }
+    vec3 pixelToView = normalize(-gl_WorldRayDirectionEXT);
+    const bool receivesShadow = (entityDesc.renderOptions & ENTITY_RENDER_OPTION_RECEIVE_SHADOW) != 0;
+    const bool isPrimarySurface = payLoad.recursionDepth == 1 && !payLoad.isBouncing;
+    const float primaryContributionWeight = payLoad.isBouncing ? pbr.opacity : (1.0 - payLoad.opacity) * pbr.opacity;
 
     if (payLoad.recursionDepth == 1) {
-        payLoad.closestHitWorldPos = vec4(worldPos, 1);
+        payLoad.closestHitWorldPos = vec4(worldPos, 1.0);
     }
 
-    vec3 lo = vec3(0, 0, 0);
+    vec3 lo = vec3(0.0);
+    vec3 primaryDirectLighting = vec3(0.0);
+    float shadowVisibilityNumerator = 0.0;
+    float shadowVisibilityDenominator = 0.0;
+
     for (int i = 0; i < ubo.lightNum; i++) {
         Light light = ubo.lights[i];
         vec3 pixelToLight;
-        float attenuation = 1;
-        float shadowRayDistance = 10000;
+        float attenuation = 1.0;
+        float shadowRayDistance = 10000.0;
         switch (light.lightCategory) {
             case -1:
                 continue;
             case 0:
-                float distance = length(light.position.xyz - worldPos);
-                shadowRayDistance = distance;
-                attenuation = min(1, 1.0f / (distance * distance));
+                float distanceToLight = length(light.position.xyz - worldPos);
+                shadowRayDistance = distanceToLight;
+                attenuation = min(1.0, 1.0f / (distanceToLight * distanceToLight));
                 pixelToLight = normalize(light.position.xyz - worldPos);
                 break;
             case 1:
@@ -132,68 +286,114 @@ void main()
                 pixelToLight = normalize(light.position.xyz);
                 break;
         }
-        const vec3 pixelToView = -gl_WorldRayDirectionEXT;
+
         const vec3 brdf = cookTorrenceBRDF(worldNormal, pixelToView, pixelToLight, pbr.albedo, pbr.roughness, pbr.metallic);
         const vec3 radiance = light.color.xyz * light.color.w;
-        const float geometry = clamp(dot(pixelToLight, worldNormal), 0, 1);
+        const float geometry = clamp(dot(pixelToLight, worldNormal), 0.0, 1.0);
+        const vec3 unshadowedLighting = radiance * brdf * geometry * attenuation;
 
-        float shadowMask = 0;
-        if (geometry > 0.001 || pbr.opacity < 0.99) {
-            float tMin = 0.0001;
-            float tMax = shadowRayDistance;
-            vec3 origin = worldPos;
-            vec3 direction = pixelToLight;
-            uint flags = gl_RayFlagsSkipClosestHitShaderEXT;
-            shadowPayload.opaqueShadowed = true;
-            shadowPayload.opacity = 0;
-            traceRayEXT(topLevelAS, flags, 0xFF, 0, 0, 1, origin, tMin, direction, tMax, 1);
-            if (shadowPayload.opaqueShadowed) {
-                shadowMask = 0;
-            } else {
-                shadowMask = 1 - shadowPayload.opacity;
+        float shadowMask = 1.0;
+        if (receivesShadow && (geometry > 0.001 || pbr.opacity < 0.99)) {
+            float visibility = traceShadowVisibility(worldPos, worldGeometricNormal, pixelToLight, shadowRayDistance);
+            for (int sampleIndex = 0; sampleIndex < ShadowSampleCount - 1; ++sampleIndex) {
+                float sampleDistance = shadowRayDistance;
+                vec3 sampleDirection = sampleShadowDirection(worldPos, light, pixelToLight, shadowRayDistance, ShadowKernel[sampleIndex], sampleDistance);
+                visibility += traceShadowVisibility(worldPos, worldGeometricNormal, sampleDirection, sampleDistance);
             }
+            shadowMask = visibility / float(ShadowSampleCount);
         }
 
-        lo += radiance * brdf * geometry * shadowMask * attenuation;
+        lo += unshadowedLighting * shadowMask;
+        if (isPrimarySurface) {
+            vec3 directBase = unshadowedLighting * primaryContributionWeight;
+            primaryDirectLighting += directBase;
+            float directWeight = luminance(directBase);
+            shadowVisibilityNumerator += directWeight * shadowMask;
+            shadowVisibilityDenominator += directWeight;
+        }
+    }
+
+    lo += evaluateEnvironmentDiffuse(worldNormal, pixelToView, pbr);
+
+    if (isPrimarySurface) {
+        payLoad.primaryDirectLighting = primaryDirectLighting;
+        payLoad.primaryShadowVisibility = shadowVisibilityDenominator > 0.0
+            ? clamp(shadowVisibilityNumerator / shadowVisibilityDenominator, 0.0, 1.0)
+            : 1.0;
     }
 
     if (payLoad.isBouncing) {
         lo = (lo + pbr.emissive) * pbr.opacity;
     } else {
-        lo = (1 - payLoad.opacity) * (lo + pbr.emissive) * pbr.opacity;
-        payLoad.opacity += (1 - payLoad.opacity) * pbr.opacity;
+        lo = (1.0 - payLoad.opacity) * (lo + pbr.emissive) * pbr.opacity;
+        payLoad.opacity += (1.0 - payLoad.opacity) * pbr.opacity;
     }
+    lo *= payLoad.throughput;
+    payLoad.hitValue += lo;
 
-    if (payLoad.bounceCount == 0) {
-        payLoad.hitValue += lo;
-    } else {
-        payLoad.accumulatedDistance += distance(gl_WorldRayOriginEXT, worldPos);
-        payLoad.hitValue += lo * (1.0 / pow(payLoad.accumulatedDistance + 1, 1));
-    }
-
-    //Global illumination
-    if (payLoad.bounceCount < MAX_BOUNCE_COUNT)
+    int maxBouncesForSurface = MAX_BOUNCE_COUNT;
+    if (payLoad.bounceCount < maxBouncesForSurface)
     {
         float tMin = 0.001;
-        float tMax = 1000;
-        vec3 reflectVector = normalize(reflect(gl_WorldRayDirectionEXT, worldNormal));
-        vec3 randomVector = randomHemisphereVector(worldNormal, ubo.curTime + worldPos.x + worldPos.y + worldPos.z);
-        vec3 adjustedReflectVector = normalize(reflectVector * (1 - pbr.roughness) + randomVector * pbr.roughness);
-        uint flags = gl_RayFlagsNoneEXT;
-        payLoad.bounceCount++;
-        payLoad.isBouncing = true;
-        traceRayEXT(topLevelAS, flags, 0xFF, 0, 0, 0, worldPos, tMin, adjustedReflectVector, tMax, 0);
+        float tMax = 1000.0;
+        vec3 f0 = baseReflectivity(pbr.albedo, pbr.metallic);
+        vec3 bounceWeight = min(fresnelSchlickFunction(max(dot(pixelToView, worldNormal), 0.0), f0), vec3(0.98));
+        float bounceEnergy = maxComponent(payLoad.throughput * bounceWeight);
+        if (bounceEnergy > MinimumBounceThroughput) {
+            int sampleCount = reflectionSampleCount(payLoad.bounceCount);
+            vec3 parentHitValue = payLoad.hitValue;
+            vec3 parentThroughput = payLoad.throughput;
+            float parentOpacity = payLoad.opacity;
+            float parentAccumulatedDistance = payLoad.accumulatedDistance;
+            int parentBounceCount = payLoad.bounceCount;
+            bool parentIsBouncing = payLoad.isBouncing;
+            vec3 reflectionContribution = vec3(0.0);
+            int validReflectionSamples = 0;
+
+            for (int sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex) {
+                float sampleSeed = mod(ubo.curTime, 4096.0) * 17.0
+                                 + dot(worldPos, vec3(12.9898, 78.233, 45.164))
+                                 + float(gl_PrimitiveID) * 0.73
+                                 + float(gl_InstanceCustomIndexEXT) * 1.37
+                                 + float(parentBounceCount) * 11.17
+                                 + float(sampleIndex) * 97.13;
+                vec3 bounceDirection = buildReflectionDirection(worldNormal, pixelToView, pbr.roughness, sampleSeed);
+                if (dot(bounceDirection, worldNormal) <= 0.0001) {
+                    continue;
+                }
+
+                payLoad.bounceCount = parentBounceCount + 1;
+                payLoad.isBouncing = true;
+                payLoad.opacity = 0.0;
+                payLoad.throughput = parentThroughput * bounceWeight;
+                payLoad.accumulatedDistance = parentAccumulatedDistance;
+                vec3 bounceOrigin = offsetRayOrigin(worldPos, worldNormal, bounceDirection, PrimaryRayBias);
+                traceRayEXT(topLevelAS, gl_RayFlagsNoneEXT, DEFAULT_RENDER_LAYER_MASK, 0, 0, 0, bounceOrigin, tMin, bounceDirection, tMax, 0);
+
+                reflectionContribution += payLoad.hitValue - parentHitValue;
+                payLoad.hitValue = parentHitValue;
+                payLoad.opacity = parentOpacity;
+                payLoad.accumulatedDistance = parentAccumulatedDistance;
+                payLoad.bounceCount = parentBounceCount;
+                payLoad.isBouncing = parentIsBouncing;
+                payLoad.throughput = parentThroughput;
+                validReflectionSamples++;
+            }
+
+            if (validReflectionSamples > 0) {
+                payLoad.hitValue += reflectionContribution / float(validReflectionSamples);
+            }
+        }
     }
 
-    //Transparent
     if (pbr.opacity < 0.99 && payLoad.opacity < 0.99) {
         float tMin = 0.001;
-        float tMax = 1000;
-        vec3 origin = worldPos;
+        float tMax = 1000.0;
+        vec3 origin = offsetRayOrigin(worldPos, worldNormal, gl_WorldRayDirectionEXT, PrimaryRayBias) + gl_WorldRayDirectionEXT * PrimaryRayBias;
         vec3 direction = gl_WorldRayDirectionEXT;
-        uint flags = gl_RayFlagsNoneEXT;
         payLoad.isBouncing = false;
-        traceRayEXT(topLevelAS, flags, 0xFF, 0, 0, 0, origin, tMin, direction, tMax, 0);
+        traceRayEXT(topLevelAS, gl_RayFlagsNoneEXT, DEFAULT_RENDER_LAYER_MASK, 0, 0, 0, origin, tMin, direction, tMax, 0);
     }
 
-}   
+    payLoad.recursionDepth--;
+}

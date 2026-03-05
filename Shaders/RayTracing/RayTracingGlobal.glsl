@@ -6,7 +6,9 @@
 
 int MAX_BOUNCE_COUNT = 3;
 int MAX_RECURSION_DEPTH = 8;
-
+const int ENTITY_RENDER_OPTION_CAST_SHADOW = 1 << 0;
+const int ENTITY_RENDER_OPTION_RECEIVE_SHADOW = 1 << 1;
+const uint DEFAULT_RENDER_LAYER_MASK = 0x01;
 
 struct hitPayLoad {
     vec3 hitValue;
@@ -14,9 +16,11 @@ struct hitPayLoad {
     float accumulatedDistance;
     int bounceCount;
     bool isBouncing;
+    vec3 throughput;
+    float primaryShadowVisibility;
+    vec3 primaryDirectLighting;
     vec4 closestHitWorldPos;
     int recursionDepth;
-    
 };
 
 struct ShadowPayload{
@@ -49,9 +53,8 @@ struct EntityDesc {
     uint64_t indicesAddress;//8~16
     PBR pbr;//16~64
     ivec2 textureEntry;//64~72
-    //    int padding[2];//72~80 causes error in NSight
-    int padding0;//72~76
-    int padding1;//76~80
+    int renderOptions;//72~76
+    int renderLayer;//76~80
 };
 
 layout (set = 1, binding = 0) uniform GlobalUbo {

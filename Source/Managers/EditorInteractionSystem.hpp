@@ -9,7 +9,6 @@
 #include <glm/geometric.hpp>
 
 #include "../Components/TransformComponent.hpp"
-#include "../Components/MeshRendererComponent.hpp"
 #include "../Core/InputState.hpp"
 #include "../MyWindow.hpp"
 #include "../Renderer.h"
@@ -110,7 +109,7 @@ namespace FeatherVK {
             const bool leftMouseJustReleased = !leftMousePressed && m_leftMousePressedLastGizmoFrame;
             m_leftMousePressedLastGizmoFrame = leftMousePressed;
 
-            const glm::vec3 gizmoOrigin = GetGizmoPivotWorld(*frameInfo.sceneRegistry, selectedId, *selectedTransform);
+            const glm::vec3 gizmoOrigin = GetGizmoPivotWorld(*selectedTransform);
             const glm::vec3 cameraPosition = glm::vec3(inverseViewMatrix[3]);
 
             std::optional<glm::vec2> originScreen = ProjectWorldToViewport(frameInfo, viewMatrix, projectionMatrix, gizmoOrigin);
@@ -201,18 +200,8 @@ namespace FeatherVK {
             return true;
         }
 
-        static glm::vec3 GetGizmoPivotWorld(ECS::SceneRegistry &sceneRegistry,
-                                            id_t entityId,
-                                            const TransformComponent &transform) {
-            MeshRendererComponent *meshRenderer = nullptr;
-            if (!sceneRegistry.TryGetComponent(entityId, meshRenderer) ||
-                meshRenderer == nullptr ||
-                meshRenderer->GetModelPtr() == nullptr) {
-                return transform.GetTranslation();
-            }
-
-            const glm::vec3 localBoundsCenter = meshRenderer->GetModelPtr()->GetLocalBoundsCenter();
-            return glm::vec3(transform.mat4() * glm::vec4(localBoundsCenter, 1.0f));
+        static glm::vec3 GetGizmoPivotWorld(const TransformComponent &transform) {
+            return transform.GetTranslation();
         }
 
         static glm::vec3 AxisDirection(const GizmoAxis axis) {

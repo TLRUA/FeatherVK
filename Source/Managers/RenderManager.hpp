@@ -188,7 +188,7 @@ namespace FeatherVK {
                     if (!sceneRegistry.TryGetComponent(entityId, meshRendererComponent) || meshRendererComponent == nullptr) {
                         continue;
                     }
-                    if (!meshRendererComponent->IsVisible()) {
+                    if (!meshRendererComponent->IsVisible() || !meshRendererComponent->IsOnDefaultRenderLayer()) {
                         continue;
                     }
 
@@ -307,6 +307,7 @@ namespace FeatherVK {
                 }
 
                 const bool isActive = sceneRegistry.IsEntityActive(entityId) && meshRendererComponent->IsVisible();
+                const uint32_t instanceMask = isActive ? meshRendererComponent->GetRayTracingVisibilityMask() : 0x00;
                 const glm::mat4 currentTransform = transformComponent->mat4();
                 const id_t tlasId = rayTracingInstanceComponent->instanceId;
                 m_entityToTlasId[entityId] = tlasId;
@@ -337,6 +338,13 @@ namespace FeatherVK {
                 }
                 entityDesc.vertexBufferAddress = meshRendererComponent->GetModelPtr()->getVertexBuffer()->getDeviceAddress();
                 entityDesc.indexBufferAddress = meshRendererComponent->GetModelPtr()->getIndexBuffer()->getDeviceAddress();
+                if (meshRendererComponent->HasPbrOverride()) {
+                    entityDesc.pbr = *meshRendererComponent->GetPbrOverride();
+                }
+                entityDesc.renderOptions =
+                    (meshRendererComponent->CastsShadow() ? EntityRenderOptionCastShadow : 0) |
+                    (meshRendererComponent->ReceivesShadow() ? EntityRenderOptionReceiveShadow : 0);
+                entityDesc.renderLayer = static_cast<int32_t>(std::min(meshRendererComponent->GetRenderLayer(), 7u));
 
                 if (!rayTracingSceneContext.HasBlas(meshRendererComponent->GetModelPtr())) {
                     rayTracingSceneContext.EnsureBlasBuilt(meshRendererComponent->GetModelPtr());
@@ -348,24 +356,19 @@ namespace FeatherVK {
                         *meshRendererComponent->GetModelPtr(),
                         tlasId,
                         static_cast<id_t>(shaderOffset),
-                        currentTransform);
+                        currentTransform,
+                        instanceMask);
                     addedNewTlasInstance = true;
                     frameInfo.sceneUpdated = true;
                 }
 
-                auto activeStateEntry = m_meshRendererActiveState.find(entityId);
-                if (activeStateEntry == m_meshRendererActiveState.end()) {
-                    m_meshRendererActiveState.emplace(entityId, isActive);
-                    if (!isActive) {
-                        if (rayTracingSceneContext.UpdateInstance(tlasId, currentTransform, 0x00)) {
-                            frameInfo.sceneUpdated = true;
-                        }
-                    }
-                } else if (activeStateEntry->second != isActive) {
-                    if (rayTracingSceneContext.UpdateInstance(tlasId, currentTransform, isActive ? 0xFF : 0x00)) {
-                        frameInfo.sceneUpdated = true;
-                    }
-                    activeStateEntry->second = isActive;
+                auto maskEntry = m_meshRendererMaskCache.find(entityId);
+                bool maskChanged = maskEntry == m_meshRendererMaskCache.end();
+                if (maskChanged) {
+                    m_meshRendererMaskCache.emplace(entityId, instanceMask);
+                } else if (maskEntry->second != instanceMask) {
+                    maskChanged = true;
+                    maskEntry->second = instanceMask;
                 }
 
                 auto transformEntry = m_meshRendererTransformCache.find(entityId);
@@ -377,12 +380,8 @@ namespace FeatherVK {
                     transformEntry->second = currentTransform;
                 }
 
-                if (!isActive) {
-                    continue;
-                }
-
-                if (transformChanged) {
-                    if (rayTracingSceneContext.UpdateInstance(tlasId, currentTransform)) {
+                if (maskChanged || transformChanged) {
+                    if (rayTracingSceneContext.UpdateInstance(tlasId, currentTransform, instanceMask)) {
                         frameInfo.sceneUpdated = true;
                     }
                 }
@@ -404,15 +403,15 @@ namespace FeatherVK {
                     frameInfo.pEntityDescs[staleTlasId] = EntityDesc{};
                 }
                 m_meshRendererTransformCache.erase(it->first);
-                m_meshRendererActiveState.erase(it->first);
+                m_meshRendererMaskCache.erase(it->first);
                 frameInfo.sceneUpdated = true;
                 it = m_entityToTlasId.erase(it);
             }
 
-            for (auto it = m_meshRendererActiveState.begin(); it != m_meshRendererActiveState.end();) {
+            for (auto it = m_meshRendererMaskCache.begin(); it != m_meshRendererMaskCache.end();) {
                 if (!sceneRegistry.IsAlive(it->first)) {
                     m_meshRendererTransformCache.erase(it->first);
-                    it = m_meshRendererActiveState.erase(it);
+                    it = m_meshRendererMaskCache.erase(it);
                 } else {
                     ++it;
                 }
@@ -446,7 +445,7 @@ namespace FeatherVK {
 
 #ifdef RAY_TRACING
         std::shared_ptr<RayTracingSystem> m_rayTracingSystem;
-        std::unordered_map<id_t, bool> m_meshRendererActiveState{};
+        std::unordered_map<id_t, uint32_t> m_meshRendererMaskCache{};
         std::unordered_map<id_t, glm::mat4> m_meshRendererTransformCache{};
         std::unordered_map<id_t, id_t> m_entityToTlasId{};
         int m_lastPresentedSceneImageIndex = 0;

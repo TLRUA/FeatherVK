@@ -15,7 +15,24 @@ void main()
     EntityDesc entityDesc = entityDescBuffer.entityDescs[gl_InstanceCustomIndexEXT];
     if ((gl_IncomingRayFlagsEXT & gl_RayFlagsSkipClosestHitShaderEXT) != 0)
     {
-        shadowPayload.opacity += (1 - shadowPayload.opacity) * entityDesc.pbr.opacity;
+        if ((entityDesc.renderOptions & ENTITY_RENDER_OPTION_CAST_SHADOW) == 0) {
+            ignoreIntersectionEXT;
+        }
+
+        float opacity = clamp(entityDesc.pbr.opacity, 0.0, 1.0);
+        if (opacity >= 0.999) {
+            shadowPayload.opacity = 1.0;
+            shadowPayload.opaqueShadowed = true;
+            terminateRayEXT;
+        }
+
+        shadowPayload.opacity += (1.0 - shadowPayload.opacity) * opacity;
+        if (shadowPayload.opacity >= 0.999) {
+            shadowPayload.opacity = 1.0;
+            shadowPayload.opaqueShadowed = true;
+            terminateRayEXT;
+        }
+
         ignoreIntersectionEXT;
     }
-}   
+}

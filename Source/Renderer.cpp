@@ -1,4 +1,4 @@
-﻿#include <glm/fwd.hpp>
+#include <glm/fwd.hpp>
 #include <glm/ext/matrix_transform.hpp>
 #include <cmath>
 #include "Renderer.h"
@@ -128,7 +128,7 @@ namespace FeatherVK {
             extent = myWindow.getCurrentExtent();
             glfwWaitEvents();
         }
-        //锟饺达拷锟竭硷拷锟借备锟叫碉拷锟斤拷锟斤拷锟斤拷锟斤拷锟斤拷锟街达拷锟斤拷锟斤拷
+        //闁跨喖銈烘潏鐐闁跨喓顏涵閿嬪闁跨喎鈧喎顦柨鐔峰建绾板瀚归柨鐔告灮閹风兘鏁撻弬銈嗗闁跨喐鏋婚幏鐑芥晸閺傘倖瀚归柨鐔告灮閹风兘鏁撶悰妤勬彧閹风兘鏁撻弬銈嗗闁跨喐鏋婚幏?
         vkDeviceWaitIdle(device.device());
 
         if (swapChain == nullptr) {
@@ -178,7 +178,7 @@ namespace FeatherVK {
         if (commandBuffers.empty()) {
             return;
         }
-        //为什么锟斤拷要锟斤拷式锟侥达拷锟斤拷size锟斤拷锟斤拷锟节帮拷全锟皆匡拷锟角ｏ拷锟斤拷锟斤拷锟斤拷式锟斤拷锟斤拷锟斤拷锟斤拷
+        //娑撹桨绮堟稊鍫ユ晸閺傘倖瀚圭憰渚€鏁撻弬銈嗗瀵繘鏁撴笟銉ㄦ彧閹风兘鏁撻弬銈嗗size闁跨喐鏋婚幏鐑芥晸閺傘倖瀚归柨鐔诲Ν鐢喗瀚归崗銊╂晸閻ㄥ棗灏呴幏鐑芥晸鐟欐帪缍囬幏鐑芥晸閺傘倖瀚归柨鐔告灮閹风兘鏁撻弬銈嗗瀵繘鏁撻弬銈嗗闁跨喐鏋婚幏鐑芥晸閺傘倖瀚归柨鐔告灮閹?
         vkFreeCommandBuffers(device.device(), device.getCommandPool(), static_cast<uint32_t>(commandBuffers.size()),
                              commandBuffers.data());
         commandBuffers.clear();
@@ -720,7 +720,8 @@ namespace FeatherVK {
     }
     void Renderer::freeOffscreenResources() {
         m_offscreenImageColors.clear();
-        m_viewPosImageColors.clear();
+        m_shadowTermImageColors.clear();
+        m_shadowMomentsImageColors.clear();
         m_worldPosImage.clear();
         m_denoisingAccumulationImage.reset();
         m_offscreenSampler.reset();
@@ -758,19 +759,33 @@ namespace FeatherVK {
             m_offscreenImageColors[0]->sampler = m_offscreenSampler->getSampler();
             m_offscreenImageColors[1]->sampler = m_offscreenSampler->getSampler();
 
-            m_viewPosImageColors.push_back(std::make_shared<Image>(device));
-            m_viewPosImageColors.push_back(std::make_shared<Image>(device));
-            m_viewPosImageColors[0]->createImage(imageCreateInfo);
-            m_viewPosImageColors[1]->createImage(imageCreateInfo);
+            m_shadowTermImageColors.push_back(std::make_shared<Image>(device));
+            m_shadowTermImageColors.push_back(std::make_shared<Image>(device));
+            m_shadowTermImageColors[0]->createImage(imageCreateInfo);
+            m_shadowTermImageColors[1]->createImage(imageCreateInfo);
             imageViewCreateInfo = std::make_shared<VkImageViewCreateInfo>();
-            m_viewPosImageColors[0]->setDefaultImageViewCreateInfo(*imageViewCreateInfo);
+            m_shadowTermImageColors[0]->setDefaultImageViewCreateInfo(*imageViewCreateInfo);
             imageViewCreateInfo->format = imageCreateInfo.format;
-            m_viewPosImageColors[0]->createImageView(*imageViewCreateInfo);
-            m_viewPosImageColors[1]->setDefaultImageViewCreateInfo(*imageViewCreateInfo);
+            m_shadowTermImageColors[0]->createImageView(*imageViewCreateInfo);
+            m_shadowTermImageColors[1]->setDefaultImageViewCreateInfo(*imageViewCreateInfo);
             imageViewCreateInfo->format = imageCreateInfo.format;
-            m_viewPosImageColors[1]->createImageView(*imageViewCreateInfo);
-            m_viewPosImageColors[0]->sampler = m_offscreenSampler->getSampler();
-            m_viewPosImageColors[1]->sampler = m_offscreenSampler->getSampler();
+            m_shadowTermImageColors[1]->createImageView(*imageViewCreateInfo);
+            m_shadowTermImageColors[0]->sampler = m_offscreenSampler->getSampler();
+            m_shadowTermImageColors[1]->sampler = m_offscreenSampler->getSampler();
+
+            m_shadowMomentsImageColors.push_back(std::make_shared<Image>(device));
+            m_shadowMomentsImageColors.push_back(std::make_shared<Image>(device));
+            m_shadowMomentsImageColors[0]->createImage(imageCreateInfo);
+            m_shadowMomentsImageColors[1]->createImage(imageCreateInfo);
+            imageViewCreateInfo = std::make_shared<VkImageViewCreateInfo>();
+            m_shadowMomentsImageColors[0]->setDefaultImageViewCreateInfo(*imageViewCreateInfo);
+            imageViewCreateInfo->format = imageCreateInfo.format;
+            m_shadowMomentsImageColors[0]->createImageView(*imageViewCreateInfo);
+            m_shadowMomentsImageColors[1]->setDefaultImageViewCreateInfo(*imageViewCreateInfo);
+            imageViewCreateInfo->format = imageCreateInfo.format;
+            m_shadowMomentsImageColors[1]->createImageView(*imageViewCreateInfo);
+            m_shadowMomentsImageColors[0]->sampler = m_offscreenSampler->getSampler();
+            m_shadowMomentsImageColors[1]->sampler = m_offscreenSampler->getSampler();
 
             m_worldPosImage.push_back(std::make_shared<Image>(device));
             m_worldPosImage.push_back(std::make_shared<Image>(device));
@@ -816,10 +831,16 @@ namespace FeatherVK {
             device.transitionImageLayout(m_offscreenImageColors[1]->getImage(),
                                          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                                          {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1});
-            device.transitionImageLayout(m_viewPosImageColors[0]->getImage(),
+            device.transitionImageLayout(m_shadowTermImageColors[0]->getImage(),
                                          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                                          {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1});
-            device.transitionImageLayout(m_viewPosImageColors[1]->getImage(),
+            device.transitionImageLayout(m_shadowTermImageColors[1]->getImage(),
+                                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                                         {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1});
+            device.transitionImageLayout(m_shadowMomentsImageColors[0]->getImage(),
+                                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                                         {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1});
+            device.transitionImageLayout(m_shadowMomentsImageColors[1]->getImage(),
                                          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                                          {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1});
             device.transitionImageLayout(m_worldPosImage[0]->getImage(),
@@ -955,8 +976,16 @@ namespace FeatherVK {
                              0, nullptr,
                              0, nullptr,
                              1, &barrier);
-        
-        barrier.image = m_viewPosImageColors[imageIndex]->getImage();
+
+        barrier.image = m_worldPosImage[imageIndex]->getImage();
+        vkCmdPipelineBarrier(commandBuffer,
+                             srcStage, dstStage,
+                             0,
+                             0, nullptr,
+                             0, nullptr,
+                             1, &barrier);
+
+        barrier.image = m_shadowTermImageColors[imageIndex]->getImage();
         vkCmdPipelineBarrier(commandBuffer,
                              srcStage, dstStage,
                              0,

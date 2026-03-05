@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <cassert>
 #include "MyWindow.hpp"
@@ -133,8 +133,12 @@ namespace FeatherVK {
             return RenderCore::MakeRenderTargetView(m_offscreenImageColors[index], m_sceneRenderExtent, m_offscreenSampler);
         }
 
-        const std::shared_ptr<Image> &getViewPosImageColor(int index) const {
-            return m_viewPosImageColors[index];
+        const std::shared_ptr<Image> &getShadowTermImageColor(int index) const {
+            return m_shadowTermImageColors[index];
+        }
+
+        const std::shared_ptr<Image> &getShadowMomentsImageColor(int index) const {
+            return m_shadowMomentsImageColors[index];
         }
 
         const std::shared_ptr<Image> &getWorldPosImageColor(int index) const {
@@ -191,7 +195,8 @@ namespace FeatherVK {
         VkRenderPass shadowRenderPass = VK_NULL_HANDLE;
 
         std::vector<std::shared_ptr<Image>> m_offscreenImageColors;
-        std::vector<std::shared_ptr<Image>> m_viewPosImageColors;
+        std::vector<std::shared_ptr<Image>> m_shadowTermImageColors;
+        std::vector<std::shared_ptr<Image>> m_shadowMomentsImageColors;
         std::vector<std::shared_ptr<Image>> m_worldPosImage;
         std::shared_ptr<Image> m_denoisingAccumulationImage;
         std::shared_ptr<Sampler> m_offscreenSampler;

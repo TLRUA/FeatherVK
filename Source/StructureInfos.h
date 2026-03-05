@@ -47,6 +47,9 @@ namespace FeatherVK {
     };
 
 #ifdef RAY_TRACING
+    inline constexpr int32_t EntityRenderOptionCastShadow = 1 << 0;
+    inline constexpr int32_t EntityRenderOptionReceiveShadow = 1 << 1;
+
     struct GlobalUbo {
         glm::mat4 viewMatrix{1.f};
         glm::mat4 inverseViewMatrix{1.f};
@@ -62,8 +65,8 @@ namespace FeatherVK {
         uint64_t indexBufferAddress{};  // 8~16
         PBR pbr{};                      // 16~80
         glm::i32vec2 textureEntry{};    // 80~88
-        int32_t padding0{};             // 88~92
-        int32_t padding1{};             // 92~96
+        int32_t renderOptions{};        // 88~92
+        int32_t renderLayer{};          // 92~96
     };
 
     static_assert(offsetof(EntityDesc, textureEntry) == 80, "EntityDesc textureEntry offset must match ray tracing shader.");

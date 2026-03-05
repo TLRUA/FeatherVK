@@ -247,7 +247,11 @@ namespace FeatherVK {
             return mapEntry->second >= 0 && static_cast<size_t>(mapEntry->second) < m_instances.size();
         }
 
-        void CreateInstance(Model &model, id_t instanceId, id_t shaderOffset, const glm::mat4 &transform = glm::mat4{1.0f}) {
+        void CreateInstance(Model &model,
+                            id_t instanceId,
+                            id_t shaderOffset,
+                            const glm::mat4 &transform = glm::mat4{1.0f},
+                            uint32_t mask = 0xFF) {
             if (HasInstance(instanceId)) {
                 return;
             }
@@ -266,7 +270,7 @@ namespace FeatherVK {
             instance.instanceCustomIndex = instanceId;
             instance.accelerationStructureReference =
                 m_device.getAccelerationStructureAddressKHR(blasEntry->second->accelerationStructure);
-            instance.mask = 0xFF;
+            instance.mask = mask;
             instance.instanceShaderBindingTableRecordOffset = shaderOffset;
 
             if (DiagnosticsEnabled()) {

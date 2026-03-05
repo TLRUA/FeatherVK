@@ -2,7 +2,6 @@
 layout (location = 0) in vec2 outUV;
 layout (location = 0) out vec4 fragColor;
 
-
 struct Light {
     vec4 position;
     vec4 direction;
@@ -31,7 +30,8 @@ layout (push_constant, std430) uniform PushConstant {
 
 void main()
 {
-    vec2 uv = outUV;
-    vec4 centerColor = texture(sampledImage[pushConstant.rayTracingImageIndex], uv);
-    fragColor = centerColor;
+    vec3 linearColor = texture(sampledImage[pushConstant.rayTracingImageIndex], outUV).rgb;
+    vec3 toneMappedColor = linearColor / (linearColor + vec3(1.0));
+    vec3 gammaColor = pow(max(toneMappedColor, vec3(0.0)), vec3(1.0 / 2.2));
+    fragColor = vec4(gammaColor, 1.0);
 }

@@ -4,7 +4,6 @@ struct Light {
     vec4 position;
     vec4 direction;
     vec4 color;
-    // 0: point lights, 1: directional lights
     int lightCategory;
 };
 
@@ -18,11 +17,11 @@ layout (set = 0, binding = 0) uniform GlobalUbo {
     Light lights[10];
 } ubo;
 
-
 layout (set = 0, binding = 1, rgba32f) uniform image2D storageImage[2];
 layout (set = 0, binding = 2, rgba32f) uniform image2D worldPosImage[2];
 layout (set = 0, binding = 3, rgba32f) uniform image2D denoisingAccumulationImage;
-layout (set = 0, binding = 4, rgba32f) uniform image2D viewPosImages[2];
+layout (set = 0, binding = 4, rgba32f) uniform image2D shadowTermImages[2];
+layout (set = 0, binding = 5, rgba32f) uniform image2D shadowMomentsImages[2];
 
 layout (push_constant, std430) uniform PushConstant {
     int rayTracingImageIndex;
@@ -31,79 +30,294 @@ layout (push_constant, std430) uniform PushConstant {
     mat4 viewMatrix[2];
 } pushConstant;
 
-layout (local_size_x = 16, local_size_y = 16) in; // 工作组大小
+layout (local_size_x = 16, local_size_y = 16) in;
 
-const int filterSize = 3;
+const int filterSize = 2;
+const int shadowFilterSize = 2;
 const float sigma_d = 2.0;
-const float sigma_r = 0.2;
+const float sigma_r = 0.15;
+const float MaxAccumulationFrames = 64.0;
+const float WorldPositionResetThreshold = 0.05;
+const float HistoryClipExpansion = 0.15;
+const float ShadowMinDirectLighting = 0.0005;
+const float ShadowVarianceScale = 8.0;
 
-vec4 bilateralFilter(int frameIndex, ivec2 coord) {
-    vec4 sum = vec4(0.0);
-    float w_sum = 0.0;
-    vec4 centerColor = imageLoad(storageImage[frameIndex], coord);
-    for (int x = -filterSize; x <= filterSize; x++)
-    {
-        for (int y = -filterSize; y <= filterSize; y++)
-        {
-            vec2 offset = vec2(x, y);
-            vec4 neighborColor = imageLoad(storageImage[frameIndex], coord + ivec2(offset));
-            float w = exp(-0.5 * (dot(offset, offset) / (sigma_d * sigma_d) + pow(length(centerColor - neighborColor), 2.0) / (sigma_r * sigma_r)));
-            sum += neighborColor * w;
-            w_sum += w;
-        }
-    }
-    return sum / w_sum;
+float saturate(float value) {
+    return clamp(value, 0.0, 1.0);
+}
+
+float luminance(vec3 color) {
+    return dot(color, vec3(0.2126, 0.7152, 0.0722));
 }
 
 bool isUVValid(vec2 uv) {
-    return uv.x >= 0 && uv.x < 1 && uv.y >= 0 && uv.y < 1;
+    return uv.x >= 0.0 && uv.x < 1.0 && uv.y >= 0.0 && uv.y < 1.0;
+}
+
+ivec2 clampCoord(ivec2 coord, ivec2 extent) {
+    return clamp(coord, ivec2(0), extent - ivec2(1));
+}
+
+vec3 clampHistoryToNeighborhood(int frameIndex, ivec2 coord, ivec2 extent, vec3 historyColor) {
+    vec3 minColor = vec3(1e20);
+    vec3 maxColor = vec3(-1e20);
+    vec3 meanColor = vec3(0.0);
+    int sampleCount = 0;
+
+    for (int x = -1; x <= 1; x++) {
+        for (int y = -1; y <= 1; y++) {
+            ivec2 sampleCoord = clampCoord(coord + ivec2(x, y), extent);
+            vec3 sampleColor = imageLoad(storageImage[frameIndex], sampleCoord).rgb;
+            minColor = min(minColor, sampleColor);
+            maxColor = max(maxColor, sampleColor);
+            meanColor += sampleColor;
+            sampleCount++;
+        }
+    }
+
+    meanColor /= float(sampleCount);
+    vec3 historyRange = max(abs(meanColor) * HistoryClipExpansion, vec3(0.05));
+    vec3 expandedMin = min(minColor, meanColor - historyRange);
+    vec3 expandedMax = max(maxColor, meanColor + historyRange);
+    return clamp(historyColor, expandedMin, expandedMax);
+}
+
+vec4 bilateralFilter(int frameIndex, ivec2 coord) {
+    ivec2 extent = imageSize(storageImage[frameIndex]);
+    ivec2 safeCoord = clampCoord(coord, extent);
+    vec4 centerColor = imageLoad(storageImage[frameIndex], safeCoord);
+    vec4 centerWorldPos = imageLoad(worldPosImage[frameIndex], safeCoord);
+    vec4 centerViewPos = pushConstant.viewMatrix[frameIndex] * centerWorldPos;
+    float centerDepth = max(abs(centerViewPos.z), 1.0);
+    float positionSigma = max(0.05, centerDepth * 0.02);
+    float depthSigma = max(0.1, centerDepth * 0.01);
+
+    vec3 sum = vec3(0.0);
+    float wSum = 0.0;
+    for (int x = -filterSize; x <= filterSize; x++) {
+        for (int y = -filterSize; y <= filterSize; y++) {
+            vec2 offset = vec2(x, y);
+            ivec2 sampleCoord = clampCoord(safeCoord + ivec2(x, y), extent);
+            vec4 neighborColor = imageLoad(storageImage[frameIndex], sampleCoord);
+            vec4 neighborWorldPos = imageLoad(worldPosImage[frameIndex], sampleCoord);
+
+            float spatialWeight = exp(-0.5 * dot(offset, offset) / (sigma_d * sigma_d));
+            float colorDistance = length(centerColor.rgb - neighborColor.rgb);
+            float colorWeight = exp(-0.5 * (colorDistance * colorDistance) / (sigma_r * sigma_r));
+            float geometryWeight = 1.0;
+
+            if (centerWorldPos.w > 0.0 && neighborWorldPos.w > 0.0) {
+                vec4 neighborViewPos = pushConstant.viewMatrix[frameIndex] * neighborWorldPos;
+                float worldDistance = length(neighborWorldPos.xyz - centerWorldPos.xyz);
+                float depthDelta = abs(neighborViewPos.z - centerViewPos.z);
+                float positionWeight = exp(-0.5 * (worldDistance * worldDistance) / (positionSigma * positionSigma));
+                float depthWeight = exp(-0.5 * (depthDelta * depthDelta) / (depthSigma * depthSigma));
+                geometryWeight = positionWeight * depthWeight;
+            } else if (centerWorldPos.w != neighborWorldPos.w) {
+                geometryWeight = 0.0;
+            }
+
+            float weight = spatialWeight * colorWeight * geometryWeight;
+            sum += neighborColor.rgb * weight;
+            wSum += weight;
+        }
+    }
+
+    vec3 filteredColor = wSum > 0.0 ? sum / wSum : centerColor.rgb;
+    return vec4(filteredColor, 1.0);
+}
+
+void computeShadowStatistics(int frameIndex,
+                             ivec2 coord,
+                             ivec2 extent,
+                             vec4 centerWorldPos,
+                             vec3 centerDirectLighting,
+                             float centerVisibility,
+                             float varianceHint,
+                             out float filteredVisibility,
+                             out float minVisibility,
+                             out float maxVisibility,
+                             out float meanVisibility) {
+    ivec2 safeCoord = clampCoord(coord, extent);
+    vec4 centerViewPos = pushConstant.viewMatrix[frameIndex] * centerWorldPos;
+    float centerDepth = max(abs(centerViewPos.z), 1.0);
+    float positionSigma = max(0.05, centerDepth * 0.015);
+    float depthSigma = max(0.05, centerDepth * 0.0075);
+    float centerLighting = max(luminance(centerDirectLighting), ShadowMinDirectLighting);
+    float lightingSigma = max(0.05, centerLighting * 0.5);
+    float visibilitySigma = mix(0.08, 0.22, saturate(sqrt(max(varianceHint, 0.0)) * ShadowVarianceScale));
+
+    float weightedVisibility = 0.0;
+    float totalWeight = 0.0;
+    minVisibility = 1.0;
+    maxVisibility = 0.0;
+    meanVisibility = 0.0;
+    int sampleCount = 0;
+
+    for (int x = -shadowFilterSize; x <= shadowFilterSize; ++x) {
+        for (int y = -shadowFilterSize; y <= shadowFilterSize; ++y) {
+            vec2 offset = vec2(x, y);
+            ivec2 sampleCoord = clampCoord(safeCoord + ivec2(x, y), extent);
+            vec4 neighborShadowTerm = imageLoad(shadowTermImages[frameIndex], sampleCoord);
+            vec4 neighborWorldPos = imageLoad(worldPosImage[frameIndex], sampleCoord);
+            float neighborVisibility = saturate(neighborShadowTerm.a);
+            float spatialWeight = exp(-0.5 * dot(offset, offset) / (sigma_d * sigma_d));
+            float geometryWeight = 1.0;
+            float lightingWeight = 1.0;
+            float visibilityWeight = 1.0;
+
+            if (centerWorldPos.w > 0.0 && neighborWorldPos.w > 0.0) {
+                vec4 neighborViewPos = pushConstant.viewMatrix[frameIndex] * neighborWorldPos;
+                float worldDistance = length(neighborWorldPos.xyz - centerWorldPos.xyz);
+                float depthDelta = abs(neighborViewPos.z - centerViewPos.z);
+                float positionWeight = exp(-0.5 * (worldDistance * worldDistance) / (positionSigma * positionSigma));
+                float depthWeight = exp(-0.5 * (depthDelta * depthDelta) / (depthSigma * depthSigma));
+                geometryWeight = positionWeight * depthWeight;
+            } else if (centerWorldPos.w != neighborWorldPos.w) {
+                geometryWeight = 0.0;
+            }
+
+            float neighborLighting = luminance(neighborShadowTerm.rgb);
+            float lightingDelta = abs(neighborLighting - centerLighting);
+            lightingWeight = exp(-0.5 * (lightingDelta * lightingDelta) / (lightingSigma * lightingSigma));
+
+            float visibilityDelta = abs(neighborVisibility - centerVisibility);
+            visibilityWeight = exp(-0.5 * (visibilityDelta * visibilityDelta) / (visibilitySigma * visibilitySigma));
+
+            float weight = spatialWeight * geometryWeight * lightingWeight * visibilityWeight;
+            weightedVisibility += neighborVisibility * weight;
+            totalWeight += weight;
+            minVisibility = min(minVisibility, neighborVisibility);
+            maxVisibility = max(maxVisibility, neighborVisibility);
+            meanVisibility += neighborVisibility;
+            sampleCount++;
+        }
+    }
+
+    filteredVisibility = totalWeight > 0.0 ? weightedVisibility / totalWeight : centerVisibility;
+    meanVisibility = sampleCount > 0 ? meanVisibility / float(sampleCount) : centerVisibility;
 }
 
 void main() {
-    int lastFrameIndex = 1 - pushConstant.rayTracingImageIndex;
+    int currentFrameIndex = pushConstant.rayTracingImageIndex;
+    int lastFrameIndex = 1 - currentFrameIndex;
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
-
-    mat4 lastFrameViewMatrix = pushConstant.viewMatrix[lastFrameIndex];
-    vec4 worldPos = imageLoad(worldPosImage[pushConstant.rayTracingImageIndex], coord);
-    vec4 lastFrameWorldPos = imageLoad(worldPosImage[lastFrameIndex], coord);
-    vec4 viewPos = pushConstant.viewMatrix[pushConstant.rayTracingImageIndex] * worldPos;
-    imageStore(viewPosImages[pushConstant.rayTracingImageIndex], coord, viewPos);
-
-    vec4 lastFrameViewPos = pushConstant.viewMatrix[lastFrameIndex] * worldPos;
-    vec4 clipPos = (ubo.projectionMatrix * lastFrameViewPos);
-    clipPos /= clipPos.w;
-    vec2 lastFrameUv = (clipPos.xy * 0.5 + 0.5);
-    ivec2 lastFrameCoord = ivec2(lastFrameUv * imageSize(storageImage[lastFrameIndex]));
-    vec4 denoisedLastFrameColor = bilateralFilter(lastFrameIndex, lastFrameCoord);
-    vec4 denoisedCurrentFrameColor = bilateralFilter(pushConstant.rayTracingImageIndex, coord);
-
-    if (worldPos.w == 0.0) {
-        imageStore(denoisingAccumulationImage, coord, vec4(denoisedCurrentFrameColor.xyz * 0.01, 0.01));
-        imageStore(storageImage[pushConstant.rayTracingImageIndex], coord, denoisedCurrentFrameColor);
+    ivec2 extent = imageSize(storageImage[currentFrameIndex]);
+    if (coord.x >= extent.x || coord.y >= extent.y) {
         return;
     }
 
-    vec4 denoisingAccumulation = imageLoad(denoisingAccumulationImage, lastFrameCoord);
-    if (length(viewPos.xyz - lastFrameViewPos.xyz) > 0) {
-        if (isUVValid(lastFrameUv)) {
-            denoisingAccumulation.xyz = 0.01 * denoisedLastFrameColor.xyz * 5;
-//            denoisingAccumulation.xyz = 0.01 * denoisedCurrentFrameColor.xyz * 5;
-            denoisingAccumulation.w = 0.01 * 5;
+    vec4 worldPos = imageLoad(worldPosImage[currentFrameIndex], coord);
+    vec4 currentFilteredColor = bilateralFilter(currentFrameIndex, coord);
+    vec4 currentShadowTerm = imageLoad(shadowTermImages[currentFrameIndex], coord);
+    vec3 currentDirectLighting = max(currentShadowTerm.rgb, vec3(0.0));
+    float currentShadowVisibility = saturate(currentShadowTerm.a);
+    bool hasDirectLighting = luminance(currentDirectLighting) > ShadowMinDirectLighting;
+
+    if (!hasDirectLighting) {
+        currentShadowVisibility = 1.0;
+    }
+
+    bool resetAccumulation = pushConstant.firstFrame || pushConstant.sceneUpdated || worldPos.w == 0.0;
+    ivec2 lastFrameCoord = coord;
+
+    if (!resetAccumulation) {
+        vec4 lastFrameViewPos = pushConstant.viewMatrix[lastFrameIndex] * worldPos;
+        vec4 clipPos = ubo.projectionMatrix * lastFrameViewPos;
+        if (clipPos.w <= 0.0) {
+            resetAccumulation = true;
         } else {
-            denoisingAccumulation.xyz = vec3(0);
-            denoisingAccumulation.w = 0;
+            clipPos /= clipPos.w;
+            vec2 lastFrameUv = clipPos.xy * 0.5 + 0.5;
+            if (!isUVValid(lastFrameUv)) {
+                resetAccumulation = true;
+            } else {
+                lastFrameCoord = clampCoord(ivec2(lastFrameUv * vec2(extent)), extent);
+                vec4 reprojectedWorldPos = imageLoad(worldPosImage[lastFrameIndex], lastFrameCoord);
+                float resetThreshold = max(WorldPositionResetThreshold, length(worldPos.xyz) * 0.002);
+                if (reprojectedWorldPos.w == 0.0 || distance(reprojectedWorldPos.xyz, worldPos.xyz) > resetThreshold) {
+                    resetAccumulation = true;
+                }
+            }
         }
     }
-    if (pushConstant.sceneUpdated) {
-        denoisingAccumulation.xyz = 0.01 * denoisedLastFrameColor.xyz * 5;
-        denoisingAccumulation.w = 0.01 * 5;
-    } 
 
-    denoisingAccumulation.xyz += 0.01 * denoisedCurrentFrameColor.xyz;
-    denoisingAccumulation.w += 0.01;
+    float filteredShadowVisibility = currentShadowVisibility;
+    float neighborhoodMin = currentShadowVisibility;
+    float neighborhoodMax = currentShadowVisibility;
+    float neighborhoodMean = currentShadowVisibility;
+    float stabilizedShadowVisibility = currentShadowVisibility;
+    float shadowSecondMoment = currentShadowVisibility * currentShadowVisibility;
+    float shadowVariance = 0.0;
+    float shadowHistoryCount = hasDirectLighting ? 1.0 : 0.0;
 
-    vec4 outColor = denoisingAccumulation.xyzw / denoisingAccumulation.w;
+    if (hasDirectLighting && worldPos.w > 0.0) {
+        computeShadowStatistics(currentFrameIndex,
+                                coord,
+                                extent,
+                                worldPos,
+                                currentDirectLighting,
+                                currentShadowVisibility,
+                                0.0,
+                                filteredShadowVisibility,
+                                neighborhoodMin,
+                                neighborhoodMax,
+                                neighborhoodMean);
+        stabilizedShadowVisibility = filteredShadowVisibility;
+        shadowSecondMoment = filteredShadowVisibility * filteredShadowVisibility;
 
-    imageStore(denoisingAccumulationImage, coord, denoisingAccumulation);
-    imageStore(storageImage[pushConstant.rayTracingImageIndex], coord, outColor);
+        if (!resetAccumulation) {
+            vec4 lastShadowMoments = imageLoad(shadowMomentsImages[lastFrameIndex], lastFrameCoord);
+            float lastMean = saturate(lastShadowMoments.x);
+            float lastSecondMoment = max(lastShadowMoments.y, lastMean * lastMean);
+            float lastHistoryCount = clamp(lastShadowMoments.z, 1.0, MaxAccumulationFrames);
+            float neighborExpansion = max(0.03, max(neighborhoodMean * HistoryClipExpansion, sqrt(max(lastShadowMoments.w, 0.0)) * 1.5));
+            float clippedLastMean = clamp(lastMean, neighborhoodMin - neighborExpansion, neighborhoodMax + neighborExpansion);
+            float currentSample = clamp(filteredShadowVisibility, neighborhoodMin - neighborExpansion, neighborhoodMax + neighborExpansion);
+            float historyBlend = 1.0 / (lastHistoryCount + 1.0);
+            float temporalMean = mix(clippedLastMean, currentSample, historyBlend);
+            float temporalSecondMoment = mix(lastSecondMoment, currentSample * currentSample, historyBlend);
+            shadowVariance = max(temporalSecondMoment - temporalMean * temporalMean, 0.0);
+            shadowHistoryCount = min(lastHistoryCount + 1.0, MaxAccumulationFrames);
+
+            computeShadowStatistics(currentFrameIndex,
+                                    coord,
+                                    extent,
+                                    worldPos,
+                                    currentDirectLighting,
+                                    temporalMean,
+                                    shadowVariance,
+                                    filteredShadowVisibility,
+                                    neighborhoodMin,
+                                    neighborhoodMax,
+                                    neighborhoodMean);
+
+            float temporalTrust = clamp(shadowHistoryCount / 8.0, 0.0, 1.0);
+            temporalTrust *= (1.0 - clamp(sqrt(max(shadowVariance, 0.0)) * 4.0, 0.0, 0.75));
+            stabilizedShadowVisibility = mix(filteredShadowVisibility, temporalMean, temporalTrust);
+            stabilizedShadowVisibility = clamp(stabilizedShadowVisibility,
+                                              neighborhoodMin - neighborExpansion,
+                                              neighborhoodMax + neighborExpansion);
+            shadowSecondMoment = temporalSecondMoment;
+        }
+    }
+
+    vec3 shadowCorrectedColor = currentFilteredColor.rgb + currentDirectLighting * (stabilizedShadowVisibility - currentShadowVisibility);
+    vec4 accumulation;
+    if (resetAccumulation) {
+        accumulation = vec4(shadowCorrectedColor, 1.0);
+    } else {
+        vec4 lastAccumulation = imageLoad(denoisingAccumulationImage, lastFrameCoord);
+        float sampleCount = clamp(lastAccumulation.w, 1.0, MaxAccumulationFrames);
+        vec3 clampedHistory = clampHistoryToNeighborhood(currentFrameIndex, coord, extent, lastAccumulation.rgb);
+        vec3 averagedColor = (clampedHistory * sampleCount + shadowCorrectedColor) / (sampleCount + 1.0);
+        accumulation = vec4(averagedColor, min(sampleCount + 1.0, MaxAccumulationFrames));
+    }
+
+    imageStore(shadowMomentsImages[currentFrameIndex], coord, vec4(stabilizedShadowVisibility,
+                                                                   shadowSecondMoment,
+                                                                   shadowHistoryCount,
+                                                                   shadowVariance));
+    imageStore(denoisingAccumulationImage, coord, accumulation);
+    imageStore(storageImage[currentFrameIndex], coord, vec4(accumulation.rgb, 1.0));
 }
