@@ -140,7 +140,11 @@ vec3 sampleShadowDirection(vec3 worldPos, Light light, vec3 baseDirection, float
     return normalize(baseDirection + offsetDirection * DirectionalLightAngularRadius);
 }
 
-const int FirstBounceReflectionSamples = 4;
+const int FirstBounceReflectionSamples = 1;
+const float ReflectionRayFadeStart = 0.24;
+const float ReflectionRayFadeEnd = 0.52;
+const float ReflectionJitterRoughness = 0.18;
+const float MaxReflectionContributionLuminance = 16.0;
 
 vec3 safeNormalize(vec3 value, vec3 fallback) {
     float lengthSquared = dot(value, value);
@@ -168,8 +172,62 @@ int reflectionSampleCount(int bounceCount) {
 
 vec3 buildReflectionDirection(vec3 worldNormal, vec3 pixelToView, float roughness, float sampleSeed) {
     vec3 perfectReflection = safeNormalize(reflect(-pixelToView, worldNormal), worldNormal);
+    if (roughness <= ReflectionJitterRoughness) {
+        return perfectReflection;
+    }
+
     vec3 sampledReflection = sampleGGXReflection(worldNormal, pixelToView, roughness, sampleSeed);
-    return safeNormalize(sampledReflection, perfectReflection);
+    float jitterWeight = smoothstep(ReflectionJitterRoughness, ReflectionRayFadeEnd, roughness);
+    return safeNormalize(mix(perfectReflection, sampledReflection, jitterWeight * 0.35), perfectReflection);
+}
+
+float stableReflectionSeed(vec3 worldPos, int sampleIndex, int bounceCount) {
+    vec2 launch = vec2(gl_LaunchIDEXT.xy);
+    return dot(launch, vec2(0.75487766, 0.56984029))
+         + dot(worldPos, vec3(0.1031, 0.11369, 0.13787))
+         + float(gl_PrimitiveID) * 0.0973
+         + float(gl_InstanceCustomIndexEXT) * 0.1937
+         + float(bounceCount) * 0.3719
+         + float(sampleIndex) * 0.61803399;
+}
+
+vec3 clampReflectionContribution(vec3 contribution) {
+    contribution = max(contribution, vec3(0.0));
+    float contributionLuminance = luminance(contribution);
+    if (contributionLuminance > MaxReflectionContributionLuminance) {
+        contribution *= MaxReflectionContributionLuminance / contributionLuminance;
+    }
+    return contribution;
+}
+
+vec3 sampleStableGlossyEnvironment(vec3 reflectionDirection, float roughness) {
+    vec3 direction = safeNormalize(reflectionDirection, vec3(0.0, 1.0, 0.0));
+    mat3 basis = orthonormalBasis(direction);
+    float coneRadius = clamp(roughness * roughness * 1.35, 0.0, 0.95);
+
+    const vec2 sampleDisk[8] = vec2[](
+        vec2(0.0, 0.0),
+        vec2(0.7071, 0.0),
+        vec2(-0.7071, 0.0),
+        vec2(0.0, 0.7071),
+        vec2(0.0, -0.7071),
+        vec2(0.5, 0.5),
+        vec2(-0.5, 0.5),
+        vec2(0.5, -0.5)
+    );
+
+    vec3 radiance = vec3(0.0);
+    float totalWeight = 0.0;
+    for (int i = 0; i < 8; ++i) {
+        vec2 disk = sampleDisk[i] * coneRadius;
+        float z = sqrt(max(1.0 - dot(disk, disk), 0.0));
+        vec3 sampleDirection = safeNormalize(basis * vec3(disk, z), direction);
+        float weight = i == 0 ? 2.0 : 1.0;
+        radiance += sampleEnvironmentRadiance(sampleDirection) * weight;
+        totalWeight += weight;
+    }
+
+    return radiance / max(totalWeight, 0.0001);
 }
 
 vec3 estimateDiffuseIrradiance(vec3 worldNormal) {
@@ -324,12 +382,11 @@ void main()
 
     if (payLoad.isBouncing) {
         lo = (lo + pbr.emissive) * pbr.opacity;
+        lo *= payLoad.throughput;
+        payLoad.hitValue += lo;
     } else {
-        lo = (1.0 - payLoad.opacity) * (lo + pbr.emissive) * pbr.opacity;
         payLoad.opacity += (1.0 - payLoad.opacity) * pbr.opacity;
     }
-    lo *= payLoad.throughput;
-    payLoad.hitValue += lo;
 
     int maxBouncesForSurface = MAX_BOUNCE_COUNT;
     if (payLoad.bounceCount < maxBouncesForSurface)
@@ -340,49 +397,64 @@ void main()
         vec3 bounceWeight = min(fresnelSchlickFunction(max(dot(pixelToView, worldNormal), 0.0), f0), vec3(0.98));
         float bounceEnergy = maxComponent(payLoad.throughput * bounceWeight);
         if (bounceEnergy > MinimumBounceThroughput) {
-            int sampleCount = reflectionSampleCount(payLoad.bounceCount);
-            vec3 parentHitValue = payLoad.hitValue;
+            vec3 baseHitValue = payLoad.hitValue;
             vec3 parentThroughput = payLoad.throughput;
             float parentOpacity = payLoad.opacity;
             float parentAccumulatedDistance = payLoad.accumulatedDistance;
             int parentBounceCount = payLoad.bounceCount;
             bool parentIsBouncing = payLoad.isBouncing;
-            vec3 reflectionContribution = vec3(0.0);
-            int validReflectionSamples = 0;
 
-            for (int sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex) {
-                float sampleSeed = mod(ubo.curTime, 4096.0) * 17.0
-                                 + dot(worldPos, vec3(12.9898, 78.233, 45.164))
-                                 + float(gl_PrimitiveID) * 0.73
-                                 + float(gl_InstanceCustomIndexEXT) * 1.37
-                                 + float(parentBounceCount) * 11.17
-                                 + float(sampleIndex) * 97.13;
-                vec3 bounceDirection = buildReflectionDirection(worldNormal, pixelToView, pbr.roughness, sampleSeed);
-                if (dot(bounceDirection, worldNormal) <= 0.0001) {
-                    continue;
+            vec3 perfectReflection = safeNormalize(reflect(-pixelToView, worldNormal), worldNormal);
+            float rayTraceWeight = 1.0 - smoothstep(ReflectionRayFadeStart, ReflectionRayFadeEnd, pbr.roughness);
+            float environmentWeight = 1.0 - rayTraceWeight;
+            vec3 combinedReflectionContribution = vec3(0.0);
+
+            if (environmentWeight > 0.001) {
+                vec3 stableEnvironmentReflection = parentThroughput * bounceWeight * sampleStableGlossyEnvironment(perfectReflection, pbr.roughness);
+                combinedReflectionContribution += clampReflectionContribution(stableEnvironmentReflection) * environmentWeight;
+            }
+
+            if (rayTraceWeight > 0.001) {
+                int sampleCount = reflectionSampleCount(parentBounceCount);
+                vec3 reflectionContribution = vec3(0.0);
+                int validReflectionSamples = 0;
+
+                for (int sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex) {
+                    float sampleSeed = stableReflectionSeed(worldPos, sampleIndex, parentBounceCount);
+                    vec3 bounceDirection = buildReflectionDirection(worldNormal, pixelToView, pbr.roughness, sampleSeed);
+                    if (dot(bounceDirection, worldNormal) <= 0.0001) {
+                        continue;
+                    }
+
+                    payLoad.bounceCount = parentBounceCount + 1;
+                    payLoad.isBouncing = true;
+                    payLoad.opacity = 0.0;
+                    payLoad.throughput = parentThroughput * bounceWeight;
+                    payLoad.accumulatedDistance = parentAccumulatedDistance;
+                    vec3 bounceOrigin = offsetRayOrigin(worldPos, worldNormal, bounceDirection, PrimaryRayBias);
+                    traceRayEXT(topLevelAS, gl_RayFlagsNoneEXT, DEFAULT_RENDER_LAYER_MASK, 0, 0, 0, bounceOrigin, tMin, bounceDirection, tMax, 0);
+
+                    reflectionContribution += clampReflectionContribution(payLoad.hitValue - baseHitValue);
+                    payLoad.hitValue = baseHitValue;
+                    payLoad.opacity = parentOpacity;
+                    payLoad.accumulatedDistance = parentAccumulatedDistance;
+                    payLoad.bounceCount = parentBounceCount;
+                    payLoad.isBouncing = parentIsBouncing;
+                    payLoad.throughput = parentThroughput;
+                    validReflectionSamples++;
                 }
 
-                payLoad.bounceCount = parentBounceCount + 1;
-                payLoad.isBouncing = true;
-                payLoad.opacity = 0.0;
-                payLoad.throughput = parentThroughput * bounceWeight;
-                payLoad.accumulatedDistance = parentAccumulatedDistance;
-                vec3 bounceOrigin = offsetRayOrigin(worldPos, worldNormal, bounceDirection, PrimaryRayBias);
-                traceRayEXT(topLevelAS, gl_RayFlagsNoneEXT, DEFAULT_RENDER_LAYER_MASK, 0, 0, 0, bounceOrigin, tMin, bounceDirection, tMax, 0);
-
-                reflectionContribution += payLoad.hitValue - parentHitValue;
-                payLoad.hitValue = parentHitValue;
-                payLoad.opacity = parentOpacity;
-                payLoad.accumulatedDistance = parentAccumulatedDistance;
-                payLoad.bounceCount = parentBounceCount;
-                payLoad.isBouncing = parentIsBouncing;
-                payLoad.throughput = parentThroughput;
-                validReflectionSamples++;
+                if (validReflectionSamples > 0) {
+                    combinedReflectionContribution += (reflectionContribution / float(validReflectionSamples)) * rayTraceWeight;
+                }
             }
 
-            if (validReflectionSamples > 0) {
-                payLoad.hitValue += reflectionContribution / float(validReflectionSamples);
-            }
+            payLoad.hitValue = baseHitValue + combinedReflectionContribution;
+            payLoad.opacity = parentOpacity;
+            payLoad.accumulatedDistance = parentAccumulatedDistance;
+            payLoad.bounceCount = parentBounceCount;
+            payLoad.isBouncing = parentIsBouncing;
+            payLoad.throughput = parentThroughput;
         }
     }
 

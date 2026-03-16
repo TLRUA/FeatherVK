@@ -1,4 +1,4 @@
-﻿#include <algorithm>
+#include <algorithm>
 #include <utility>
 
 #include "../Components/MeshRendererComponent.hpp"
@@ -60,6 +60,25 @@ namespace FeatherVK {
                 if (pipelineCategory == PipelineCategory.Compute) {
                     m_computeSystem = std::make_shared<ComputeSystem>(device, nullptr, materialPair.second, pipelineLibrary);
                     m_computeSystem->Init();
+                }
+
+                if (m_renderSystemMap.find(material->getMaterialId()) != m_renderSystemMap.end()) {
+                    continue;
+                }
+
+                std::shared_ptr<RenderSystem> renderSystem;
+                if (pipelineCategory == PipelineCategory.TessellationGeometry) {
+                    renderSystem = std::make_shared<GrassSystem>(device, renderer.getSceneColorRenderPass(), material, pipelineLibrary);
+                } else if (pipelineCategory == PipelineCategory.SkyBox) {
+                    renderSystem = std::make_shared<SkyBoxSystem>(device, renderer.getSceneColorRenderPass(), material, pipelineLibrary);
+                } else if (pipelineCategory == PipelineCategory.Opaque || pipelineCategory == PipelineCategory.Overlay
+                           || pipelineCategory == PipelineCategory.Light || pipelineCategory == PipelineCategory.Transparent) {
+                    renderSystem = std::make_shared<RenderSystem>(device, renderer.getSceneColorRenderPass(), material, pipelineLibrary);
+                }
+
+                if (renderSystem != nullptr) {
+                    renderSystem->Init();
+                    m_renderSystemMap[material->getMaterialId()] = renderSystem;
                 }
 #else
                 if (m_renderSystemMap.find(material->getMaterialId()) != m_renderSystemMap.end()) {
@@ -135,6 +154,12 @@ namespace FeatherVK {
 
             SyncRayTracingScene(frameInfo);
             frameInfo.pEntityDescBuffer->writeToBuffer(frameInfo.pEntityDescs.data(), frameInfo.pEntityDescs.size() * sizeof(EntityDesc));
+
+            renderer.beginSceneColorRenderPass(frameInfo.commandBuffer, frameIndex % 2);
+            RenderRasterScene(frameInfo);
+            renderer.endSceneColorRenderPass(frameInfo.commandBuffer);
+            renderer.setSceneColorToPostSynchronization(frameInfo.commandBuffer, frameIndex % 2);
+
             m_rayTracingSystem->UpdateGlobalUboBuffer(frameInfo.globalUbo, frameIndex);
             m_rayTracingSystem->rayTrace(frameInfo);
 
@@ -277,6 +302,44 @@ namespace FeatherVK {
             renderer.endPickingRenderPass(frameInfo.commandBuffer);
         }
 
+        void RenderRasterScene(FrameInfo &frameInfo) {
+            if (frameInfo.sceneRegistry == nullptr) {
+                return;
+            }
+
+            auto &sceneRegistry = *frameInfo.sceneRegistry;
+            std::vector<std::pair<std::shared_ptr<RenderSystem>, id_t>> renderQueue;
+            for (const id_t entityId: sceneRegistry.View<MeshRendererComponent, TransformComponent>()) {
+                if (!sceneRegistry.IsEntityActive(entityId)) {
+                    continue;
+                }
+
+                MeshRendererComponent *meshRendererComponent = nullptr;
+                if (!sceneRegistry.TryGetComponent(entityId, meshRendererComponent) || meshRendererComponent == nullptr) {
+                    continue;
+                }
+                if (!meshRendererComponent->IsVisible() || !meshRendererComponent->IsOnDefaultRenderLayer()) {
+                    continue;
+                }
+
+                const auto renderSystemIt = m_renderSystemMap.find(meshRendererComponent->GetMaterialID());
+                if (renderSystemIt == m_renderSystemMap.end() || renderSystemIt->second == nullptr) {
+                    continue;
+                }
+                renderQueue.emplace_back(renderSystemIt->second, entityId);
+            }
+
+            std::sort(renderQueue.begin(), renderQueue.end(), [](const auto &a, const auto &b) {
+                return a.first->GetRenderQueue() < b.first->GetRenderQueue();
+            });
+
+            for (auto &item: renderQueue) {
+                auto renderSystem = item.first;
+                const id_t entityId = item.second;
+                renderSystem->UpdateGlobalUboBuffer(frameInfo.globalUbo, frameInfo.frameIndex);
+                renderSystem->render(frameInfo, entityId, sceneRegistry);
+            }
+        }
 #ifdef RAY_TRACING
         void SyncRayTracingScene(FrameInfo &frameInfo) {
             if (frameInfo.sceneRegistry == nullptr) {

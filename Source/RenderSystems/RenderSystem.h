@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <memory>
 #include <glm/gtc/constants.hpp>
@@ -17,6 +17,8 @@ namespace FeatherVK {
         //按对角线初始化
         glm::mat4 modelMatrix{1.f};
         glm::mat4 normalMatrix{1.f};
+        glm::vec4 baseColorMetallic{0.8f, 0.8f, 0.8f, 0.0f};
+        glm::vec4 emissiveRoughnessOpacity{0.0f, 0.0f, 0.0f, 1.0f};
     };
 
     struct PointLightPushConstant {

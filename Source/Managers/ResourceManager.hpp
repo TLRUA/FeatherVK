@@ -532,12 +532,53 @@ namespace FeatherVK {
 
         }
 
+        //Hybrid raster materials mirror ray tracing material IDs so MeshRendererComponent can draw a raster scene color base.
+        {
+            auto hybridRasterDescriptorSetLayoutPtr =
+                    DescriptorSetLayout::Builder(m_device).
+                            addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT).
+                            build();
+
+            auto hybridRasterDescriptorSet = std::make_shared<VkDescriptorSet>();
+            DescriptorWriter(hybridRasterDescriptorSetLayoutPtr, *m_globalPool).
+                    writeBuffer(0, globalUboBufferPtr->descriptorInfo()).
+                    build(hybridRasterDescriptorSet);
+
+            for (const auto &materialDescEntry: m_rayTracingMaterialDescs) {
+                const auto materialId = materialDescEntry.first;
+                if (m_materials.find(materialId) != m_materials.end()) {
+                    continue;
+                }
+
+                std::vector<std::shared_ptr<ShaderModule>> shaderModulePointers{
+                        shaderLibrary.LoadStage("Hybrid/HybridRaster.vert.spv", ShaderCategory::vertex),
+                        shaderLibrary.LoadStage("Hybrid/HybridRaster.frag.spv", ShaderCategory::fragment)};
+                std::vector<std::shared_ptr<DescriptorSetLayout>> descriptorSetLayoutPointers{hybridRasterDescriptorSetLayoutPtr};
+                std::vector<std::shared_ptr<VkDescriptorSet>> descriptorSetPointers{hybridRasterDescriptorSet};
+                std::vector<std::shared_ptr<Image>> imagePointers{};
+                std::vector<std::shared_ptr<Sampler>> samplerPointers{};
+                std::vector<std::shared_ptr<Buffer>> bufferPointers{globalUboBufferPtr};
+
+                auto hybridRasterMaterial = std::make_shared<Material>(m_device,
+                                                                        materialId,
+                                                                        shaderModulePointers,
+                                                                        descriptorSetLayoutPointers,
+                                                                        descriptorSetPointers,
+                                                                        imagePointers,
+                                                                        samplerPointers,
+                                                                        bufferPointers,
+                                                                        PipelineCategory.Opaque);
+                m_materials.emplace(materialId, std::move(hybridRasterMaterial));
+            }
+        }
         //Post
         {
             auto postSystemDescriptorSetLayoutPtr =
                     DescriptorSetLayout::Builder(m_device).
                             addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT).
                             addBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT, 2).
+                            addBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT, 2).
+                            addBinding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT, 2).
                             build();
 
 
@@ -549,11 +590,29 @@ namespace FeatherVK {
             offScreenPostImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             offscreenImageInfos.emplace_back(*offScreenPostImageInfo);
 
+            std::vector<VkDescriptorImageInfo> sceneColorImageInfos{};
+            auto sceneColorImageInfo = m_renderer.getSceneColorImageColor(0)->descriptorInfo();
+            sceneColorImageInfo->imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            sceneColorImageInfos.emplace_back(*sceneColorImageInfo);
+            sceneColorImageInfo = m_renderer.getSceneColorImageColor(1)->descriptorInfo();
+            sceneColorImageInfo->imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            sceneColorImageInfos.emplace_back(*sceneColorImageInfo);
+
+            std::vector<VkDescriptorImageInfo> shadowTermImageInfos{};
+            auto shadowTermImageInfo = m_renderer.getShadowTermImageColor(0)->descriptorInfo();
+            shadowTermImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            shadowTermImageInfos.emplace_back(*shadowTermImageInfo);
+            shadowTermImageInfo = m_renderer.getShadowTermImageColor(1)->descriptorInfo();
+            shadowTermImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            shadowTermImageInfos.emplace_back(*shadowTermImageInfo);
+
             auto postSystemDescriptorSet = std::make_shared<VkDescriptorSet>();
             auto postDescriptorSet = std::make_shared<VkDescriptorSet>();
             DescriptorWriter(postSystemDescriptorSetLayoutPtr, *m_globalPool).
                     writeBuffer(0, globalUboBufferPtr->descriptorInfo()).
                     writeImages(1, offscreenImageInfos).
+                    writeImages(2, sceneColorImageInfos).
+                    writeImages(3, shadowTermImageInfos).
                     build(postDescriptorSet);
 
             std::vector<std::shared_ptr<ShaderModule>> shaderModulePointers{
@@ -844,9 +903,27 @@ namespace FeatherVK {
             imageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             offscreenImageInfos.emplace_back(*imageInfo);
 
+            std::vector<VkDescriptorImageInfo> sceneColorImageInfos{};
+            auto sceneColorImageInfo = m_renderer.getSceneColorImageColor(0)->descriptorInfo();
+            sceneColorImageInfo->imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            sceneColorImageInfos.emplace_back(*sceneColorImageInfo);
+            sceneColorImageInfo = m_renderer.getSceneColorImageColor(1)->descriptorInfo();
+            sceneColorImageInfo->imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            sceneColorImageInfos.emplace_back(*sceneColorImageInfo);
+
+            std::vector<VkDescriptorImageInfo> shadowTermImageInfos{};
+            auto shadowTermImageInfo = m_renderer.getShadowTermImageColor(0)->descriptorInfo();
+            shadowTermImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            shadowTermImageInfos.emplace_back(*shadowTermImageInfo);
+            shadowTermImageInfo = m_renderer.getShadowTermImageColor(1)->descriptorInfo();
+            shadowTermImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            shadowTermImageInfos.emplace_back(*shadowTermImageInfo);
+
             DescriptorWriter(descriptorSetLayouts[0], *m_globalPool).
                     writeBuffer(0, bufferPointers[0]->descriptorInfo()).
                     writeImages(1, offscreenImageInfos).
+                    writeImages(2, sceneColorImageInfos).
+                    writeImages(3, shadowTermImageInfos).
                     overwrite(*descriptorSets[0]);
             return true;
         }

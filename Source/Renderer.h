@@ -33,6 +33,8 @@ namespace FeatherVK {
 
         void beginSwapChainRenderPass(VkCommandBuffer commandBuffer);
 
+        void beginSceneColorRenderPass(VkCommandBuffer commandBuffer, uint32_t imageIndex);
+
         void beginGizmosRenderPass(VkCommandBuffer commandBuffer);
 
         void beginPickingRenderPass(VkCommandBuffer commandBuffer);
@@ -41,6 +43,8 @@ namespace FeatherVK {
 
         void endSwapChainRenderPass(VkCommandBuffer commandBuffer);
 
+        void endSceneColorRenderPass(VkCommandBuffer commandBuffer);
+
         void endGizmosRenderPass(VkCommandBuffer commandBuffer);
 
         void endPickingRenderPass(VkCommandBuffer commandBuffer);
@@ -48,6 +52,10 @@ namespace FeatherVK {
         void endShadowRenderPass(VkCommandBuffer commandBuffer);
 
         void setShadowMapSynchronization(VkCommandBuffer commandBuffer);
+
+#ifdef RAY_TRACING
+        void setSceneColorToPostSynchronization(VkCommandBuffer commandBuffer, uint32_t imageIndex);
+#endif
 
 #ifdef RAY_TRACING
 
@@ -83,6 +91,10 @@ namespace FeatherVK {
 
         const VkRenderPass &getShadowRenderPass() const {
             return shadowRenderPass;
+        }
+
+        const VkRenderPass &getSceneColorRenderPass() const {
+            return m_sceneColorRenderPass;
         }
 
         const VkRenderPass &getPickingRenderPass() const {
@@ -129,8 +141,12 @@ namespace FeatherVK {
             return m_offscreenImageColors[index];
         }
 
+        const std::shared_ptr<Image> &getSceneColorImageColor(int index) const {
+            return m_sceneColorImageColors[index];
+        }
+
         [[nodiscard]] RenderCore::RenderTargetView GetSceneColorTarget(int index) const {
-            return RenderCore::MakeRenderTargetView(m_offscreenImageColors[index], m_sceneRenderExtent, m_offscreenSampler);
+            return RenderCore::MakeRenderTargetView(m_sceneColorImageColors[index], m_sceneRenderExtent, m_offscreenSampler);
         }
 
         const std::shared_ptr<Image> &getShadowTermImageColor(int index) const {
@@ -195,6 +211,7 @@ namespace FeatherVK {
         VkRenderPass shadowRenderPass = VK_NULL_HANDLE;
 
         std::vector<std::shared_ptr<Image>> m_offscreenImageColors;
+        std::vector<std::shared_ptr<Image>> m_sceneColorImageColors;
         std::vector<std::shared_ptr<Image>> m_shadowTermImageColors;
         std::vector<std::shared_ptr<Image>> m_shadowMomentsImageColors;
         std::vector<std::shared_ptr<Image>> m_worldPosImage;
@@ -206,6 +223,8 @@ namespace FeatherVK {
         std::shared_ptr<Image> m_pickingDepthImage;
         std::shared_ptr<Buffer> m_pickingReadbackBuffer;
         VkRenderPass m_pickingRenderPass = VK_NULL_HANDLE;
+        VkRenderPass m_sceneColorRenderPass = VK_NULL_HANDLE;
+        std::vector<VkFramebuffer> m_sceneColorFramebuffers;
         VkFramebuffer m_pickingFramebuffer = VK_NULL_HANDLE;
         VkExtent2D m_pickingExtent{};
         bool m_hasPickingData = false;

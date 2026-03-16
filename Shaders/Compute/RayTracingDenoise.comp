@@ -32,13 +32,15 @@ layout (push_constant, std430) uniform PushConstant {
 
 layout (local_size_x = 16, local_size_y = 16) in;
 
-const int filterSize = 2;
-const int shadowFilterSize = 2;
-const float sigma_d = 2.0;
-const float sigma_r = 0.15;
-const float MaxAccumulationFrames = 64.0;
-const float WorldPositionResetThreshold = 0.05;
-const float HistoryClipExpansion = 0.15;
+const int filterSize = 12;
+const int shadowFilterSize = 8;
+const int HistoryNeighborhoodRadius = 2;
+const float sigma_d = 12.0;
+const float sigma_r = 6.0;
+const float MaxAccumulationFrames = 2048.0;
+const float WorldPositionResetThreshold = 0.08;
+const float HistoryClipExpansion = 3.0;
+const float TemporalCurrentWeight = 0.005;
 const float ShadowMinDirectLighting = 0.0005;
 const float ShadowVarianceScale = 8.0;
 
@@ -58,28 +60,25 @@ ivec2 clampCoord(ivec2 coord, ivec2 extent) {
     return clamp(coord, ivec2(0), extent - ivec2(1));
 }
 
-vec3 clampHistoryToNeighborhood(int frameIndex, ivec2 coord, ivec2 extent, vec3 historyColor) {
-    vec3 minColor = vec3(1e20);
-    vec3 maxColor = vec3(-1e20);
-    vec3 meanColor = vec3(0.0);
-    int sampleCount = 0;
+vec3 stabilizeCurrentAgainstHistory(vec3 currentColor, vec3 historyColor) {
+    currentColor = clamp(currentColor, vec3(0.0), vec3(64.0));
+    historyColor = clamp(historyColor, vec3(0.0), vec3(64.0));
 
-    for (int x = -1; x <= 1; x++) {
-        for (int y = -1; y <= 1; y++) {
-            ivec2 sampleCoord = clampCoord(coord + ivec2(x, y), extent);
-            vec3 sampleColor = imageLoad(storageImage[frameIndex], sampleCoord).rgb;
-            minColor = min(minColor, sampleColor);
-            maxColor = max(maxColor, sampleColor);
-            meanColor += sampleColor;
-            sampleCount++;
-        }
+    float historyLum = luminance(historyColor);
+    float currentLum = luminance(currentColor);
+
+    if (historyLum > 0.02 && currentLum < historyLum * 0.75) {
+        currentColor = historyColor;
+        currentLum = historyLum;
     }
 
-    meanColor /= float(sampleCount);
-    vec3 historyRange = max(abs(meanColor) * HistoryClipExpansion, vec3(0.05));
-    vec3 expandedMin = min(minColor, meanColor - historyRange);
-    vec3 expandedMax = max(maxColor, meanColor + historyRange);
-    return clamp(historyColor, expandedMin, expandedMax);
+    if (historyLum > 0.02 && currentLum > historyLum * 1.6) {
+        currentColor = mix(historyColor, currentColor, 0.15);
+    }
+
+    vec3 allowedDrop = max(abs(historyColor) * 0.04, vec3(0.01));
+    vec3 allowedRise = max(abs(historyColor) * 0.16, vec3(0.04));
+    return clamp(currentColor, historyColor - allowedDrop, historyColor + allowedRise);
 }
 
 vec4 bilateralFilter(int frameIndex, ivec2 coord) {
@@ -89,8 +88,8 @@ vec4 bilateralFilter(int frameIndex, ivec2 coord) {
     vec4 centerWorldPos = imageLoad(worldPosImage[frameIndex], safeCoord);
     vec4 centerViewPos = pushConstant.viewMatrix[frameIndex] * centerWorldPos;
     float centerDepth = max(abs(centerViewPos.z), 1.0);
-    float positionSigma = max(0.05, centerDepth * 0.02);
-    float depthSigma = max(0.1, centerDepth * 0.01);
+    float positionSigma = max(0.35, centerDepth * 0.16);
+    float depthSigma = max(0.60, centerDepth * 0.10);
 
     vec3 sum = vec3(0.0);
     float wSum = 0.0;
@@ -141,11 +140,11 @@ void computeShadowStatistics(int frameIndex,
     ivec2 safeCoord = clampCoord(coord, extent);
     vec4 centerViewPos = pushConstant.viewMatrix[frameIndex] * centerWorldPos;
     float centerDepth = max(abs(centerViewPos.z), 1.0);
-    float positionSigma = max(0.05, centerDepth * 0.015);
-    float depthSigma = max(0.05, centerDepth * 0.0075);
+    float positionSigma = max(0.30, centerDepth * 0.11);
+    float depthSigma = max(0.30, centerDepth * 0.06);
     float centerLighting = max(luminance(centerDirectLighting), ShadowMinDirectLighting);
-    float lightingSigma = max(0.05, centerLighting * 0.5);
-    float visibilitySigma = mix(0.08, 0.22, saturate(sqrt(max(varianceHint, 0.0)) * ShadowVarianceScale));
+    float lightingSigma = max(0.25, centerLighting * 2.5);
+    float visibilitySigma = mix(0.55, 1.0, saturate(sqrt(max(varianceHint, 0.0)) * ShadowVarianceScale));
 
     float weightedVisibility = 0.0;
     float totalWeight = 0.0;
@@ -208,7 +207,7 @@ void main() {
     }
 
     vec4 worldPos = imageLoad(worldPosImage[currentFrameIndex], coord);
-    vec4 currentFilteredColor = bilateralFilter(currentFrameIndex, coord);
+    vec4 currentFilteredColor = vec4(imageLoad(storageImage[currentFrameIndex], coord).rgb, 1.0);
     vec4 currentShadowTerm = imageLoad(shadowTermImages[currentFrameIndex], coord);
     vec3 currentDirectLighting = max(currentShadowTerm.rgb, vec3(0.0));
     float currentShadowVisibility = saturate(currentShadowTerm.a);
@@ -271,7 +270,7 @@ void main() {
             float lastMean = saturate(lastShadowMoments.x);
             float lastSecondMoment = max(lastShadowMoments.y, lastMean * lastMean);
             float lastHistoryCount = clamp(lastShadowMoments.z, 1.0, MaxAccumulationFrames);
-            float neighborExpansion = max(0.03, max(neighborhoodMean * HistoryClipExpansion, sqrt(max(lastShadowMoments.w, 0.0)) * 1.5));
+            float neighborExpansion = max(0.25, max(neighborhoodMean * HistoryClipExpansion, sqrt(max(lastShadowMoments.w, 0.0)) * 5.0));
             float clippedLastMean = clamp(lastMean, neighborhoodMin - neighborExpansion, neighborhoodMax + neighborExpansion);
             float currentSample = clamp(filteredShadowVisibility, neighborhoodMin - neighborExpansion, neighborhoodMax + neighborExpansion);
             float historyBlend = 1.0 / (lastHistoryCount + 1.0);
@@ -292,8 +291,8 @@ void main() {
                                     neighborhoodMax,
                                     neighborhoodMean);
 
-            float temporalTrust = clamp(shadowHistoryCount / 8.0, 0.0, 1.0);
-            temporalTrust *= (1.0 - clamp(sqrt(max(shadowVariance, 0.0)) * 4.0, 0.0, 0.75));
+            float temporalTrust = clamp(shadowHistoryCount / 1.5, 0.0, 1.0);
+            temporalTrust *= (1.0 - clamp(sqrt(max(shadowVariance, 0.0)) * 0.65, 0.0, 0.25));
             stabilizedShadowVisibility = mix(filteredShadowVisibility, temporalMean, temporalTrust);
             stabilizedShadowVisibility = clamp(stabilizedShadowVisibility,
                                               neighborhoodMin - neighborExpansion,
@@ -302,16 +301,15 @@ void main() {
         }
     }
 
-    vec3 shadowCorrectedColor = currentFilteredColor.rgb + currentDirectLighting * (stabilizedShadowVisibility - currentShadowVisibility);
+    vec3 shadowCorrectedColor = max(currentFilteredColor.rgb + currentDirectLighting * (stabilizedShadowVisibility - currentShadowVisibility), vec3(0.0));
     vec4 accumulation;
     if (resetAccumulation) {
-        accumulation = vec4(shadowCorrectedColor, 1.0);
+        accumulation = vec4(max(shadowCorrectedColor, vec3(0.0)), 1.0);
     } else {
-        vec4 lastAccumulation = imageLoad(denoisingAccumulationImage, lastFrameCoord);
-        float sampleCount = clamp(lastAccumulation.w, 1.0, MaxAccumulationFrames);
-        vec3 clampedHistory = clampHistoryToNeighborhood(currentFrameIndex, coord, extent, lastAccumulation.rgb);
-        vec3 averagedColor = (clampedHistory * sampleCount + shadowCorrectedColor) / (sampleCount + 1.0);
-        accumulation = vec4(averagedColor, min(sampleCount + 1.0, MaxAccumulationFrames));
+        vec3 historyColor = bilateralFilter(lastFrameIndex, lastFrameCoord).rgb;
+        vec3 stableCurrent = stabilizeCurrentAgainstHistory(shadowCorrectedColor, historyColor);
+        vec3 averagedColor = mix(historyColor, stableCurrent, TemporalCurrentWeight);
+        accumulation = vec4(averagedColor, 1.0);
     }
 
     imageStore(shadowMomentsImages[currentFrameIndex], coord, vec4(stabilizedShadowVisibility,

@@ -1,10 +1,13 @@
-﻿#include "RenderSystem.h"
+#include "RenderSystem.h"
 
 #include <utility>
 #include "../StructureInfos.h"
 #include "../Components/MeshRendererComponent.hpp"
 #include "../Components/LightComponent.hpp"
 #include "../Components/TransformComponent.hpp"
+#ifdef RAY_TRACING
+#include "../Components/RayTracingInstanceComponent.hpp"
+#endif
 
 namespace FeatherVK {
 
@@ -116,6 +119,19 @@ namespace FeatherVK {
             SimplePushConstantData push{};
             push.modelMatrix = transformComponent->mat4();
             push.normalMatrix = transformComponent->normalMatrix();
+#ifdef RAY_TRACING
+            RayTracingInstanceComponent *rayTracingInstanceComponent = nullptr;
+            if (sceneRegistry.TryGetComponent(entityId, rayTracingInstanceComponent) &&
+                rayTracingInstanceComponent != nullptr &&
+                rayTracingInstanceComponent->IsValid() &&
+                static_cast<size_t>(rayTracingInstanceComponent->instanceId) < frameInfo.pEntityDescs.size()) {
+                const PBR &pbr = frameInfo.pEntityDescs[rayTracingInstanceComponent->instanceId].pbr;
+                const glm::vec3 baseColor = pbr.albedo.x >= 0.0f ? pbr.albedo : glm::vec3{0.8f};
+                const glm::vec3 emissive = pbr.emissive.x >= 0.0f ? pbr.emissive : glm::vec3{0.0f};
+                push.baseColorMetallic = glm::vec4(baseColor, pbr.metallic >= 0.0f ? pbr.metallic : 0.0f);
+                push.emissiveRoughnessOpacity = glm::vec4(emissive, pbr.opacity >= 0.0f ? pbr.opacity : 1.0f);
+            }
+#endif
 
             frameInfo.commandList->PushConstants(*m_pipeline, RHI::ShaderStage::Vertex | RHI::ShaderStage::Fragment,
                                                  0, sizeof(SimplePushConstantData), &push);
