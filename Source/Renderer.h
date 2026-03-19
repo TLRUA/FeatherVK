@@ -1,10 +1,11 @@
-﻿#pragma once
+#pragma once
 
 #include <cassert>
 #include "MyWindow.hpp"
 #include "SwapChain.hpp"
 #include "Device.hpp"
 #include "Image.h"
+#include "Buffer.h"
 
 namespace Kaamoo {
     class Renderer {
@@ -12,7 +13,7 @@ namespace Kaamoo {
         const float FOV_Y = 50.f;
         const float NEAR_CLIP = 0.1f;
         const float FAR_CLIP = 20.f;
-        
+
         Renderer(MyWindow &, Device &);
 
         ~Renderer();
@@ -29,11 +30,15 @@ namespace Kaamoo {
 
         void beginGizmosRenderPass(VkCommandBuffer commandBuffer);
 
+        void beginPickingRenderPass(VkCommandBuffer commandBuffer);
+
         void beginShadowRenderPass(VkCommandBuffer commandBuffer);
 
         void endSwapChainRenderPass(VkCommandBuffer commandBuffer);
 
         void endGizmosRenderPass(VkCommandBuffer commandBuffer);
+
+        void endPickingRenderPass(VkCommandBuffer commandBuffer);
 
         void endShadowRenderPass(VkCommandBuffer commandBuffer);
 
@@ -58,12 +63,16 @@ namespace Kaamoo {
             return commandBuffers[currentFrameIndex];
         }
 
-        const VkRenderPass& getSwapChainRenderPass(){
+        const VkRenderPass &getSwapChainRenderPass() {
             return swapChain->getRenderPass();
         }
 
-        const VkRenderPass& getShadowRenderPass() const{
+        const VkRenderPass &getShadowRenderPass() const {
             return shadowRenderPass;
+        }
+
+        const VkRenderPass &getPickingRenderPass() const {
+            return m_pickingRenderPass;
         }
 
         int getFrameIndex() const {
@@ -72,7 +81,8 @@ namespace Kaamoo {
         }
 
         float getAspectRatio() const {
-            return static_cast<float>(myWindow.getCurrentExtent().width - UI_LEFT_WIDTH - UI_LEFT_WIDTH_2) / static_cast<float> (myWindow.getCurrentExtent().height);
+            return static_cast<float>(myWindow.getCurrentExtent().width - UI_LEFT_WIDTH - UI_LEFT_WIDTH_2) /
+                   static_cast<float>(myWindow.getCurrentExtent().height);
         }
 
         const std::shared_ptr<Image> &getShadowImage() const;
@@ -95,6 +105,12 @@ namespace Kaamoo {
             return m_denoisingAccumulationImage;
         };
 
+        VkExtent2D getPickingExtent() const {
+            return m_pickingExtent;
+        }
+
+        int32_t readPickingObjectId(uint32_t pixelX, uint32_t pixelY);
+
     private:
         void createCommandBuffers();
 
@@ -109,6 +125,10 @@ namespace Kaamoo {
         void freeOffscreenResources();
 
         void loadOffscreenResources();
+
+        void freePickingResources();
+
+        void loadPickingResources();
 
         void loadGizmos();
 
@@ -136,9 +156,19 @@ namespace Kaamoo {
         std::shared_ptr<Sampler> m_offscreenSampler;
         std::shared_ptr<Image> offscreenImageDepth;
 
+        std::shared_ptr<Image> m_pickingIdImage;
+        std::shared_ptr<Image> m_pickingDepthImage;
+        std::shared_ptr<Buffer> m_pickingReadbackBuffer;
+        VkRenderPass m_pickingRenderPass = VK_NULL_HANDLE;
+        VkFramebuffer m_pickingFramebuffer = VK_NULL_HANDLE;
+        VkExtent2D m_pickingExtent{};
+        bool m_hasPickingData = false;
+
         VkFormat offscreenColorFormat{VK_FORMAT_R32G32B32A32_SFLOAT};
         VkFormat worldPosColorFormat{VK_FORMAT_R32G32B32A32_SFLOAT};
         VkFormat offscreenDepthFormat{VK_FORMAT_D32_SFLOAT};
+        VkFormat pickingIdFormat{VK_FORMAT_R32_SINT};
+        VkFormat pickingDepthFormat{VK_FORMAT_D32_SFLOAT};
 
     };
 

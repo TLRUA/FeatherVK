@@ -8,6 +8,8 @@
 #include "../RenderSystems/PostSystem.hpp"
 #include "../RenderSystems/GizmosRenderSystem.hpp"
 #include "../RenderSystems/ComputeSystem.hpp"
+#include "../RenderSystems/EditorPickingRenderSystem.hpp"
+#include "../ShaderBuilder.h"
 #ifdef RAY_TRACING
 #include "../RayTracing/TLAS.hpp"
 #endif
@@ -77,6 +79,8 @@ namespace Kaamoo {
 #endif
 
             }
+
+            CreateEditorPickingSystem(materials, device, renderer);
         }
 
         void UpdateUbo(FrameInfo &frameInfo) {
@@ -114,6 +118,8 @@ namespace Kaamoo {
 
             renderer.setDenoiseComputeToPostSynchronization(frameInfo.commandBuffer, _frameIndex % 2);
 
+            RenderEditorPickingPass(renderer, frameInfo);
+
             renderer.beginSwapChainRenderPass(frameInfo.commandBuffer);
 
             m_postSystem->UpdateGlobalUboBuffer(frameInfo.globalUbo, _frameIndex);
@@ -125,6 +131,8 @@ namespace Kaamoo {
             renderer.endShadowRenderPass(frameInfo.commandBuffer);
 
             renderer.setShadowMapSynchronization(frameInfo.commandBuffer);
+
+            RenderEditorPickingPass(renderer, frameInfo);
 
             renderer.beginSwapChainRenderPass(frameInfo.commandBuffer);
 
@@ -169,6 +177,56 @@ namespace Kaamoo {
         }
 
     private:
+        void CreateEditorPickingSystem(Material::Map &materials, Device &device, Renderer &renderer) {
+            auto gizmosMaterialEntry = materials.find(Material::MaterialId::gizmos);
+            if (gizmosMaterialEntry == materials.end()) {
+                return;
+            }
+
+            ShaderBuilder shaderBuilder(device);
+            std::vector<std::shared_ptr<ShaderModule>> shaderModulePointers{
+                    std::make_shared<ShaderModule>(shaderBuilder.createShaderModule("Editor/ObjectId.vert.spv"), ShaderCategory::vertex),
+                    std::make_shared<ShaderModule>(shaderBuilder.createShaderModule("Editor/ObjectId.frag.spv"), ShaderCategory::fragment)
+            };
+
+            auto descriptorSetLayoutPointers = gizmosMaterialEntry->second->getDescriptorSetLayoutPointers();
+            auto descriptorSetPointers = gizmosMaterialEntry->second->getDescriptorSetPointers();
+            std::vector<std::shared_ptr<Image>> imagePointers{};
+            std::vector<std::shared_ptr<Sampler>> samplerPointers{};
+            const auto &bufferPointersRef = gizmosMaterialEntry->second->getBufferPointers();
+            std::vector<std::shared_ptr<Buffer>> bufferPointers{bufferPointersRef.begin(), bufferPointersRef.end()};
+
+            m_editorPickingMaterial = std::make_shared<Material>(
+                    -1000,
+                    shaderModulePointers,
+                    descriptorSetLayoutPointers,
+                    descriptorSetPointers,
+                    imagePointers,
+                    samplerPointers,
+                    bufferPointers,
+                    PipelineCategory.Opaque);
+
+            m_editorPickingRenderSystem = std::make_shared<EditorPickingRenderSystem>(
+                    device,
+                    renderer.getPickingRenderPass(),
+                    m_editorPickingMaterial);
+        }
+
+        void RenderEditorPickingPass(Renderer &renderer, FrameInfo &frameInfo) {
+            if (m_editorPickingRenderSystem == nullptr) {
+                return;
+            }
+
+            renderer.beginPickingRenderPass(frameInfo.commandBuffer);
+            m_editorPickingRenderSystem->UpdateGlobalUboBuffer(frameInfo.globalUbo, frameInfo.frameIndex);
+
+            for (auto &item: frameInfo.gameObjects) {
+                m_editorPickingRenderSystem->render(frameInfo, &item.second);
+            }
+
+            renderer.endPickingRenderPass(frameInfo.commandBuffer);
+        }
+
 #ifdef RAY_TRACING
         void SyncRayTracingScene(FrameInfo &frameInfo) {
             for (auto &item: frameInfo.gameObjects) {
@@ -217,6 +275,8 @@ namespace Kaamoo {
         std::shared_ptr<PostSystem> m_postSystem;
         std::shared_ptr<GizmosRenderSystem> m_gizmosRenderSystem;
         std::shared_ptr<ComputeSystem> m_computeSystem;
+        std::shared_ptr<Material> m_editorPickingMaterial;
+        std::shared_ptr<EditorPickingRenderSystem> m_editorPickingRenderSystem;
 
 #ifdef RAY_TRACING
         std::shared_ptr<RayTracingSystem> m_rayTracingSystem;

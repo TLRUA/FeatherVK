@@ -20,6 +20,11 @@ namespace Kaamoo {
     Renderer::~Renderer() {
         freeCommandBuffers();
         freeShadowResources();
+        freePickingResources();
+        if (m_pickingRenderPass != VK_NULL_HANDLE) {
+            vkDestroyRenderPass(device.device(), m_pickingRenderPass, nullptr);
+            m_pickingRenderPass = VK_NULL_HANDLE;
+        }
         freeOffscreenResources();
     }
 
@@ -75,7 +80,7 @@ namespace Kaamoo {
             extent = myWindow.getCurrentExtent();
             glfwWaitEvents();
         }
-        //µÈ´ýÂß¼­Éè±¸ÖÐµÄËùÓÐÃüÁî¶ÓÁÐÖ´ÐÐÍê±Ï
+        //ï¿½È´ï¿½ï¿½ß¼ï¿½ï¿½è±¸ï¿½Ðµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö´ï¿½ï¿½ï¿½ï¿½ï¿½
         vkDeviceWaitIdle(device.device());
 
         if (swapChain == nullptr) {
@@ -90,10 +95,12 @@ namespace Kaamoo {
             }
 
         }
+
+        loadPickingResources();
     }
 
     void Renderer::freeCommandBuffers() {
-        //ÎªÊ²Ã´ÐèÒªÏÔÊ½µÄ´«Èësize£¿´¦ÓÚ°²È«ÐÔ¿¼ÂÇ£¬±ÜÃâÒþÊ½²Ù×÷´íÎó
+        //ÎªÊ²Ã´ï¿½ï¿½Òªï¿½ï¿½Ê½ï¿½Ä´ï¿½ï¿½ï¿½sizeï¿½ï¿½ï¿½ï¿½ï¿½Ú°ï¿½È«ï¿½Ô¿ï¿½ï¿½Ç£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
         vkFreeCommandBuffers(device.device(), device.getCommandPool(), static_cast<uint32_t>(commandBuffers.size()),
                              commandBuffers.data());
         commandBuffers.clear();
@@ -172,6 +179,49 @@ namespace Kaamoo {
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
     }
 
+    void Renderer::beginPickingRenderPass(VkCommandBuffer commandBuffer) {
+        assert(isFrameStarted && "Cannot call beginPickingRenderPass while frame is not in progress");
+        assert(commandBuffer == getCurrentCommandBuffer() &&
+               "Cannot begin render picking pass on command buffer from a different frame");
+
+        if (m_pickingRenderPass == VK_NULL_HANDLE || m_pickingFramebuffer == VK_NULL_HANDLE ||
+            m_pickingExtent.width == 0 || m_pickingExtent.height == 0) {
+            return;
+        }
+
+        VkRenderPassBeginInfo renderPassBeginInfo{};
+        renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        renderPassBeginInfo.renderPass = m_pickingRenderPass;
+        renderPassBeginInfo.framebuffer = m_pickingFramebuffer;
+        renderPassBeginInfo.renderArea.offset = {0, 0};
+        renderPassBeginInfo.renderArea.extent = m_pickingExtent;
+
+        VkClearValue clearValues[2]{};
+        clearValues[0].color.int32[0] = -1;
+        clearValues[0].color.int32[1] = 0;
+        clearValues[0].color.int32[2] = 0;
+        clearValues[0].color.int32[3] = 0;
+        clearValues[1].depthStencil = {1.0f, 0};
+        renderPassBeginInfo.clearValueCount = 2;
+        renderPassBeginInfo.pClearValues = clearValues;
+
+        vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+        VkViewport viewport{};
+        viewport.x = 0.0f;
+        viewport.y = 0.0f;
+        viewport.width = static_cast<float>(m_pickingExtent.width);
+        viewport.height = static_cast<float>(m_pickingExtent.height);
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+
+        VkRect2D scissor{};
+        scissor.offset = {0, 0};
+        scissor.extent = m_pickingExtent;
+
+        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+    }
     void Renderer::beginShadowRenderPass(VkCommandBuffer commandBuffer) {
         assert(isFrameStarted && "Cannot call beginShadowRenderPass while frame is not in progress");
         assert(commandBuffer == getCurrentCommandBuffer() &&
@@ -214,6 +264,19 @@ namespace Kaamoo {
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
     }
 
+    void Renderer::endPickingRenderPass(VkCommandBuffer commandBuffer) {
+        assert(isFrameStarted && "Cannot call endPickingRenderPass while frame is not in progress");
+        assert(commandBuffer == getCurrentCommandBuffer() &&
+               "Cannot end picking render pass on command buffer from a different frame");
+
+        if (m_pickingRenderPass == VK_NULL_HANDLE || m_pickingFramebuffer == VK_NULL_HANDLE ||
+            m_pickingExtent.width == 0 || m_pickingExtent.height == 0) {
+            return;
+        }
+
+        vkCmdEndRenderPass(commandBuffer);
+        m_hasPickingData = true;
+    }
     void Renderer::endShadowRenderPass(VkCommandBuffer commandBuffer) {
         assert(isFrameStarted && "Cannot call endShadowRenderPass while frame is not in progress");
         assert(commandBuffer == getCurrentCommandBuffer() &&
@@ -375,6 +438,227 @@ namespace Kaamoo {
         }
     }
 
+    void Renderer::freePickingResources() {
+        if (m_pickingFramebuffer != VK_NULL_HANDLE) {
+            vkDestroyFramebuffer(device.device(), m_pickingFramebuffer, nullptr);
+            m_pickingFramebuffer = VK_NULL_HANDLE;
+        }
+
+        m_pickingIdImage.reset();
+        m_pickingDepthImage.reset();
+        m_pickingReadbackBuffer.reset();
+        m_pickingExtent = {0, 0};
+        m_hasPickingData = false;
+    }
+
+    void Renderer::loadPickingResources() {
+        freePickingResources();
+
+        const auto sceneExtent = myWindow.getCurrentSceneExtent();
+        if (sceneExtent.width == 0 || sceneExtent.height == 0) {
+            return;
+        }
+
+        m_pickingExtent = sceneExtent;
+        pickingDepthFormat = device.findSupportedFormat(
+                {VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D32_SFLOAT, VK_FORMAT_D24_UNORM_S8_UINT},
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
+
+        VkImageCreateInfo imageCreateInfo{};
+        Image::setDefaultImageCreateInfo(imageCreateInfo);
+        imageCreateInfo.extent = {m_pickingExtent.width, m_pickingExtent.height, 1};
+
+        m_pickingIdImage = std::make_shared<Image>(device);
+        imageCreateInfo.format = pickingIdFormat;
+        imageCreateInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        m_pickingIdImage->createImage(imageCreateInfo);
+
+        VkImageViewCreateInfo imageViewCreateInfo{};
+        m_pickingIdImage->setDefaultImageViewCreateInfo(imageViewCreateInfo);
+        imageViewCreateInfo.format = pickingIdFormat;
+        imageViewCreateInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        m_pickingIdImage->createImageView(imageViewCreateInfo);
+
+        m_pickingDepthImage = std::make_shared<Image>(device);
+        imageCreateInfo.format = pickingDepthFormat;
+        imageCreateInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        m_pickingDepthImage->createImage(imageCreateInfo);
+
+        m_pickingDepthImage->setDefaultImageViewCreateInfo(imageViewCreateInfo);
+        imageViewCreateInfo.format = pickingDepthFormat;
+        imageViewCreateInfo.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+        m_pickingDepthImage->createImageView(imageViewCreateInfo);
+
+        VkAttachmentDescription attachmentDescriptions[2]{};
+        attachmentDescriptions[0].format = pickingIdFormat;
+        attachmentDescriptions[0].samples = VK_SAMPLE_COUNT_1_BIT;
+        attachmentDescriptions[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachmentDescriptions[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        attachmentDescriptions[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachmentDescriptions[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachmentDescriptions[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachmentDescriptions[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+        attachmentDescriptions[1].format = pickingDepthFormat;
+        attachmentDescriptions[1].samples = VK_SAMPLE_COUNT_1_BIT;
+        attachmentDescriptions[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachmentDescriptions[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachmentDescriptions[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachmentDescriptions[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachmentDescriptions[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachmentDescriptions[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+        VkAttachmentReference colorAttachmentRef{};
+        colorAttachmentRef.attachment = 0;
+        colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+        VkAttachmentReference depthAttachmentRef{};
+        depthAttachmentRef.attachment = 1;
+        depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+        VkSubpassDescription subpassDescription{};
+        subpassDescription.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpassDescription.colorAttachmentCount = 1;
+        subpassDescription.pColorAttachments = &colorAttachmentRef;
+        subpassDescription.pDepthStencilAttachment = &depthAttachmentRef;
+
+        VkSubpassDependency dependencies[2]{};
+        dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+        dependencies[0].dstSubpass = 0;
+        dependencies[0].srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+        dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependencies[0].srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+        dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+
+        dependencies[1].srcSubpass = 0;
+        dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+        dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependencies[1].dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dependencies[1].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+        if (m_pickingRenderPass == VK_NULL_HANDLE) {
+            VkRenderPassCreateInfo renderPassCreateInfo{};
+            renderPassCreateInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+            renderPassCreateInfo.attachmentCount = 2;
+            renderPassCreateInfo.pAttachments = attachmentDescriptions;
+            renderPassCreateInfo.subpassCount = 1;
+            renderPassCreateInfo.pSubpasses = &subpassDescription;
+            renderPassCreateInfo.dependencyCount = 2;
+            renderPassCreateInfo.pDependencies = dependencies;
+
+            if (vkCreateRenderPass(device.device(), &renderPassCreateInfo, nullptr, &m_pickingRenderPass) != VK_SUCCESS) {
+                throw std::runtime_error("failed to create editor picking render pass");
+            }
+        }
+
+        VkImageView attachments[2] = {*m_pickingIdImage->getImageView(), *m_pickingDepthImage->getImageView()};
+        VkFramebufferCreateInfo framebufferCreateInfo{};
+        framebufferCreateInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebufferCreateInfo.renderPass = m_pickingRenderPass;
+        framebufferCreateInfo.attachmentCount = 2;
+        framebufferCreateInfo.pAttachments = attachments;
+        framebufferCreateInfo.width = m_pickingExtent.width;
+        framebufferCreateInfo.height = m_pickingExtent.height;
+        framebufferCreateInfo.layers = 1;
+
+        if (vkCreateFramebuffer(device.device(), &framebufferCreateInfo, nullptr, &m_pickingFramebuffer) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create editor picking framebuffer");
+        }
+
+        m_pickingReadbackBuffer = std::make_shared<Buffer>(
+                device,
+                sizeof(int32_t),
+                1,
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        m_pickingReadbackBuffer->map();
+    }
+
+    int32_t Renderer::readPickingObjectId(uint32_t pixelX, uint32_t pixelY) {
+        if (!m_hasPickingData || m_pickingIdImage == nullptr || m_pickingReadbackBuffer == nullptr ||
+            m_pickingExtent.width == 0 || m_pickingExtent.height == 0) {
+            return -1;
+        }
+
+        if (pixelX >= m_pickingExtent.width || pixelY >= m_pickingExtent.height) {
+            return -1;
+        }
+
+        VkCommandBuffer commandBuffer = device.beginSingleTimeCommands();
+
+        VkImageMemoryBarrier toTransferBarrier{};
+        toTransferBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        toTransferBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        toTransferBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        toTransferBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        toTransferBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        toTransferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransferBarrier.image = m_pickingIdImage->getImage();
+        toTransferBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+        vkCmdPipelineBarrier(
+                commandBuffer,
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0,
+                0,
+                nullptr,
+                0,
+                nullptr,
+                1,
+                &toTransferBarrier);
+
+        VkBufferImageCopy copyRegion{};
+        copyRegion.bufferOffset = 0;
+        copyRegion.bufferRowLength = 0;
+        copyRegion.bufferImageHeight = 0;
+        copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copyRegion.imageSubresource.mipLevel = 0;
+        copyRegion.imageSubresource.baseArrayLayer = 0;
+        copyRegion.imageSubresource.layerCount = 1;
+        copyRegion.imageOffset = {static_cast<int32_t>(pixelX), static_cast<int32_t>(pixelY), 0};
+        copyRegion.imageExtent = {1, 1, 1};
+
+        vkCmdCopyImageToBuffer(
+                commandBuffer,
+                m_pickingIdImage->getImage(),
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                m_pickingReadbackBuffer->getBuffer(),
+                1,
+                &copyRegion);
+
+        VkImageMemoryBarrier toColorAttachmentBarrier{};
+        toColorAttachmentBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        toColorAttachmentBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        toColorAttachmentBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        toColorAttachmentBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        toColorAttachmentBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        toColorAttachmentBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toColorAttachmentBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toColorAttachmentBarrier.image = m_pickingIdImage->getImage();
+        toColorAttachmentBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+        vkCmdPipelineBarrier(
+                commandBuffer,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                0,
+                0,
+                nullptr,
+                0,
+                nullptr,
+                1,
+                &toColorAttachmentBarrier);
+
+        device.endSingleTimeCommands(commandBuffer);
+
+        m_pickingReadbackBuffer->invalidate(sizeof(int32_t), 0);
+        const auto *mapped = static_cast<int32_t *>(m_pickingReadbackBuffer->getMappedMemory());
+        return mapped == nullptr ? -1 : mapped[0];
+    }
     void Renderer::freeOffscreenResources() {
         m_offscreenImageColors.clear();
         m_viewPosImageColors.clear();
@@ -627,4 +911,8 @@ namespace Kaamoo {
 
 
 }
+
+
+
+
 
