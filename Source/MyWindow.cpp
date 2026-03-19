@@ -1,4 +1,6 @@
-ï»¿#include "MyWindow.hpp"
+#include "MyWindow.hpp"
+
+#include "Core/Events.hpp"
 
 namespace Kaamoo {
     MyWindow::MyWindow(int w, int h, std::string name) : m_windowWidth(w), m_windowHeight(h), windowName(name) {
@@ -11,10 +13,16 @@ namespace Kaamoo {
     }
 
     void MyWindow::initWindow() {
-        glfwInit();
+        if (!glfwInit()) {
+            throw std::runtime_error("Failed to initialize GLFW");
+        }
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
         glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
         window = glfwCreateWindow(m_windowWidth, m_windowHeight, windowName.c_str(), nullptr, nullptr);
+        if (window == nullptr) {
+            glfwTerminate();
+            throw std::runtime_error("Failed to create GLFW window");
+        }
         glfwSetWindowUserPointer(window, this);
         glfwSetFramebufferSizeCallback(window, frameBufferResizedCallback);
     }
@@ -26,10 +34,11 @@ namespace Kaamoo {
     }
 
     void MyWindow::frameBufferResizedCallback(GLFWwindow *myWindow, int width, int height) {
-        //reinterpret_castï¼Œå¼ºåˆ¶æŒ‡é’ˆç±»å‹è½¬æ¢è€Œä¸è¿›è¡Œç±»å‹æ£€æŸ¥
+        //reinterpret_cast£¬Ç¿ÖÆÖ¸ÕëÀàĞÍ×ª»»¶ø²»½øĞĞÀàĞÍ¼ì²é
         auto window = reinterpret_cast<MyWindow *>(glfwGetWindowUserPointer(myWindow));
-        window->frameBufferResized = true;
+        window->isFrameBufferResized = true;
         window->m_windowWidth = width;
         window->m_windowHeight = height;
+        EventQueue::PushWindowResized(width, height);
     }
 }

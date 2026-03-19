@@ -1,4 +1,4 @@
-﻿#include <utility>
+#include <utility>
 
 #include "../RenderSystems/RenderSystem.h"
 #include "../RenderSystems/ShadowSystem.hpp"
@@ -8,6 +8,9 @@
 #include "../RenderSystems/PostSystem.hpp"
 #include "../RenderSystems/GizmosRenderSystem.hpp"
 #include "../RenderSystems/ComputeSystem.hpp"
+#ifdef RAY_TRACING
+#include "../RayTracing/TLAS.hpp"
+#endif
 
 namespace Kaamoo {
     class RenderManager {
@@ -32,7 +35,7 @@ namespace Kaamoo {
                     m_gizmosRenderSystem = std::make_shared<GizmosRenderSystem>(device, renderer.getSwapChainRenderPass(), _material);
                     continue;
 //          This render system contains multiple pipelines, so I initialize it in the constructor.
-//          m_gizmosRenderSystem->Init();   
+//          m_gizmosRenderSystem->Init();
                 }
 
 #ifdef RAY_TRACING
@@ -92,9 +95,11 @@ namespace Kaamoo {
 
         void UpdateRendering(Renderer &renderer, FrameInfo &frameInfo, HierarchyTree &hierarchyTree) {
             UpdateUbo(frameInfo);
-            
+
             auto _frameIndex = frameInfo.frameIndex;
 #ifdef RAY_TRACING
+            SyncRayTracingScene(frameInfo);
+
             GUI::BeginFrame(ImVec2(frameInfo.extent.width, frameInfo.extent.height));
             GUI::ShowWindow(ImVec2(frameInfo.extent.width, frameInfo.extent.height),
                             &frameInfo.gameObjects, &frameInfo.pGameObjectDescs, &hierarchyTree, frameInfo);
@@ -164,6 +169,48 @@ namespace Kaamoo {
         }
 
     private:
+#ifdef RAY_TRACING
+        void SyncRayTracingScene(FrameInfo &frameInfo) {
+            for (auto &item: frameInfo.gameObjects) {
+                auto &gameObject = item.second;
+                MeshRendererComponent *meshRendererComponent;
+                if (!gameObject.TryGetComponent(meshRendererComponent) || meshRendererComponent->GetModelPtr() == nullptr) {
+                    continue;
+                }
+
+                const id_t gameObjectId = gameObject.GetId();
+                const bool isActive = gameObject.IsActive();
+
+                auto activeStateEntry = m_meshRendererActiveState.find(gameObjectId);
+                if (activeStateEntry == m_meshRendererActiveState.end()) {
+                    m_meshRendererActiveState.emplace(gameObjectId, isActive);
+                    if (!isActive) {
+                        TLAS::updateTLAS(meshRendererComponent->GetTLASId(), gameObject.transform->mat4(), 0x00);
+                        frameInfo.sceneUpdated = true;
+                    }
+                } else if (activeStateEntry->second != isActive) {
+                    TLAS::updateTLAS(meshRendererComponent->GetTLASId(), gameObject.transform->mat4(), isActive ? 0xFF : 0x00);
+                    frameInfo.sceneUpdated = true;
+                    activeStateEntry->second = isActive;
+                }
+
+                if (!isActive) {
+                    continue;
+                }
+
+                if (meshRendererComponent->ConsumeTransformDirty()) {
+                    TLAS::updateTLAS(meshRendererComponent->GetTLASId(), meshRendererComponent->GetCachedTransform());
+                    frameInfo.sceneUpdated = true;
+                }
+            }
+
+            if (TLAS::shouldUpdate) {
+                TLAS::buildTLAS(VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR, true);
+                TLAS::shouldUpdate = false;
+            }
+        }
+#endif
+
         std::shared_ptr<ResourceManager> m_resourceManager;
 
         std::unordered_map<id_t, std::shared_ptr<RenderSystem>> m_renderSystemMap;
@@ -173,6 +220,7 @@ namespace Kaamoo {
 
 #ifdef RAY_TRACING
         std::shared_ptr<RayTracingSystem> m_rayTracingSystem;
+        std::unordered_map<id_t, bool> m_meshRendererActiveState{};
 #else
         std::shared_ptr<ShadowSystem> m_shadowSystem;
 #endif

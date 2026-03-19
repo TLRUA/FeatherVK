@@ -1,16 +1,12 @@
-﻿#pragma once
+#pragma once
 
 #include "Component.hpp"
-#include "../RayTracing/BLAS.hpp"
-#include "../RayTracing/TLAS.hpp"
 
 namespace Kaamoo {
     class MeshRendererComponent : public Component {
     public:
 
-        ~MeshRendererComponent() override {
-            Model::models.clear();
-        };
+        ~MeshRendererComponent() override = default;
 
         MeshRendererComponent(std::shared_ptr<Model> model, id_t materialID) : model(model), materialId(materialID) {
             name = "MeshRendererComponent";
@@ -23,18 +19,17 @@ namespace Kaamoo {
             } else {
                 const std::string modelName = object["model"].GetString();
 #ifdef RAY_TRACING
-                std::shared_ptr<Model> modelFromFile = Model::createModelFromFile(*Device::getDeviceSingleton(), Model::BaseModelsPath + modelName);
+                std::shared_ptr<Model> modelFromFile = Model::createModelFromFile(*Device::getDeviceSingleton(), Model::GetBaseModelsPath() + modelName);
                 this->model = modelFromFile;
                 this->model->SetName(modelName);
                 Model::models.emplace(modelName, modelFromFile);
                 static int tlasIdStatic = 0;
                 tlasId = tlasIdStatic++;
-                BLAS::modelToBLASInput(model);
 #else
                 if (Model::models.count(modelName) > 0) {
                     this->model = Model::models.at(modelName);
                 } else {
-                    std::shared_ptr<Model> modelFromFile = Model::createModelFromFile(*Device::getDeviceSingleton(), Model::BaseModelsPath + modelName);
+                    std::shared_ptr<Model> modelFromFile = Model::createModelFromFile(*Device::getDeviceSingleton(), Model::GetBaseModelsPath() + modelName);
                     this->model = modelFromFile;
                     Model::models.emplace(modelName, modelFromFile);
                 }
@@ -57,26 +52,28 @@ namespace Kaamoo {
                 return;
             }
 #ifdef RAY_TRACING
-            if (lastTransform != updateInfo.gameObject->transform->mat4()) {
-                lastTransform = updateInfo.gameObject->transform->mat4();
-                TLAS::updateTLAS(tlasId, lastTransform);
-                updateInfo.frameInfo->sceneUpdated = true;
+            auto currentTransform = updateInfo.gameObject->transform->mat4();
+            if (m_cachedTransform != currentTransform) {
+                m_cachedTransform = currentTransform;
+                m_transformDirty = true;
             }
 #endif
         };
 
 #ifdef RAY_TRACING
 
-        void OnDisable(const ComponentUpdateInfo &updateInfo) override {
-            TLAS::updateTLAS(tlasId, updateInfo.gameObject->transform->mat4(), 0x00);
-        }
-        
-        void OnEnable(const ComponentUpdateInfo &updateInfo) override {
-            TLAS::updateTLAS(tlasId, updateInfo.gameObject->transform->mat4(), 0xFF);
-        }
-
         id_t GetTLASId() const {
             return tlasId;
+        }
+
+        bool ConsumeTransformDirty() {
+            bool dirty = m_transformDirty;
+            m_transformDirty = false;
+            return dirty;
+        }
+
+        const glm::mat4 &GetCachedTransform() const {
+            return m_cachedTransform;
         }
 
         void SetUI(std::vector<GameObjectDesc> *gameObjectDesc, FrameInfo &frameInfo) override {
@@ -160,9 +157,14 @@ namespace Kaamoo {
         std::shared_ptr<Model> GetModelPtr() { return model; }
 
     private:
-        id_t tlasId;
+#ifdef RAY_TRACING
+        id_t tlasId{};
+#endif
         id_t materialId;
         std::shared_ptr<Model> model = nullptr;
-        glm::mat4 lastTransform = glm::mat4{-10000000.f};
+#ifdef RAY_TRACING
+        glm::mat4 m_cachedTransform{glm::mat4{-10000000.f}};
+        bool m_transformDirty = false;
+#endif
     };
 }

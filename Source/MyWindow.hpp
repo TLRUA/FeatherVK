@@ -27,8 +27,8 @@ namespace Kaamoo {
         VkExtent2D getCurrentExtent() const{
             return {static_cast<uint32_t>(m_windowWidth), static_cast<uint32_t>(m_windowHeight)};
         };
-        
-        
+
+
         VkExtent2D getCurrentSceneExtent() {
             return {static_cast<uint32_t>(m_windowWidth - UI_LEFT_WIDTH - UI_LEFT_WIDTH_2), static_cast<uint32_t>(m_windowHeight)};
         };
@@ -41,7 +41,7 @@ namespace Kaamoo {
             isFrameBufferResized = false;
         }
 
-        //禁用窗口的赋值
+        //禁用窗口的赋�?
         MyWindow(const MyWindow &) = delete;
 
         MyWindow operator=(const MyWindow &) = delete;
@@ -61,7 +61,6 @@ namespace Kaamoo {
         int m_windowWidth;
         int m_windowHeight;
         bool isFrameBufferResized = false;
-        bool frameBufferResized = false;
     };
 
 

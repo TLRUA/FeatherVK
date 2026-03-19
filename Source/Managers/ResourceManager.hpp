@@ -1,4 +1,10 @@
-﻿#include <numeric>
+#include <numeric>
+
+#include "../Utils/ProjectPaths.hpp"
+#ifdef RAY_TRACING
+#include "../RayTracing/BLAS.hpp"
+#include "../RayTracing/TLAS.hpp"
+#endif
 
 namespace Kaamoo {
 #ifdef RAY_TRACING
@@ -9,12 +15,12 @@ namespace Kaamoo {
 #else
     inline const static std::string ConfigPath = "Rasterization/";
 #endif
-    inline const static std::string BasePath = "../Configurations/" + ConfigPath;
-    inline const static std::string BaseTexturePath = "../Textures/";
+    inline std::string GetBasePath() { return ProjectPaths::ConfigurationsDir(ConfigPath); }
+    inline std::string GetBaseTexturePath() { return ProjectPaths::TexturesDir(); }
     inline const static std::string GameObjectsFileName = "GameObjects.json";
     inline const static std::string MaterialsFileName = "Materials.json";
     inline const static std::string ComponentsFileName = "Components.json";
-    inline const static std::string SkyboxCubeMapName = "Cubemap/SwedishRoyalCastle";
+    inline const static std::string SkyboxCubeMapName = "Cubemap";
 
     const int MATERIAL_NUMBER = 16;
 
@@ -25,6 +31,8 @@ namespace Kaamoo {
                     setMaxSets(SwapChain::MAX_FRAMES_IN_FLIGHT * MATERIAL_NUMBER).
                     addPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, SwapChain::MAX_FRAMES_IN_FLIGHT * MATERIAL_NUMBER).
                     addPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, SwapChain::MAX_FRAMES_IN_FLIGHT * MATERIAL_NUMBER).
+                    addPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, SwapChain::MAX_FRAMES_IN_FLIGHT * MATERIAL_NUMBER).
+                    addPoolSize(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, SwapChain::MAX_FRAMES_IN_FLIGHT * MATERIAL_NUMBER).
                     addPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, SwapChain::MAX_FRAMES_IN_FLIGHT * MATERIAL_NUMBER).build();
             loadGameObjects();
             loadMaterials();
@@ -56,8 +64,8 @@ namespace Kaamoo {
 #endif
 
         void loadGameObjects() {
-            std::string gameObjectsJsonString = JsonUtils::ReadJsonFile(BasePath + GameObjectsFileName);
-            std::string componentsJsonString = JsonUtils::ReadJsonFile(BasePath + ComponentsFileName);
+            std::string gameObjectsJsonString = JsonUtils::ReadJsonFile(GetBasePath() + GameObjectsFileName);
+            std::string componentsJsonString = JsonUtils::ReadJsonFile(GetBasePath() + ComponentsFileName);
 
             rapidjson::Document gameObjectsDocument;
             rapidjson::Document componentsDocument;
@@ -158,6 +166,13 @@ namespace Kaamoo {
             }
 
 #ifdef RAY_TRACING
+            for (auto &pair: m_gameObjects) {
+                auto &gameObject = pair.second;
+                MeshRendererComponent *meshRendererComponent;
+                if (gameObject.TryGetComponent(meshRendererComponent) && meshRendererComponent->GetModelPtr() != nullptr) {
+                    BLAS::modelToBLASInput(meshRendererComponent->GetModelPtr());
+                }
+            }
             BLAS::buildBLAS(VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR | VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR);
 #endif
         }
@@ -166,7 +181,7 @@ namespace Kaamoo {
 
             uint32_t minUniformOffsetAlignment = std::lcm(m_device.properties.limits.minUniformBufferOffsetAlignment,
                                                           m_device.properties.limits.nonCoherentAtomSize);
-            std::string materialsString = JsonUtils::ReadJsonFile(BasePath + "Materials.json");
+            std::string materialsString = JsonUtils::ReadJsonFile(GetBasePath() + "Materials.json");
             rapidjson::Document materialsDocument;
             materialsDocument.Parse(materialsString.c_str());
 
@@ -222,14 +237,10 @@ namespace Kaamoo {
                     textureEntry.x = imageInfos.size();
                     for (auto &textureNameGenericValue: textureNames) {
                         std::string textureName = textureNameGenericValue.GetString();
-                        auto image = std::make_shared<Image>(m_device, ImageType.Default);
-                        image->createTextureImage(BaseTexturePath + textureName);
-                        image->createImageView();
-                        auto sampler = std::make_shared<Sampler>(m_device);
-                        sampler->createTextureSampler();
-                        auto imageInfo = image->descriptorInfo(*sampler);
-                        imagePointers.emplace_back(image);
-                        samplerPointers.emplace_back(sampler);
+                        auto texture = GetOrCreateTexture(textureName);
+                        auto imageInfo = texture.image->descriptorInfo(*texture.sampler);
+                        imagePointers.emplace_back(texture.image);
+                        samplerPointers.emplace_back(texture.sampler);
                         imageInfos.emplace_back(*imageInfo);
                     }
                     textureEntry.y = imageInfos.size() - textureEntry.x;
@@ -328,7 +339,7 @@ namespace Kaamoo {
 
             //Skybox cube map
             auto skyBoxImage = std::make_shared<Image>(m_device, ImageType.CubeMap);
-            skyBoxImage->createTextureImage(BaseTexturePath + SkyboxCubeMapName, true);
+            skyBoxImage->createTextureImage(GetBaseTexturePath() + SkyboxCubeMapName, true);
             skyBoxImage->createImageView();
             auto skyBoxSampler = std::make_shared<Sampler>(m_device);
             skyBoxSampler->createTextureSampler();
@@ -548,25 +559,17 @@ namespace Kaamoo {
 
                     //Write Descriptors
                     int writerBindingPoint = 0;
-                    std::shared_ptr<Image> image;
                     std::vector<std::shared_ptr<VkDescriptorImageInfo>> imageInfos;
                     for (auto &textureNameGenericValue: textureNames) {
                         std::string textureName = textureNameGenericValue.GetString();
+                        bool isCubeMap = pipelineCategoryString == PipelineCategory.SkyBox;
+                        auto texture = GetOrCreateTexture(textureName, isCubeMap);
 
-                        if (pipelineCategoryString == PipelineCategory.SkyBox)
-                            image = std::make_shared<Image>(m_device, ImageType.CubeMap);
-                        else
-                            image = std::make_shared<Image>(m_device, ImageType.Default);
-
-                        image->createTextureImage(BaseTexturePath + textureName);
-                        image->createImageView();
-                        auto sampler = std::make_shared<Sampler>(m_device);
-                        sampler->createTextureSampler();
-                        auto imageInfo = image->descriptorInfo(*sampler);
+                        auto imageInfo = texture.image->descriptorInfo(*texture.sampler);
                         imageInfos.emplace_back(imageInfo);
                         descriptorWriter.writeImage(writerBindingPoint++, imageInfo);
-                        imagePointers.emplace_back(image);
-                        samplerPointers.emplace_back(sampler);
+                        imagePointers.emplace_back(texture.image);
+                        samplerPointers.emplace_back(texture.sampler);
                     }
 
                     std::vector<std::shared_ptr<Buffer>> bufferPointers{globalUboBufferPtr};
@@ -628,9 +631,31 @@ namespace Kaamoo {
                 m_materials.emplace(Material::MaterialId::gizmos, std::move(uiMaterial));
             }
         }
+        struct TextureCacheEntry {
+            std::shared_ptr<Image> image;
+            std::shared_ptr<Sampler> sampler;
+        };
 
+        TextureCacheEntry GetOrCreateTexture(const std::string &textureName, bool isCubeMap = false, bool srgb = false) {
+            const std::string key = (isCubeMap ? "CubeMap:" : "Default:") + std::string(srgb ? "SRGB:" : "Linear:") + textureName;
+            auto entry = m_textureCache.find(key);
+            if (entry != m_textureCache.end()) {
+                return entry->second;
+            }
+
+            auto image = std::make_shared<Image>(m_device, isCubeMap ? ImageType.CubeMap : ImageType.Default);
+            image->createTextureImage(GetBaseTexturePath() + textureName, srgb);
+            image->createImageView();
+
+            auto sampler = std::make_shared<Sampler>(m_device);
+            sampler->createTextureSampler();
+
+            TextureCacheEntry cacheEntry{image, sampler};
+            m_textureCache.emplace(key, cacheEntry);
+            return cacheEntry;
+        }
     private:
-        MyWindow m_window{SCENE_WIDTH + UI_LEFT_WIDTH + UI_LEFT_WIDTH_2, SCENE_HEIGHT, "Tiny Vulkan Renderer"};
+        MyWindow m_window{SCENE_WIDTH + UI_LEFT_WIDTH + UI_LEFT_WIDTH_2, SCENE_HEIGHT, "FeatherVK"};
         Device m_device{m_window};
         Renderer m_renderer{m_window, m_device};
         ShaderBuilder m_shaderBuilder{m_device};
@@ -639,6 +664,7 @@ namespace Kaamoo {
         GameObject::Map m_gameObjects;
         HierarchyTree m_hierarchyTree;
         Material::Map m_materials;
+        std::unordered_map<std::string, TextureCacheEntry> m_textureCache;
 
 #ifdef RAY_TRACING
         std::shared_ptr<Buffer> m_pGameObjectDescBuffer;
@@ -646,3 +672,5 @@ namespace Kaamoo {
 #endif
     };
 }
+
+

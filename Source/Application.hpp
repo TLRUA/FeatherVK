@@ -3,6 +3,7 @@
 #include <memory>
 #include <glm/gtc/constants.hpp>
 #include <chrono>
+#include <string>
 #include <glm/ext/matrix_clip_space.hpp>
 #include "Device.hpp"
 #include "MyWindow.hpp"
@@ -22,6 +23,8 @@
 #include "Managers/ResourceManager.hpp"
 #include "Managers/LogicManager.hpp"
 #include "Managers/RenderManager.hpp"
+#include "Core/Events.hpp"
+#include "Core/Logger.hpp"
 
 namespace Kaamoo {
     class Application {
@@ -47,6 +50,16 @@ namespace Kaamoo {
             auto &_device = m_resourceManager->GetDevice();
             while (!_window.shouldClose()) {
                 glfwPollEvents();
+
+                Event event{};
+                while (EventQueue::Poll(event)) {
+                    if (event.type == EventType::WindowResized) {
+                        Logger::Info(
+                                "Window resized to " + std::to_string(event.width) + "x" +
+                                std::to_string(event.height));
+                    }
+                }
+
                 auto newTime = std::chrono::high_resolution_clock::now();
                 float frameTime = std::chrono::duration<float, std::chrono::seconds::period>(newTime - currentTime).count();
                 totalTime += frameTime;

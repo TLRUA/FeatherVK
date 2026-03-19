@@ -1,4 +1,5 @@
 #include "Application.hpp"
+#include "Core/Logger.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -11,7 +12,7 @@ int main() {
 		app.run();
 	}
 	catch (const std::exception& e) {
-		std::cerr << e.what() << '\n';
+		Kaamoo::Logger::Error(e.what());
 		return EXIT_FAILURE;
 	}
 	return EXIT_SUCCESS;
