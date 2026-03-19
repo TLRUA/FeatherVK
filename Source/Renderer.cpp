@@ -655,7 +655,6 @@ namespace Kaamoo {
 
         device.endSingleTimeCommands(commandBuffer);
 
-        m_pickingReadbackBuffer->invalidate(sizeof(int32_t), 0);
         const auto *mapped = static_cast<int32_t *>(m_pickingReadbackBuffer->getMappedMemory());
         return mapped == nullptr ? -1 : mapped[0];
     }

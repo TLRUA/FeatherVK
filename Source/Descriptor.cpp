@@ -1,4 +1,4 @@
-﻿#include "Descriptor.h"
+#include "Descriptor.h"
 #include "RayTracing/TLAS.hpp"
 // std
 #include <cassert>
@@ -141,9 +141,9 @@ namespace Kaamoo {
         write->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         write->descriptorType = bindingDescription.descriptorType;
         write->dstBinding = binding;
-        write->pBufferInfo = bufferInfo.get();
+        m_bufferInfos.push_back(bufferInfo);
+        write->pBufferInfo = m_bufferInfos.back().get();
         write->descriptorCount = 1;
-        m_bufferInfo = bufferInfo;
         writes.push_back(write);
         return *this;
     }
@@ -169,7 +169,8 @@ namespace Kaamoo {
         write->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         write->descriptorType = bindingDescription.descriptorType;
         write->dstBinding = binding;
-        write->pImageInfo = imageInfo.get();
+        m_imageInfos.push_back(imageInfo);
+        write->pImageInfo = m_imageInfos.back().get();
         write->descriptorCount = 1;
         writes.push_back(write);
         return *this;
@@ -197,7 +198,8 @@ namespace Kaamoo {
         write->descriptorType = bindingDescription.descriptorType;
         write->dstBinding = binding;
         write->descriptorCount = 1;
-        write->pNext = accelerationStructureInfo.get();
+        m_tlasInfos.push_back(accelerationStructureInfo);
+        write->pNext = m_tlasInfos.back().get();
         writes.push_back(write);
         return *this;
     }

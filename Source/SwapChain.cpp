@@ -57,19 +57,20 @@ namespace Kaamoo {
         vkDestroyRenderPass(device.device(), m_gizmosRenderPass, nullptr);
 
         // cleanup synchronization objects
+        for (const auto semaphore : renderFinishedSemaphores) {
+            vkDestroySemaphore(device.device(), semaphore, nullptr);
+        }
         for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-            vkDestroySemaphore(device.device(), renderFinishedSemaphores[i], nullptr);
             vkDestroySemaphore(device.device(), imageAvailableSemaphores[i], nullptr);
             vkDestroyFence(device.device(), inFlightFences[i], nullptr);
         }
     }
 
     VkResult SwapChain::acquireNextImage(uint32_t *imageIndex) {
-        uint32_t lastFrameIndex = (MAX_FRAMES_IN_FLIGHT + currentFrame - 1) % MAX_FRAMES_IN_FLIGHT;
         vkWaitForFences(
                 device.device(),
                 1,
-                &inFlightFences[lastFrameIndex],
+                &inFlightFences[currentFrame],
                 VK_TRUE,
                 std::numeric_limits<uint64_t>::max());
 
@@ -103,7 +104,7 @@ namespace Kaamoo {
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = buffers;
 
-        VkSemaphore signalSemaphores[] = {renderFinishedSemaphores[currentFrame]};
+        VkSemaphore signalSemaphores[] = {renderFinishedSemaphores[*imageIndex]};
         submitInfo.signalSemaphoreCount = 1;
         submitInfo.pSignalSemaphores = signalSemaphores;
 
@@ -173,7 +174,7 @@ namespace Kaamoo {
         createInfo.presentMode = presentMode;
         createInfo.clipped = VK_TRUE;
 
-        //指定oldSwapChain，确保在新swap chain可用之前能够继续呈现图像，并完成尚未完成的图像呈现操作，实现平稳过度
+        // Keep old swapchain alive during recreation to avoid presentation gaps.
         createInfo.oldSwapchain = oldSwapChain == nullptr ? VK_NULL_HANDLE : oldSwapChain->swapChain;
 
         if (vkCreateSwapchainKHR(device.device(), &createInfo, nullptr, &swapChain) != VK_SUCCESS) {
@@ -387,9 +388,9 @@ namespace Kaamoo {
             viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
             viewInfo.format = depthFormat;
             viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-            //起始mip层级
+            // Base mip level
             viewInfo.subresourceRange.baseMipLevel = 0;
-            //涵盖的mip层级数目
+            // Number of mip levels
             viewInfo.subresourceRange.levelCount = 1;
             viewInfo.subresourceRange.baseArrayLayer = 0;
             viewInfo.subresourceRange.layerCount = 1;
@@ -402,7 +403,7 @@ namespace Kaamoo {
 
     void SwapChain::createSyncObjects() {
         imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
-        renderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+        renderFinishedSemaphores.resize(imageCount());
         inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
         imagesInFlight.resize(imageCount(), VK_NULL_HANDLE);
 
@@ -414,12 +415,15 @@ namespace Kaamoo {
         fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
         for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-            if (vkCreateSemaphore(device.device(), &semaphoreInfo, nullptr, &imageAvailableSemaphores[i]) !=
-                VK_SUCCESS ||
-                vkCreateSemaphore(device.device(), &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) !=
-                VK_SUCCESS ||
+            if (vkCreateSemaphore(device.device(), &semaphoreInfo, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS ||
                 vkCreateFence(device.device(), &fenceInfo, nullptr, &inFlightFences[i]) != VK_SUCCESS) {
                 throw std::runtime_error("failed to create synchronization objects for a frame!");
+            }
+        }
+
+        for (size_t i = 0; i < imageCount(); i++) {
+            if (vkCreateSemaphore(device.device(), &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS) {
+                throw std::runtime_error("failed to create render-finished semaphores for swapchain images!");
             }
         }
     }

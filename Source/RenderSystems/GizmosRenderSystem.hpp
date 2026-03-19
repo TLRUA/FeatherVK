@@ -1,4 +1,4 @@
-﻿#pragma  once
+#pragma  once
 
 #include "RenderSystem.h"
 
@@ -189,11 +189,12 @@ namespace Kaamoo {
                                            0,
                                            sizeof(SimplePushConstantData),
                                            &push);
+                        const float axisSize = static_cast<float>(frameInfo.extent.width > GIZMOS_AXIS_RADIUS ? GIZMOS_AXIS_RADIUS : frameInfo.extent.width);
                         VkViewport viewport{};
-                        viewport.x = frameInfo.extent.width - GIZMOS_AXIS_RADIUS;
-                        viewport.y = 0;
-                        viewport.width = GIZMOS_AXIS_RADIUS;
-                        viewport.height = GIZMOS_AXIS_RADIUS;
+                        viewport.x = static_cast<float>(frameInfo.extent.width) - axisSize;
+                        viewport.y = 0.0f;
+                        viewport.width = axisSize > 0.0f ? axisSize : 1.0f;
+                        viewport.height = axisSize > 0.0f ? axisSize : 1.0f;
                         viewport.minDepth = 0.0f;
                         viewport.maxDepth = 1.0f;
                         vkCmdSetViewport(frameInfo.commandBuffer, 0, 1, &viewport);

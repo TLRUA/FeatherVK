@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "Device.hpp"
 
@@ -115,7 +115,9 @@ namespace Kaamoo {
 
     private:
         std::shared_ptr<DescriptorSetLayout> setLayout;
-        std::shared_ptr<VkDescriptorBufferInfo> m_bufferInfo;
+        std::vector<std::shared_ptr<VkDescriptorBufferInfo>> m_bufferInfos{};
+        std::vector<std::shared_ptr<VkDescriptorImageInfo>> m_imageInfos{};
+        std::vector<std::shared_ptr<VkWriteDescriptorSetAccelerationStructureKHR>> m_tlasInfos{};
         DescriptorPool &pool;
         std::vector<std::shared_ptr<VkWriteDescriptorSet>> writes;
     };
