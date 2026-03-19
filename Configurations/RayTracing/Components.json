@@ -1,9 +1,5 @@
 [
   {
-    "id": 0,
-    "type": "ObjectMovementComponent"
-  },
-  {
     "id": 1,
     "type": "MeshRendererComponent",
     "model": "sphere.obj",

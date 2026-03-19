@@ -8,7 +8,7 @@
       "scale": [0.4,0.4,0.4],
       "rotation": [0,0,0]
     },
-    "componentIds":[0,1]
+    "componentIds":[1]
   },
   {
     "name": "Sphere1",
