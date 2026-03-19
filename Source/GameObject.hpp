@@ -1,4 +1,4 @@
-﻿#ifndef GAME_OBJECT_INCLUDED
+#ifndef GAME_OBJECT_INCLUDED
 #define GAME_OBJECT_INCLUDED
 
 #include <memory>
@@ -156,46 +156,43 @@ namespace Kaamoo {
     public:
         struct Node {
             int id;
-            GameObject *gameObject;
-            int parentTransformId;
+            int parentTransformId = -2;
             std::vector<Node *> children;
         };
         static const int ROOT_ID = -1;
         static const int DEFAULT_TRANSFORM_ID = -2;
 
         HierarchyTree() {
-            m_root = new Node{ROOT_ID, nullptr};
+            m_root = new Node{ROOT_ID};
         };
 
         Node *GetRoot() {
             return m_root;
         }
 
-        bool AddNode(int parentId, int childId, GameObject *childGameObject) {
+        bool AddNode(int parentId, int childId, int childTransformId = DEFAULT_TRANSFORM_ID) {
 
             auto parentNode = FindNode(parentId, m_root);
 
             if (parentNode == nullptr) {
-                auto node = new Node{childId, childGameObject, parentId};
+                auto node = new Node{childId, parentId};
                 m_fakeNodes.push_back(node);
                 m_root->children.push_back(node);
             } else {
-                auto node = new Node{childId, childGameObject};
+                auto node = new Node{childId};
                 parentNode->children.push_back(node);
-                for (auto &fakeNode: m_fakeNodes) {
-                    if (childGameObject->transform->GetTransformId() == fakeNode->parentTransformId) {
+                for (auto fakeIt = m_fakeNodes.begin(); fakeIt != m_fakeNodes.end();) {
+                    Node *fakeNode = *fakeIt;
+                    if (childId == fakeNode->parentTransformId) {
                         node->children.push_back(fakeNode);
-                        auto it = std::find_if(m_root->children.begin(), m_root->children.end(), [&fakeNode](const Node *node) {
-                            return node->id == fakeNode->id;
-                        });
-                        if (it != m_root->children.end()) {
-                            m_root->children.erase(it);
+                        auto rootChildIt = std::find(m_root->children.begin(), m_root->children.end(), fakeNode);
+                        if (rootChildIt != m_root->children.end()) {
+                            m_root->children.erase(rootChildIt);
                         }
 
-                        it = std::find(m_fakeNodes.begin(), m_fakeNodes.end(), fakeNode);
-                        if (it != m_fakeNodes.end()) {
-                            m_fakeNodes.erase(it);
-                        }
+                        fakeIt = m_fakeNodes.erase(fakeIt);
+                    } else {
+                        ++fakeIt;
                     }
                 }
             }
@@ -225,3 +222,6 @@ namespace Kaamoo {
 }
 
 #endif
+
+
+

@@ -1,30 +1,30 @@
 #pragma once
 
-#include <memory>
-#include <glm/gtc/constants.hpp>
 #include <chrono>
-#include <string>
 #include <glm/ext/matrix_clip_space.hpp>
+#include <glm/gtc/constants.hpp>
+#include <memory>
+#include <string>
+
+#include "ComponentFactory.hpp"
+#include "Core/Events.hpp"
+#include "Core/Logger.hpp"
+#include "Descriptor.h"
 #include "Device.hpp"
+#include "GUI.hpp"
+#include "Image.h"
+#include "Managers/LogicManager.hpp"
+#include "Managers/RenderManager.hpp"
+#include "Managers/ResourceManager.hpp"
+#include "ECS/SceneRegistry.hpp"
+#include "Material.hpp"
+#include "Model.hpp"
 #include "MyWindow.hpp"
 #include "Pipeline.hpp"
 #include "Renderer.h"
-#include "Model.hpp"
-#include "GameObject.hpp"
-#include "Descriptor.h"
-#include "Image.h"
-#include "Material.hpp"
+#include "Sampler.h"
 #include "ShaderBuilder.h"
 #include "Utils/JsonUtils.hpp"
-#include "Sampler.h"
-
-#include "ComponentFactory.hpp"
-#include "GUI.hpp"
-#include "Managers/ResourceManager.hpp"
-#include "Managers/LogicManager.hpp"
-#include "Managers/RenderManager.hpp"
-#include "Core/Events.hpp"
-#include "Core/Logger.hpp"
 
 namespace Kaamoo {
     class Application {
@@ -41,22 +41,22 @@ namespace Kaamoo {
 
         void run() {
             auto currentTime = std::chrono::high_resolution_clock::now();
-            float totalTime = 0;
+            float totalTime = 0.0f;
             Awake();
-            auto &_window = m_resourceManager->GetWindow();
-            auto &_renderer = m_resourceManager->GetRenderer();
-            auto &_gameObjects = m_resourceManager->GetGameObjects();
-            auto &_materials = m_resourceManager->GetMaterials();
-            auto &_device = m_resourceManager->GetDevice();
-            while (!_window.shouldClose()) {
+
+            auto &window = m_resourceManager->GetWindow();
+            auto &renderer = m_resourceManager->GetRenderer();
+            auto &materials = m_resourceManager->GetMaterials();
+            auto &device = m_resourceManager->GetDevice();
+            auto &sceneRegistry = m_resourceManager->GetSceneRegistry();
+
+            while (!window.shouldClose()) {
                 glfwPollEvents();
 
                 Event event{};
                 while (EventQueue::Poll(event)) {
                     if (event.type == EventType::WindowResized) {
-                        Logger::Info(
-                                "Window resized to " + std::to_string(event.width) + "x" +
-                                std::to_string(event.height));
+                        Logger::Info("Window resized to " + std::to_string(event.width) + "x" + std::to_string(event.height));
                     }
                 }
 
@@ -65,19 +65,30 @@ namespace Kaamoo {
                 totalTime += frameTime;
                 currentTime = newTime;
 
-                if (auto commandBuffer = _renderer.beginFrame()) {
-                    int frameIndex = _renderer.getFrameIndex();
-                    FrameInfo frameInfo{frameIndex, frameTime, totalTime, commandBuffer, _gameObjects, _materials, m_ubo, _window.getCurrentExtent(), GUI::GetSelectedId(), false};
+                if (auto commandBuffer = renderer.beginFrame()) {
+                    int frameIndex = renderer.getFrameIndex();
+                    FrameInfo frameInfo{
+                            frameIndex,
+                            frameTime,
+                            totalTime,
+                            commandBuffer,
+                            &sceneRegistry,
+                            materials,
+                            m_ubo,
+                            window.getCurrentExtent(),
+                            GUI::GetSelectedId(),
+                            false};
+
+                    GUI::BeginFrame(ImVec2(frameInfo.extent.width, frameInfo.extent.height));
                     UpdateComponents(frameInfo);
                     UpdateRendering(frameInfo);
                 }
-
             }
-            vkDeviceWaitIdle(_device.device());
-        };
+
+            vkDeviceWaitIdle(device.device());
+        }
 
         Application(const Application &) = delete;
-
         Application &operator=(const Application &) = delete;
 
     private:
@@ -88,12 +99,24 @@ namespace Kaamoo {
         std::unique_ptr<LogicManager> m_logicManager;
 
         void Awake() {
-            auto &_gameObjects = m_resourceManager->GetGameObjects();
+            auto &sceneRegistry = m_resourceManager->GetSceneRegistry();
 
             ComponentAwakeInfo awakeInfo{};
-            for (auto &pair: _gameObjects) {
-                awakeInfo.gameObject = &pair.second;
-                pair.second.Awake(awakeInfo);
+            awakeInfo.sceneRegistry = &sceneRegistry;
+
+            for (const auto entityId: sceneRegistry.GetEntityOrder()) {
+                TransformComponent *transform = nullptr;
+                sceneRegistry.TryGetComponent(entityId, transform);
+
+                awakeInfo.entityId = entityId;
+                awakeInfo.transform = transform;
+                awakeInfo.gameObject = nullptr;
+
+                for (auto *component: sceneRegistry.GetComponents(entityId)) {
+                    if (component != nullptr) {
+                        component->Awake(awakeInfo);
+                    }
+                }
             }
         }
 
@@ -102,16 +125,19 @@ namespace Kaamoo {
         }
 
         void UpdateRendering(FrameInfo &frameInfo) {
-            auto &_renderer = m_resourceManager->GetRenderer();
-            auto &_gameObjects = m_resourceManager->GetGameObjects();
-            auto &_hierarchyTree = m_resourceManager->GetHierarchyTree();
+            auto &renderer = m_resourceManager->GetRenderer();
+            auto &hierarchyTree = m_resourceManager->GetHierarchyTree();
 #ifdef RAY_TRACING
-            auto& _pGameObjectDescBuffer = m_resourceManager->GetGameObjectDescBuffer();
-            auto& _pGameObjectDescs = m_resourceManager->GetGameObjectDescs();
-            frameInfo.pGameObjectDescBuffer = _pGameObjectDescBuffer;
-            frameInfo.pGameObjectDescs = _pGameObjectDescs;
+            auto &gameObjectDescBuffer = m_resourceManager->GetGameObjectDescBuffer();
+            auto &gameObjectDescs = m_resourceManager->GetGameObjectDescs();
+            frameInfo.pGameObjectDescBuffer = gameObjectDescBuffer;
+            frameInfo.pGameObjectDescs = gameObjectDescs;
 #endif
-            m_renderManager->UpdateRendering(_renderer, frameInfo, _hierarchyTree);
+            m_renderManager->UpdateRendering(renderer, frameInfo, hierarchyTree);
         }
     };
 }
+
+
+
+

@@ -1,6 +1,22 @@
+#pragma once
+
 #include <numeric>
+#include "../ComponentFactory.hpp"
+#include "../Descriptor.h"
+#include "../Device.hpp"
+#include "../GUI.hpp"
+#include "../GameObject.hpp"
+#include "../Image.h"
+#include "../Material.hpp"
+#include "../MyWindow.hpp"
+#include "../Pipeline.hpp"
+#include "../Renderer.h"
+#include "../Sampler.h"
+#include "../ShaderBuilder.h"
+#include "../Utils/JsonUtils.hpp"
 
 #include "../Utils/ProjectPaths.hpp"
+#include "../ECS/SceneRegistry.hpp"
 #ifdef RAY_TRACING
 #include "../RayTracing/BLAS.hpp"
 #include "../RayTracing/TLAS.hpp"
@@ -40,9 +56,7 @@ namespace Kaamoo {
         }
 
         ~ResourceManager() {
-            m_gameObjects.clear();
             m_materials.clear();
-
         }
 
 
@@ -54,7 +68,9 @@ namespace Kaamoo {
 
         Material::Map &GetMaterials() { return m_materials; }
 
-        GameObject::Map &GetGameObjects() { return m_gameObjects; }
+
+        ECS::SceneRegistry &GetSceneRegistry() { return m_sceneRegistry; }
+        const ECS::SceneRegistry &GetSceneRegistry() const { return m_sceneRegistry; }
 
         Renderer &GetRenderer() { return m_renderer; }
 
@@ -64,6 +80,15 @@ namespace Kaamoo {
 #endif
 
         void loadGameObjects() {
+            struct HierarchyEntry {
+                id_t entityId;
+                int32_t transformId;
+            };
+
+            m_sceneRegistry.Clear();
+            m_ownedComponents.clear();
+            m_hierarchyTree = HierarchyTree();
+
             std::string gameObjectsJsonString = JsonUtils::ReadJsonFile(GetBasePath() + GameObjectsFileName);
             std::string componentsJsonString = JsonUtils::ReadJsonFile(GetBasePath() + ComponentsFileName);
 
@@ -80,96 +105,115 @@ namespace Kaamoo {
                 }
             }
 
-            std::unordered_map<int, GameObject *> transformIdToParentGameObjMap;
-            auto *componentFactory = new ComponentFactory();
+            std::unordered_map<int, id_t> childTransformIdToParentEntityMap;
+            std::vector<HierarchyEntry> hierarchyEntries{};
+            ComponentFactory componentFactory;
+
             if (gameObjectsDocument.IsArray()) {
                 for (rapidjson::SizeType i = 0; i < gameObjectsDocument.Size(); i++) {
-                    auto &gameObject = GameObject::createGameObject();
                     const rapidjson::Value &object = gameObjectsDocument[i];
+
+                    const std::string entityName = object.HasMember("name") ? object["name"].GetString() : "Entity";
+                    const bool active = !object.HasMember("IsActive") || object["IsActive"].GetBool();
+
+                    const id_t entityId = m_sceneRegistry.CreateEntity(entityName, active);
+                    auto transformComponent = std::make_unique<TransformComponent>();
+                    TransformComponent *transformComponentPtr = transformComponent.get();
+                    int32_t transformId = HierarchyTree::DEFAULT_TRANSFORM_ID;
 
                     if (object.HasMember("transform")) {
                         const rapidjson::Value &transformJsonObj = object["transform"];
-                        int32_t transformId = HierarchyTree::DEFAULT_TRANSFORM_ID;
                         if (transformJsonObj.HasMember("id")) {
                             transformId = transformJsonObj["id"].GetInt();
                         }
 
-                        gameObject.transform->SetTransformId(transformId);
+                        transformComponentPtr->SetTransformId(transformId);
 
                         if (transformJsonObj.HasMember("childrenIds")) {
                             const rapidjson::Value &childrenIdsArray = transformJsonObj["childrenIds"];
                             for (rapidjson::SizeType j = 0; j < childrenIdsArray.Size(); j++) {
-                                const rapidjson::Value &arrayId = childrenIdsArray[j];
-                                const int childrenId = arrayId.GetInt();
+                                const int childrenId = childrenIdsArray[j].GetInt();
                                 if (transformId != -1) {
-                                    transformIdToParentGameObjMap[childrenId] = &gameObject;
+                                    childTransformIdToParentEntityMap[childrenId] = entityId;
                                 }
                             }
                         }
 
                         const rapidjson::Value &translationArray = transformJsonObj["translation"];
-                        glm::vec3 translation{translationArray[0].GetFloat(), translationArray[1].GetFloat(),
-                                              translationArray[2].GetFloat()};
-
                         const rapidjson::Value &scaleArray = transformJsonObj["scale"];
-                        glm::vec3 scale{scaleArray[0].GetFloat(), scaleArray[1].GetFloat(), scaleArray[2].GetFloat()};
-
                         const rapidjson::Value &rotationArray = transformJsonObj["rotation"];
-                        glm::vec3 rotation{rotationArray[0].GetFloat(), rotationArray[1].GetFloat(),
-                                           rotationArray[2].GetFloat()};
 
-                        gameObject.transform->SetTranslation(translation);
-                        gameObject.transform->SetScale(scale);
-                        gameObject.transform->SetRotation(glm::radians(rotation));
+                        transformComponentPtr->SetTranslation(glm::vec3{
+                                translationArray[0].GetFloat(),
+                                translationArray[1].GetFloat(),
+                                translationArray[2].GetFloat()});
+                        transformComponentPtr->SetScale(glm::vec3{
+                                scaleArray[0].GetFloat(),
+                                scaleArray[1].GetFloat(),
+                                scaleArray[2].GetFloat()});
+                        transformComponentPtr->SetRotation(glm::radians(glm::vec3{
+                                rotationArray[0].GetFloat(),
+                                rotationArray[1].GetFloat(),
+                                rotationArray[2].GetFloat()}));
                     }
-                    
+
+                    m_ownedComponents.emplace_back(std::move(transformComponent));
+                    m_sceneRegistry.AddComponent<TransformComponent>(entityId, transformComponentPtr);
+                    hierarchyEntries.push_back(HierarchyEntry{entityId, transformId});
+
                     if (object.HasMember("componentIds")) {
                         auto componentIdsArray = object["componentIds"].GetArray();
                         for (rapidjson::SizeType j = 0; j < componentIdsArray.Size(); j++) {
-                            const rapidjson::Value &arrayId = componentIdsArray[j];
-                            const int componentId = arrayId.GetInt();
-                            auto componentPtr = componentFactory->CreateComponent(componentsMap, componentId);
-                            if (componentPtr) {
-                                gameObject.TryAddComponent(componentPtr);
+                            const int componentId = componentIdsArray[j].GetInt();
+                            std::unique_ptr<Component> componentOwner(componentFactory.CreateComponent(componentsMap, componentId));
+                            if (componentOwner) {
+                                Component *componentPtr = componentOwner.get();
+                                m_sceneRegistry.AddComponent(entityId, componentPtr);
+                                m_ownedComponents.emplace_back(std::move(componentOwner));
                             }
                         }
                     }
-
-                    if (object.HasMember("name")) {
-                        gameObject.SetName(object["name"].GetString());
-                    }
-
-                    if (object.HasMember("IsActive")) {
-                        gameObject.SetActive(object["IsActive"].GetBool());
-                    }
-
-                    m_gameObjects.emplace(gameObject.GetId(), std::move(gameObject));
                 }
             }
 
-            for (auto &pair: m_gameObjects) {
-                auto &gameObject = pair.second;
-                if (transformIdToParentGameObjMap.find(gameObject.transform->GetTransformId()) != transformIdToParentGameObjMap.end()) {
-                    auto parent = transformIdToParentGameObjMap[gameObject.transform->GetTransformId()];
-                    parent->transform->AddChild(gameObject.transform);
-                    //Make sure parent node exists in the hierarchy tree before inserting child node.
-                    m_hierarchyTree.AddNode(parent->GetId(), gameObject.GetId(), &gameObject);
+            for (const auto &hierarchyEntry: hierarchyEntries) {
+                TransformComponent *childTransform = nullptr;
+                if (!m_sceneRegistry.TryGetComponent(hierarchyEntry.entityId, childTransform) || childTransform == nullptr) {
+                    continue;
+                }
+
+                const auto parentEntry = childTransformIdToParentEntityMap.find(hierarchyEntry.transformId);
+                if (parentEntry != childTransformIdToParentEntityMap.end()) {
+                    TransformComponent *parentTransform = nullptr;
+                    if (m_sceneRegistry.TryGetComponent(parentEntry->second, parentTransform) && parentTransform != nullptr) {
+                        parentTransform->AddChild(childTransform);
+                    }
+                    m_hierarchyTree.AddNode(static_cast<int>(parentEntry->second), static_cast<int>(hierarchyEntry.entityId), hierarchyEntry.transformId);
                 } else {
-                    m_hierarchyTree.AddNode(HierarchyTree::ROOT_ID, gameObject.GetId(), &gameObject);
+                    m_hierarchyTree.AddNode(HierarchyTree::ROOT_ID, static_cast<int>(hierarchyEntry.entityId), hierarchyEntry.transformId);
                 }
-                gameObject.OnLoad();
             }
 
-            for (auto &pair: m_gameObjects) {
-                auto &gameObject = pair.second;
-                gameObject.Loaded();
+            for (const auto entityId: m_sceneRegistry.GetEntityOrder()) {
+                for (auto *component: m_sceneRegistry.GetComponents(entityId)) {
+                    if (component != nullptr) {
+                        component->OnLoad(entityId, m_sceneRegistry);
+                    }
+                }
+            }
+
+            for (const auto entityId: m_sceneRegistry.GetEntityOrder()) {
+                for (auto *component: m_sceneRegistry.GetComponents(entityId)) {
+                    if (component != nullptr) {
+                        component->Loaded(entityId, m_sceneRegistry);
+                    }
+                }
             }
 
 #ifdef RAY_TRACING
-            for (auto &pair: m_gameObjects) {
-                auto &gameObject = pair.second;
-                MeshRendererComponent *meshRendererComponent;
-                if (gameObject.TryGetComponent(meshRendererComponent) && meshRendererComponent->GetModelPtr() != nullptr) {
+            for (const auto entityId: m_sceneRegistry.View<MeshRendererComponent>()) {
+                auto *meshRendererComponent = TryGetSceneComponent<MeshRendererComponent>(entityId);
+                if (meshRendererComponent != nullptr && meshRendererComponent->GetModelPtr() != nullptr) {
                     BLAS::modelToBLASInput(meshRendererComponent->GetModelPtr());
                 }
             }
@@ -254,13 +298,22 @@ namespace Kaamoo {
                     textureEntries.emplace(id, textureEntry);
                 }
             }
-            for (auto &gameObjectPair: m_gameObjects) {
-                auto &gameObject = gameObjectPair.second;
-                MeshRendererComponent *meshRendererComponent;
-                if (gameObject.TryGetComponent(meshRendererComponent)) {
-                    auto model = meshRendererComponent->GetModelPtr();
-                    TLAS::createTLAS(*model, meshRendererComponent->GetTLASId(), idShaderOffsetMap[meshRendererComponent->GetMaterialID()], gameObject.transform->mat4());
+            for (const auto entityId: m_sceneRegistry.View<MeshRendererComponent, TransformComponent>()) {
+                auto *meshRendererComponent = TryGetSceneComponent<MeshRendererComponent>(entityId);
+                auto *transformComponent = TryGetSceneComponent<TransformComponent>(entityId);
+                if (meshRendererComponent == nullptr || transformComponent == nullptr) {
+                    continue;
                 }
+
+                auto model = meshRendererComponent->GetModelPtr();
+                if (model == nullptr) {
+                    continue;
+                }
+
+                TLAS::createTLAS(*model,
+                                 meshRendererComponent->GetTLASId(),
+                                 idShaderOffsetMap[meshRendererComponent->GetMaterialID()],
+                                 transformComponent->mat4());
             }
             TLAS::buildTLAS();
 
@@ -302,32 +355,26 @@ namespace Kaamoo {
                     build(rayGenDescriptorSet);
 
             //ObjectDesc
-            int meshRendererCount = 0;
-            for (auto &modelPair: m_gameObjects) {
-                auto &gameObject = modelPair.second;
-                MeshRendererComponent *meshRendererComponent;
-                if (gameObject.TryGetComponent(meshRendererComponent)) {
-                    meshRendererCount++;
-                }
-            }
-            m_pGameObjectDescs.resize(meshRendererCount);
-            for (auto &modelPair: m_gameObjects) {
+            const auto meshRendererEntities = m_sceneRegistry.View<MeshRendererComponent>();
+            m_pGameObjectDescs.resize(meshRendererEntities.size());
+            for (const auto entityId: meshRendererEntities) {
                 GameObjectDesc modelDesc{};
-                auto &gameObject = modelPair.second;
-                MeshRendererComponent *meshRendererComponent;
-                if (gameObject.TryGetComponent(meshRendererComponent)) {
-                    modelDesc.vertexBufferAddress = meshRendererComponent->GetModelPtr()->getVertexBuffer()->getDeviceAddress();
-                    modelDesc.indexBufferAddress = meshRendererComponent->GetModelPtr()->getIndexBuffer()->getDeviceAddress();
-                    auto entry = textureEntries.find(meshRendererComponent->GetMaterialID());
-                    if (entry != textureEntries.end()) {
-                        modelDesc.textureEntry = entry->second;
-                    }
-                    auto pbrEntry = pbrMaterials.find(meshRendererComponent->GetMaterialID());
-                    if (pbrEntry != pbrMaterials.end()) {
-                        modelDesc.pbr = pbrEntry->second;
-                    }
-                    m_pGameObjectDescs[meshRendererComponent->GetTLASId()] = modelDesc;
+                auto *meshRendererComponent = TryGetSceneComponent<MeshRendererComponent>(entityId);
+                if (meshRendererComponent == nullptr || meshRendererComponent->GetModelPtr() == nullptr) {
+                    continue;
                 }
+
+                modelDesc.vertexBufferAddress = meshRendererComponent->GetModelPtr()->getVertexBuffer()->getDeviceAddress();
+                modelDesc.indexBufferAddress = meshRendererComponent->GetModelPtr()->getIndexBuffer()->getDeviceAddress();
+                auto entry = textureEntries.find(meshRendererComponent->GetMaterialID());
+                if (entry != textureEntries.end()) {
+                    modelDesc.textureEntry = entry->second;
+                }
+                auto pbrEntry = pbrMaterials.find(meshRendererComponent->GetMaterialID());
+                if (pbrEntry != pbrMaterials.end()) {
+                    modelDesc.pbr = pbrEntry->second;
+                }
+                m_pGameObjectDescs[meshRendererComponent->GetTLASId()] = modelDesc;
             }
 
             m_pGameObjectDescBuffer = std::make_shared<Buffer>(m_device, sizeof(GameObjectDesc), m_pGameObjectDescs.size(),
@@ -655,14 +702,20 @@ namespace Kaamoo {
             return cacheEntry;
         }
     private:
+        template<typename T>
+        T *TryGetSceneComponent(const id_t entityId) {
+            T *component = nullptr;
+            return m_sceneRegistry.TryGetComponent(entityId, component) ? component : nullptr;
+        }
+
         MyWindow m_window{SCENE_WIDTH + UI_LEFT_WIDTH + UI_LEFT_WIDTH_2, SCENE_HEIGHT, "FeatherVK"};
         Device m_device{m_window};
         Renderer m_renderer{m_window, m_device};
         ShaderBuilder m_shaderBuilder{m_device};
         std::shared_ptr<DescriptorPool> m_globalPool;
-
-        GameObject::Map m_gameObjects;
+        ECS::SceneRegistry m_sceneRegistry;
         HierarchyTree m_hierarchyTree;
+        std::vector<std::unique_ptr<Component>> m_ownedComponents;
         Material::Map m_materials;
         std::unordered_map<std::string, TextureCacheEntry> m_textureCache;
 
@@ -672,5 +725,14 @@ namespace Kaamoo {
 #endif
     };
 }
+
+
+
+
+
+
+
+
+
 
 

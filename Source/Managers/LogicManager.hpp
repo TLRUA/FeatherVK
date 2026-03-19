@@ -3,115 +3,255 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <utility>
 
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 
-#include "../GUI.hpp"
 #include "../Components/LightComponent.hpp"
+#include "../GUI.hpp"
+#include "ResourceManager.hpp"
 
 namespace Kaamoo {
     class LogicManager {
     public:
-        LogicManager(std::shared_ptr<ResourceManager> resourceManager) {
-            m_resourceManager = resourceManager;
-        };
+        explicit LogicManager(std::shared_ptr<ResourceManager> resourceManager) {
+            m_resourceManager = std::move(resourceManager);
+        }
 
-        ~LogicManager() {};
+        ~LogicManager() = default;
 
         LogicManager(const LogicManager &) = delete;
-
         LogicManager &operator=(const LogicManager &) = delete;
 
         void UpdateComponents(FrameInfo &frameInfo) {
+            if (frameInfo.sceneRegistry == nullptr) {
+                return;
+            }
+
             UpdateUbo(frameInfo);
-            ComponentUpdateInfo updateInfo{};
-            auto &_renderer = m_resourceManager->GetRenderer();
-            auto &_gameObjects = m_resourceManager->GetGameObjects();
-            RendererInfo rendererInfo{_renderer.getAspectRatio(), _renderer.FOV_Y, _renderer.NEAR_CLIP, _renderer.FAR_CLIP};
-            updateInfo.frameInfo = &frameInfo;
-            updateInfo.rendererInfo = &rendererInfo;
+
+            auto &renderer = m_resourceManager->GetRenderer();
+            auto &sceneRegistry = *frameInfo.sceneRegistry;
+
+            RendererInfo rendererInfo{renderer.getAspectRatio(), renderer.FOV_Y, renderer.NEAR_CLIP, renderer.FAR_CLIP};
 
             HandleSceneSelection(frameInfo);
             HandleSelectedObjectMovement(frameInfo);
 
             static bool firstFrame = true;
             if (firstFrame) {
-                for (auto &pair: _gameObjects) {
-                    if (!pair.second.IsActive()) continue;
-                    updateInfo.gameObject = &pair.second;
-                    pair.second.Start(updateInfo);
+                for (const auto entityId: sceneRegistry.GetEntityOrder()) {
+                    if (!sceneRegistry.IsEntityActive(entityId)) continue;
+                    ComponentUpdateInfo updateInfo = BuildUpdateInfo(sceneRegistry, frameInfo, rendererInfo, entityId);
+                    for (auto *component: sceneRegistry.GetComponents(entityId)) {
+                        if (component != nullptr) {
+                            component->Start(updateInfo);
+                        }
+                    }
                 }
                 firstFrame = false;
             }
 
-            for (auto &pair: _gameObjects) {
-                auto &_gameObject = pair.second;
-                updateInfo.gameObject = &_gameObject;
-                if (_gameObject.IsOnDisabled()) {
-                    _gameObject.OnDisable(updateInfo);
+            for (const auto entityId: sceneRegistry.GetEntityOrder()) {
+                auto *meta = sceneRegistry.TryGetEntityMeta(entityId);
+                if (meta == nullptr) {
+                    continue;
                 }
-                if (_gameObject.IsOnEnabled()) {
-                    _gameObject.OnEnable(updateInfo);
+
+                ComponentUpdateInfo updateInfo = BuildUpdateInfo(sceneRegistry, frameInfo, rendererInfo, entityId);
+                if (meta->onDisabled) {
+                    meta->active = false;
+                    meta->onDisabled = false;
+                    for (auto *component: sceneRegistry.GetComponents(entityId)) {
+                        if (component != nullptr) {
+                            component->OnDisable(updateInfo);
+                        }
+                    }
+                }
+                if (meta->onEnabled) {
+                    meta->active = true;
+                    meta->onEnabled = false;
+                    for (auto *component: sceneRegistry.GetComponents(entityId)) {
+                        if (component != nullptr) {
+                            component->OnEnable(updateInfo);
+                        }
+                    }
                 }
             }
 
-            for (auto &pair: _gameObjects) {
-                if (!pair.second.IsActive()) continue;
-                updateInfo.gameObject = &pair.second;
-                pair.second.Update(updateInfo);
+            for (const auto entityId: sceneRegistry.GetEntityOrder()) {
+                if (!sceneRegistry.IsEntityActive(entityId)) continue;
+                ComponentUpdateInfo updateInfo = BuildUpdateInfo(sceneRegistry, frameInfo, rendererInfo, entityId);
+                for (auto *component: sceneRegistry.GetComponents(entityId)) {
+                    if (component != nullptr) {
+                        component->Update(updateInfo);
+                    }
+                }
             }
 
-            for (auto &pair: _gameObjects) {
-                if (!pair.second.IsActive()) continue;
-                updateInfo.gameObject = &pair.second;
-                pair.second.LateUpdate(updateInfo);
+            for (const auto entityId: sceneRegistry.GetEntityOrder()) {
+                if (!sceneRegistry.IsEntityActive(entityId)) continue;
+                ComponentUpdateInfo updateInfo = BuildUpdateInfo(sceneRegistry, frameInfo, rendererInfo, entityId);
+                for (auto *component: sceneRegistry.GetComponents(entityId)) {
+                    if (component != nullptr) {
+                        component->LateUpdate(updateInfo);
+                    }
+                }
             }
 
             FixedUpdateComponents(frameInfo);
         }
 
         void FixedUpdateComponents(FrameInfo &frameInfo) {
-            auto &_renderer = m_resourceManager->GetRenderer();
-            auto &_gameObjects = m_resourceManager->GetGameObjects();
+            if (frameInfo.sceneRegistry == nullptr) {
+                return;
+            }
+
+            auto &renderer = m_resourceManager->GetRenderer();
+            auto &sceneRegistry = *frameInfo.sceneRegistry;
             static float reservedFrameTime = 0;
             float frameTime = frameInfo.frameTime + reservedFrameTime;
+
+            RendererInfo rendererInfo{renderer.getAspectRatio(), renderer.FOV_Y, renderer.NEAR_CLIP, renderer.FAR_CLIP};
 
             while (frameTime >= FIXED_UPDATE_INTERVAL) {
                 frameTime -= FIXED_UPDATE_INTERVAL;
 
-                ComponentUpdateInfo updateInfo{};
-                RendererInfo rendererInfo{_renderer.getAspectRatio()};
-                updateInfo.frameInfo = &frameInfo;
-                updateInfo.rendererInfo = &rendererInfo;
-                for (auto &pair: _gameObjects) {
-                    if (!pair.second.IsActive()) continue;
-                    updateInfo.gameObject = &pair.second;
-                    pair.second.FixedUpdate(updateInfo);
+                for (const auto entityId: sceneRegistry.GetEntityOrder()) {
+                    if (!sceneRegistry.IsEntityActive(entityId)) continue;
+                    ComponentUpdateInfo updateInfo = BuildUpdateInfo(sceneRegistry, frameInfo, rendererInfo, entityId);
+                    for (auto *component: sceneRegistry.GetComponents(entityId)) {
+                        if (component != nullptr) {
+                            component->FixedUpdate(updateInfo);
+                        }
+                    }
                 }
-                for (auto &pair: _gameObjects) {
-                    if (!pair.second.IsActive()) continue;
-                    updateInfo.gameObject = &pair.second;
-                    pair.second.LateFixedUpdate(updateInfo);
+
+                for (const auto entityId: sceneRegistry.GetEntityOrder()) {
+                    if (!sceneRegistry.IsEntityActive(entityId)) continue;
+                    ComponentUpdateInfo updateInfo = BuildUpdateInfo(sceneRegistry, frameInfo, rendererInfo, entityId);
+                    for (auto *component: sceneRegistry.GetComponents(entityId)) {
+                        if (component != nullptr) {
+                            component->LateFixedUpdate(updateInfo);
+                        }
+                    }
                 }
             }
             reservedFrameTime = frameTime;
         }
 
-        //Todo: Light is not active but it still contributes lighting
         void UpdateUbo(FrameInfo &frameInfo) {
             frameInfo.globalUbo.lightNum = LightComponent::GetLightNum();
             frameInfo.globalUbo.curTime = frameInfo.totalTime;
         }
 
     private:
-        static constexpr id_t InvalidGameObjectId = std::numeric_limits<id_t>::max();
+        static constexpr id_t InvalidEntityId = std::numeric_limits<id_t>::max();
+
+        ComponentUpdateInfo BuildUpdateInfo(ECS::SceneRegistry &sceneRegistry, FrameInfo &frameInfo, RendererInfo &rendererInfo, id_t entityId) const {
+            ComponentUpdateInfo updateInfo{};
+            updateInfo.entityId = entityId;
+            updateInfo.sceneRegistry = &sceneRegistry;
+            updateInfo.frameInfo = &frameInfo;
+            updateInfo.rendererInfo = &rendererInfo;
+            sceneRegistry.TryGetComponent(entityId, updateInfo.transform);
+            updateInfo.gameObject = nullptr;
+            return updateInfo;
+        }
 
         void SyncSelectedId(FrameInfo &frameInfo) {
-            frameInfo.selectedGameObjectId = GUI::HasSelection() ? GUI::GetSelectedId() : InvalidGameObjectId;
+            frameInfo.selectedEntityId = GUI::HasSelection() ? GUI::GetSelectedId() : InvalidEntityId;
+        }
+
+        bool TryGetCursorFramebufferPosition(GLFWwindow *window, float &cursorFramebufferX, float &cursorFramebufferY) const {
+            if (window == nullptr) {
+                return false;
+            }
+
+            int windowWidth = 0;
+            int windowHeight = 0;
+            glfwGetWindowSize(window, &windowWidth, &windowHeight);
+            if (windowWidth <= 0 || windowHeight <= 0) {
+                return false;
+            }
+
+            int framebufferWidth = 0;
+            int framebufferHeight = 0;
+            glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
+            if (framebufferWidth <= 0 || framebufferHeight <= 0) {
+                return false;
+            }
+
+            double cursorWindowX = 0.0;
+            double cursorWindowY = 0.0;
+            glfwGetCursorPos(window, &cursorWindowX, &cursorWindowY);
+
+            cursorFramebufferX = static_cast<float>(cursorWindowX) *
+                                 static_cast<float>(framebufferWidth) / static_cast<float>(windowWidth);
+            cursorFramebufferY = static_cast<float>(cursorWindowY) *
+                                 static_cast<float>(framebufferHeight) / static_cast<float>(windowHeight);
+            return true;
+        }
+
+        bool IsCursorInEditorUi(MyWindow &windowWrapper, GLFWwindow *window) const {
+            float cursorFramebufferX = 0.0f;
+            float cursorFramebufferY = 0.0f;
+            if (!TryGetCursorFramebufferPosition(window, cursorFramebufferX, cursorFramebufferY)) {
+                return false;
+            }
+
+            const auto sceneExtent = windowWrapper.getCurrentSceneExtent();
+            const auto windowExtent = windowWrapper.getCurrentExtent();
+            const float sceneOriginX = static_cast<float>(windowExtent.width) - static_cast<float>(sceneExtent.width);
+            return cursorFramebufferX < sceneOriginX;
+        }
+
+        void UpdateUiKeyboardFocusLatch(MyWindow &windowWrapper, GLFWwindow *window) {
+            if (window == nullptr) {
+                return;
+            }
+
+            const bool leftMousePressed = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            const bool leftMouseJustPressed = leftMousePressed && !m_leftMousePressedForUiFocusLastFrame;
+            m_leftMousePressedForUiFocusLastFrame = leftMousePressed;
+            if (!leftMouseJustPressed) {
+                return;
+            }
+
+            m_sceneKeyboardBlockedByUiFocus = IsCursorInEditorUi(windowWrapper, window);
+        }
+
+        bool IsImGuiInputCaptured(MyWindow &windowWrapper, GLFWwindow *window) const {
+            if (m_sceneKeyboardBlockedByUiFocus) {
+                return true;
+            }
+
+            if (ImGui::GetCurrentContext() == nullptr) {
+                return false;
+            }
+
+            const ImGuiIO &io = ImGui::GetIO();
+            if (io.WantCaptureKeyboard || io.WantCaptureMouse || io.WantTextInput || io.NavActive) {
+                return true;
+            }
+
+            if (IsCursorInEditorUi(windowWrapper, window)) {
+                return true;
+            }
+
+            return ImGui::IsAnyItemActive() ||
+                   ImGui::IsAnyItemFocused() ||
+                   ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) ||
+                   ImGui::IsWindowFocused(ImGuiFocusedFlags_AnyWindow);
         }
 
         void HandleSceneSelection(FrameInfo &frameInfo) {
+            if (frameInfo.sceneRegistry == nullptr) {
+                return;
+            }
+
             auto &windowWrapper = m_resourceManager->GetWindow();
             GLFWwindow *window = windowWrapper.getGLFWwindow();
             if (window == nullptr) {
@@ -130,10 +270,7 @@ namespace Kaamoo {
                 return;
             }
 
-            int windowWidth = 0;
-            int windowHeight = 0;
-            glfwGetWindowSize(window, &windowWidth, &windowHeight);
-            if (windowWidth <= 0 || windowHeight <= 0) {
+            if (IsCursorInEditorUi(windowWrapper, window)) {
                 return;
             }
 
@@ -154,14 +291,11 @@ namespace Kaamoo {
             const float sceneOriginX = static_cast<float>(framebufferWidth) - sceneWidth;
             const float sceneOriginY = 0.0f;
 
-            double cursorWindowX = 0.0;
-            double cursorWindowY = 0.0;
-            glfwGetCursorPos(window, &cursorWindowX, &cursorWindowY);
-
-            const float cursorFramebufferX = static_cast<float>(cursorWindowX) *
-                                             static_cast<float>(framebufferWidth) / static_cast<float>(windowWidth);
-            const float cursorFramebufferY = static_cast<float>(cursorWindowY) *
-                                             static_cast<float>(framebufferHeight) / static_cast<float>(windowHeight);
+            float cursorFramebufferX = 0.0f;
+            float cursorFramebufferY = 0.0f;
+            if (!TryGetCursorFramebufferPosition(window, cursorFramebufferX, cursorFramebufferY)) {
+                return;
+            }
 
             if (cursorFramebufferX < sceneOriginX || cursorFramebufferX >= sceneOriginX + sceneWidth ||
                 cursorFramebufferY < sceneOriginY || cursorFramebufferY >= sceneOriginY + sceneHeight) {
@@ -187,11 +321,10 @@ namespace Kaamoo {
             const uint32_t pixelX = static_cast<uint32_t>(mappedX);
             const uint32_t pixelY = static_cast<uint32_t>(mappedY);
 
-            const int32_t pickedObjectId = renderer.readPickingObjectId(pixelX, pixelY);
-            if (pickedObjectId >= 0) {
-                const id_t selectedId = static_cast<id_t>(pickedObjectId);
-                const auto selectedIt = frameInfo.gameObjects.find(selectedId);
-                if (selectedIt != frameInfo.gameObjects.end() && selectedIt->second.IsActive()) {
+            const int32_t pickedEntityId = renderer.readPickingObjectId(pixelX, pixelY);
+            if (pickedEntityId >= 0) {
+                const id_t selectedId = static_cast<id_t>(pickedEntityId);
+                if (frameInfo.sceneRegistry->IsAlive(selectedId) && frameInfo.sceneRegistry->IsEntityActive(selectedId)) {
                     GUI::SetSelectedId(selectedId);
                 } else {
                     GUI::ClearSelection();
@@ -204,13 +337,18 @@ namespace Kaamoo {
         }
 
         void HandleSelectedObjectMovement(FrameInfo &frameInfo) {
+            if (frameInfo.sceneRegistry == nullptr) {
+                return;
+            }
+
             auto &windowWrapper = m_resourceManager->GetWindow();
             GLFWwindow *window = windowWrapper.getGLFWwindow();
             if (window == nullptr) {
                 return;
             }
 
-            if (ImGui::GetCurrentContext() != nullptr && ImGui::GetIO().WantCaptureKeyboard) {
+            UpdateUiKeyboardFocusLatch(windowWrapper, window);
+            if (IsImGuiInputCaptured(windowWrapper, window)) {
                 return;
             }
 
@@ -219,13 +357,12 @@ namespace Kaamoo {
             }
 
             const id_t selectedId = GUI::GetSelectedId();
-            auto selectedIt = frameInfo.gameObjects.find(selectedId);
-            if (selectedIt == frameInfo.gameObjects.end()) {
+            if (!frameInfo.sceneRegistry->IsAlive(selectedId) || !frameInfo.sceneRegistry->IsEntityActive(selectedId)) {
                 return;
             }
 
-            auto &selectedGameObject = selectedIt->second;
-            if (!selectedGameObject.IsActive()) {
+            TransformComponent *selectedTransform = nullptr;
+            if (!frameInfo.sceneRegistry->TryGetComponent(selectedId, selectedTransform) || selectedTransform == nullptr) {
                 return;
             }
 
@@ -244,14 +381,19 @@ namespace Kaamoo {
             }
 
             if (glm::dot(delta, delta) > std::numeric_limits<float>::epsilon()) {
-                selectedGameObject.transform->Translate(delta);
+                selectedTransform->Translate(delta);
             }
         }
 
     private:
         std::shared_ptr<ResourceManager> m_resourceManager;
         bool m_leftMousePressedLastFrame = false;
+        bool m_leftMousePressedForUiFocusLastFrame = false;
+        bool m_sceneKeyboardBlockedByUiFocus = false;
         float m_selectedMoveSpeed = 0.003f;
     };
 }
+
+
+
 
