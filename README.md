@@ -2,7 +2,7 @@
 
 FeatherVK is a C++17 + Vulkan renderer project with an ECS-based scene runtime, editor picking, gizmos, and configurable rasterization / ray tracing pipelines.
 
-![Preview](./README.assets/image-20240924235946764.png)
+![Preview](./README.assets/preview.png)
 
 ## Current Features
 
