@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <cassert>
 #include <cmath>
@@ -12,7 +12,7 @@
 #include "../ECS/SceneRegistry.hpp"
 #include "MeshRendererComponent.hpp"
 
-namespace Kaamoo {
+namespace FeatherVK {
     class RigidBodyComponent : public Component {
     public:
         inline static const float EPSILON = 0.0001f;
@@ -289,3 +289,4 @@ namespace Kaamoo {
         bool m_useGravity = false;
     };
 }
+

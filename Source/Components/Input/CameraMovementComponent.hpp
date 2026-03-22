@@ -1,10 +1,13 @@
 ﻿#pragma once
 
-//Todo: Circular include
+#include <limits>
+
+#include "../../ECS/SceneRegistry.hpp"
 #include "../MeshRendererComponent.hpp"
+#include "../TransformComponent.hpp"
 #include "InputControllerComponent.hpp"
 
-namespace Kaamoo {
+namespace FeatherVK {
     class CameraMovementComponent : public InputControllerComponent {
     public:
         CameraMovementComponent(GLFWwindow *window) : InputControllerComponent(window) {
@@ -13,43 +16,49 @@ namespace Kaamoo {
 
         void Update(const ComponentUpdateInfo &updateInfo) override {
             MoveCamera(updateInfo);
-
             FocusOnObject(updateInfo);
         }
 
     private:
-        float m_focusMoveTime = 1;
+        float m_focusMoveTime = 1.f;
         float m_lookSpeed{2.f};
         float moveSpeed{3.f};
-        glm::vec2 m_deltaPos;
+        glm::vec2 m_deltaPos{};
 
+        static TransformComponent *ResolveTransform(const ComponentUpdateInfo &updateInfo) {
+            return updateInfo.transform;
+        }
 
         void MoveCamera(const ComponentUpdateInfo &updateInfo) {
-            glm::vec3 rotation{0};
+            TransformComponent *cameraTransform = ResolveTransform(updateInfo);
+            if (cameraTransform == nullptr || updateInfo.frameInfo == nullptr) {
+                return;
+            }
 
-            static glm::vec2 _lastFrameCurPos = glm::vec2{std::numeric_limits<float>::max()};
-            if (rightMousePressed && glm::length(_lastFrameCurPos - curPos) > std::numeric_limits<float>::epsilon()) {
+            glm::vec3 rotation{0.f};
+
+            static glm::vec2 lastFrameCursorPos = glm::vec2{std::numeric_limits<float>::max()};
+            if (rightMousePressed && glm::length(lastFrameCursorPos - curPos) > std::numeric_limits<float>::epsilon()) {
                 m_deltaPos = curPos - lastPos;
-                _lastFrameCurPos = curPos;
+                lastFrameCursorPos = curPos;
                 rotation.x -= m_deltaPos.y;
                 rotation.y += m_deltaPos.x;
             }
 
-            //防止没有按下按键时，对0归一化导致错误   
             if (glm::dot(rotation, rotation) > std::numeric_limits<float>::epsilon()) {
-                updateInfo.gameObject->transform->SetRotation(rotation * m_lookSpeed + updateInfo.gameObject->transform->GetRotation());
+                cameraTransform->SetRotation(rotation * m_lookSpeed + cameraTransform->GetRotation());
             }
 
-            auto transformRotation = updateInfo.gameObject->transform->GetRotation();
+            const auto transformRotation = cameraTransform->GetRotation();
             auto forwardDirMatrix = Utils::GetRotateDirectionMatrix(transformRotation);
             const glm::vec3 forwardDir = forwardDirMatrix * glm::vec4{0, 0, 1, 1};
             forwardDirMatrix = Utils::GetRotateDirectionMatrix({transformRotation.x + 1, transformRotation.y, transformRotation.z});
             const glm::vec3 forwardDirWithOffset = forwardDirMatrix * glm::vec4{0, 0, 1, 1};
             const glm::vec3 rightDir = glm::normalize(glm::cross(forwardDir, forwardDirWithOffset));
-            glm::mat4 rotationMatrix = glm::rotate(glm::mat4{1.f}, glm::radians(90.f), rightDir);
+            const glm::mat4 rotationMatrix = glm::rotate(glm::mat4{1.f}, glm::radians(90.f), rightDir);
             const glm::vec3 upDir = rotationMatrix * glm::vec4{forwardDir, 1};
 
-            glm::vec3 moveDir{0};
+            glm::vec3 moveDir{0.f};
             if (glfwGetKey(window, keys.moveUp) == GLFW_PRESS) moveDir += upDir;
             if (glfwGetKey(window, keys.moveDown) == GLFW_PRESS) moveDir -= upDir;
             if (glfwGetKey(window, keys.moveLeft) == GLFW_PRESS) moveDir -= rightDir;
@@ -57,53 +66,78 @@ namespace Kaamoo {
             if (glfwGetKey(window, keys.moveForward) == GLFW_PRESS) moveDir += forwardDir;
             if (glfwGetKey(window, keys.moveBack) == GLFW_PRESS) moveDir -= forwardDir;
             if (glm::dot(moveDir, moveDir) > std::numeric_limits<float>::epsilon()) {
-                updateInfo.gameObject->transform->SetTranslation(glm::normalize(moveDir) * moveSpeed * updateInfo.frameInfo->frameTime + updateInfo.gameObject->transform->GetTranslation());
+                cameraTransform->SetTranslation(glm::normalize(moveDir) * moveSpeed * updateInfo.frameInfo->frameTime + cameraTransform->GetTranslation());
             }
         }
 
         void FocusOnObject(const ComponentUpdateInfo &updateInfo) {
-            static bool _isFocusing = false;
-            static glm::vec3 _targetPosition;
-            static glm::vec3 _focusObjectPosition;
-            if (glfwGetKey(window, keys.KEY_F) == GLFW_PRESS && !_isFocusing) {
-                auto _frameInfo = *updateInfo.frameInfo;
-                auto _selectedObject = _frameInfo.gameObjects.find(_frameInfo.selectedGameObjectId);
-                if (_selectedObject != _frameInfo.gameObjects.end()) {
-                    auto &_selectedGameObject = _selectedObject->second;
-                    _focusObjectPosition = _selectedGameObject.transform->GetTranslation();
-                    auto _moveTarget = _focusObjectPosition - updateInfo.gameObject->transform->GetTranslation();
-                    if (glm::length(_moveTarget) < std::numeric_limits<float>::epsilon()) {
-                        return;
-                    }
-                    float _distance = glm::length(_moveTarget);
-                    auto _moveDirection = glm::normalize(_moveTarget);
-
-                    MeshRendererComponent *_meshRendererComponent;
-                    float _maxRadius = 1;
-                    if (_selectedObject->second.TryGetComponent(_meshRendererComponent) && _meshRendererComponent->GetModelPtr() != nullptr) {
-                        auto _selectedScale = _selectedGameObject.transform->GetScale();
-                        _maxRadius = _meshRendererComponent->GetModelPtr()->GetMaxRadius() * glm::max(_selectedScale.x, glm::max(_selectedScale.y, _selectedScale.z));
-                    }
-
-                    float _keptDistance = _maxRadius / glm::tan(glm::radians(updateInfo.rendererInfo->fovY) / 2);
-                    float _moveDistance = _distance - _keptDistance;
-                    _targetPosition = updateInfo.gameObject->transform->GetTranslation() + _moveDirection * _moveDistance;
-                    _isFocusing = true;
-                }
+            TransformComponent *cameraTransform = ResolveTransform(updateInfo);
+            if (cameraTransform == nullptr || updateInfo.frameInfo == nullptr || updateInfo.rendererInfo == nullptr) {
+                return;
             }
-            if (_isFocusing) {
-                static float _t = 0;
-                _t += updateInfo.frameInfo->frameTime;
-                glm::vec3 _stepTranslateTarget = (1 - _t) * updateInfo.gameObject->transform->GetTranslation() + _t * _targetPosition;
-                updateInfo.gameObject->transform->SetTranslation(_stepTranslateTarget);
-                glm::vec3 _translateDirection = glm::normalize(_focusObjectPosition - updateInfo.gameObject->transform->GetTranslation());
-                glm::vec3 _targetRotation = Utils::VectorToRotation(_translateDirection);
-                updateInfo.gameObject->transform->SetRotation(_targetRotation);
-                if (glm::length(_stepTranslateTarget - _targetPosition) < 0.01) {
-                    _isFocusing = false;
-                    _t = 0;
+
+            FrameInfo &frameInfo = *updateInfo.frameInfo;
+            ECS::SceneRegistry *sceneRegistry = frameInfo.sceneRegistry != nullptr ? frameInfo.sceneRegistry : updateInfo.sceneRegistry;
+            if (sceneRegistry == nullptr) {
+                return;
+            }
+
+            static bool isFocusing = false;
+            static glm::vec3 targetPosition{};
+            static glm::vec3 focusObjectPosition{};
+
+            if (glfwGetKey(window, keys.KEY_F) == GLFW_PRESS && !isFocusing) {
+                const id_t selectedEntityId = frameInfo.selectedEntityId;
+                if (!sceneRegistry->IsAlive(selectedEntityId) || !sceneRegistry->IsEntityActive(selectedEntityId)) {
+                    return;
+                }
+
+                TransformComponent *selectedTransform = nullptr;
+                if (!sceneRegistry->TryGetComponent(selectedEntityId, selectedTransform) || selectedTransform == nullptr) {
+                    return;
+                }
+
+                focusObjectPosition = selectedTransform->GetTranslation();
+                const glm::vec3 moveTarget = focusObjectPosition - cameraTransform->GetTranslation();
+                if (glm::length(moveTarget) < std::numeric_limits<float>::epsilon()) {
+                    return;
+                }
+
+                const float distance = glm::length(moveTarget);
+                const glm::vec3 moveDirection = glm::normalize(moveTarget);
+
+                float maxRadius = 1.f;
+                MeshRendererComponent *selectedMeshRenderer = nullptr;
+                if (sceneRegistry->TryGetComponent(selectedEntityId, selectedMeshRenderer) &&
+                    selectedMeshRenderer != nullptr &&
+                    selectedMeshRenderer->GetModelPtr() != nullptr) {
+                    const auto selectedScale = selectedTransform->GetScale();
+                    maxRadius = selectedMeshRenderer->GetModelPtr()->GetMaxRadius() *
+                                glm::max(selectedScale.x, glm::max(selectedScale.y, selectedScale.z));
+                }
+
+                const float keptDistance = maxRadius / glm::tan(glm::radians(updateInfo.rendererInfo->fovY) / 2.f);
+                const float moveDistance = distance - keptDistance;
+                targetPosition = cameraTransform->GetTranslation() + moveDirection * moveDistance;
+                isFocusing = true;
+            }
+
+            if (isFocusing) {
+                static float t = 0.f;
+                t += frameInfo.frameTime / m_focusMoveTime;
+                const glm::vec3 stepTranslateTarget = (1 - t) * cameraTransform->GetTranslation() + t * targetPosition;
+                cameraTransform->SetTranslation(stepTranslateTarget);
+
+                const glm::vec3 translateDirection = glm::normalize(focusObjectPosition - cameraTransform->GetTranslation());
+                const glm::vec3 targetRotation = Utils::VectorToRotation(translateDirection);
+                cameraTransform->SetRotation(targetRotation);
+
+                if (glm::length(stepTranslateTarget - targetPosition) < 0.01f) {
+                    isFocusing = false;
+                    t = 0.f;
                 }
             }
         }
     };
 }
+

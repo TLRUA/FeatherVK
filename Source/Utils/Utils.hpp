@@ -5,8 +5,11 @@
 #include <glm/glm.hpp>
 #include <iomanip>
 #include <algorithm>
+#include <cmath>
+#include <sstream>
+#include <vulkan/vulkan.h>
 
-namespace Kaamoo {
+namespace FeatherVK {
     using id_t = unsigned int;
 
     class Utils {
@@ -161,3 +164,6 @@ namespace Kaamoo {
         }
     };
 }
+
+
+

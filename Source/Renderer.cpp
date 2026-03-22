@@ -1,10 +1,10 @@
-#include <glm/fwd.hpp>
+﻿#include <glm/fwd.hpp>
 #include <glm/ext/matrix_transform.hpp>
 #include "Renderer.h"
 #include "Image.h"
 
 
-namespace Kaamoo {
+namespace FeatherVK {
 
     Renderer::Renderer(MyWindow &window, Device &device1) : myWindow{window}, device{device1} {
 
@@ -80,7 +80,7 @@ namespace Kaamoo {
             extent = myWindow.getCurrentExtent();
             glfwWaitEvents();
         }
-        //�ȴ��߼��豸�е������������ִ�����
+        //锟饺达拷锟竭硷拷锟借备锟叫碉拷锟斤拷锟斤拷锟斤拷锟斤拷锟斤拷锟街达拷锟斤拷锟斤拷
         vkDeviceWaitIdle(device.device());
 
         if (swapChain == nullptr) {
@@ -100,7 +100,7 @@ namespace Kaamoo {
     }
 
     void Renderer::freeCommandBuffers() {
-        //Ϊʲô��Ҫ��ʽ�Ĵ���size�����ڰ�ȫ�Կ��ǣ�������ʽ��������
+        //为什么锟斤拷要锟斤拷式锟侥达拷锟斤拷size锟斤拷锟斤拷锟节帮拷全锟皆匡拷锟角ｏ拷锟斤拷锟斤拷锟斤拷式锟斤拷锟斤拷锟斤拷锟斤拷
         vkFreeCommandBuffers(device.device(), device.getCommandPool(), static_cast<uint32_t>(commandBuffers.size()),
                              commandBuffers.data());
         commandBuffers.clear();
@@ -910,6 +910,7 @@ namespace Kaamoo {
 
 
 }
+
 
 
 

@@ -3,7 +3,7 @@
 #include <memory>
 #include "Device.hpp"
 
-namespace Kaamoo {
+namespace FeatherVK {
 
     class Buffer {
     public:

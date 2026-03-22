@@ -1,47 +1,47 @@
-#pragma once
+﻿#pragma once
 
 #include "Component.hpp"
+#include "TransformComponent.hpp"
+#include "../Device.hpp"
+#include "../Model.hpp"
 
-namespace Kaamoo {
+namespace FeatherVK {
     class MeshRendererComponent : public Component {
     public:
-
         ~MeshRendererComponent() override = default;
 
-        MeshRendererComponent(std::shared_ptr<Model> model, id_t materialID) : model(model), materialId(materialID) {
+        MeshRendererComponent(std::shared_ptr<Model> model, id_t materialID) : model(std::move(model)), materialId(materialID) {
             name = "MeshRendererComponent";
         }
 
-        //Todo: Rotate around the center of mass
         explicit MeshRendererComponent(const rapidjson::Value &object) {
             if (!object.HasMember("model")) {
-                this->model = nullptr;
+                model = nullptr;
             } else {
                 const std::string modelName = object["model"].GetString();
 #ifdef RAY_TRACING
                 std::shared_ptr<Model> modelFromFile = Model::createModelFromFile(*Device::getDeviceSingleton(), Model::GetBaseModelsPath() + modelName);
-                this->model = modelFromFile;
-                this->model->SetName(modelName);
+                model = modelFromFile;
+                model->SetName(modelName);
                 Model::models.emplace(modelName, modelFromFile);
                 static int tlasIdStatic = 0;
                 tlasId = tlasIdStatic++;
 #else
                 if (Model::models.count(modelName) > 0) {
-                    this->model = Model::models.at(modelName);
+                    model = Model::models.at(modelName);
                 } else {
                     std::shared_ptr<Model> modelFromFile = Model::createModelFromFile(*Device::getDeviceSingleton(), Model::GetBaseModelsPath() + modelName);
-                    this->model = modelFromFile;
+                    model = modelFromFile;
                     Model::models.emplace(modelName, modelFromFile);
                 }
-                this->model->SetName(modelName);
+                model->SetName(modelName);
 #endif
             }
-            this->materialId = object["materialId"].GetInt();
+            materialId = object["materialId"].GetInt();
             name = "MeshRendererComponent";
         }
 
-
-        void Loaded(GameObject *gameObject) override {
+        void Loaded(GameObject *) override {
             if (model == nullptr) {
                 return;
             }
@@ -52,22 +52,24 @@ namespace Kaamoo {
                 return;
             }
 #ifdef RAY_TRACING
-            auto currentTransform = updateInfo.gameObject->transform->mat4();
+            if (updateInfo.transform == nullptr) {
+                return;
+            }
+            const auto currentTransform = updateInfo.transform->mat4();
             if (m_cachedTransform != currentTransform) {
                 m_cachedTransform = currentTransform;
                 m_transformDirty = true;
             }
 #endif
-        };
+        }
 
 #ifdef RAY_TRACING
-
         id_t GetTLASId() const {
             return tlasId;
         }
 
         bool ConsumeTransformDirty() {
-            bool dirty = m_transformDirty;
+            const bool dirty = m_transformDirty;
             m_transformDirty = false;
             return dirty;
         }
@@ -138,10 +140,8 @@ namespace Kaamoo {
                 ImGui::TreePop();
             }
         }
-
 #else
-
-        void SetUI(Material::Map *materialMap, FrameInfo &frameInfo) override {
+        void SetUI(Material::Map *materialMap, FrameInfo &) override {
             if (model == nullptr) {
                 return;
             }
@@ -149,7 +149,6 @@ namespace Kaamoo {
             auto material = materialMap->at(materialId);
             ImGui::Text("Category:    %s", material->getPipelineCategory().c_str());
         }
-
 #endif
 
         id_t GetMaterialID() const { return materialId; }
@@ -160,7 +159,7 @@ namespace Kaamoo {
 #ifdef RAY_TRACING
         id_t tlasId{};
 #endif
-        id_t materialId;
+        id_t materialId{};
         std::shared_ptr<Model> model = nullptr;
 #ifdef RAY_TRACING
         glm::mat4 m_cachedTransform{glm::mat4{-10000000.f}};
@@ -168,3 +167,4 @@ namespace Kaamoo {
 #endif
     };
 }
+

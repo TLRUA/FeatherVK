@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "Device.hpp"
 
@@ -8,7 +8,7 @@
 #include <vector>
 #include <memory>
 
-namespace Kaamoo {
+namespace FeatherVK {
 
     class SwapChain {
     public:
@@ -109,3 +109,4 @@ namespace Kaamoo {
     };
 
 }  // namespace lve
+

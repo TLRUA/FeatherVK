@@ -1,8 +1,8 @@
-#pragma once
+﻿#pragma once
 
 #include <iostream>
 
-namespace Kaamoo {
+namespace FeatherVK {
     class Logger {
     public:
         template<typename T>

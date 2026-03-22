@@ -1,10 +1,10 @@
-#pragma once
+﻿#pragma once
 
 #include "../Utils/Utils.hpp"
 #include "BLAS.hpp"
 
 #ifdef RAY_TRACING
-namespace Kaamoo {
+namespace FeatherVK {
     class TLAS {
     public:
         inline static bool shouldUpdate = false;

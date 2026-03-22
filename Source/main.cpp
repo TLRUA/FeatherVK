@@ -1,4 +1,4 @@
-#include "Application.hpp"
+﻿#include "Application.hpp"
 #include "Core/Logger.hpp"
 
 #include <cstdlib>
@@ -6,13 +6,13 @@
 #include <stdexcept>
 
 int main() {
-	Kaamoo::Application app{};
+	FeatherVK::Application app{};
 
 	try {
 		app.run();
 	}
 	catch (const std::exception& e) {
-		Kaamoo::Logger::Error(e.what());
+		FeatherVK::Logger::Error(e.what());
 		return EXIT_FAILURE;
 	}
 	return EXIT_SUCCESS;

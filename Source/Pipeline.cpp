@@ -1,7 +1,7 @@
 ﻿#include "Pipeline.hpp"
 #include "Material.hpp"
 
-namespace Kaamoo {
+namespace FeatherVK {
     Pipeline::Pipeline(Device &device, const PipelineConfigureInfo &pipelineConfigureInfo, std::shared_ptr<Material> material)
             : device(device), m_material(material) {
 #ifdef RAY_TRACING
@@ -24,7 +24,7 @@ namespace Kaamoo {
 
 #ifdef RAY_TRACING
 
-    void Pipeline::createComputePipeline(const Kaamoo::PipelineConfigureInfo &pipelineConfigureInfo) {
+    void Pipeline::createComputePipeline(const FeatherVK::PipelineConfigureInfo &pipelineConfigureInfo) {
         VkComputePipelineCreateInfo computePipelineCreateInfo{};
         computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
         computePipelineCreateInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -40,8 +40,8 @@ namespace Kaamoo {
 
     void Pipeline::createRayTracingPipeline(const PipelineConfigureInfo &pipelineConfigureInfo) {
         //Shader
-        uint32_t shaderStageCount = m_material->getShaderModulePointers().size();
-        VkPipelineShaderStageCreateInfo shaderStageCreateInfo[shaderStageCount];
+        uint32_t shaderStageCount = static_cast<uint32_t>(m_material->getShaderModulePointers().size());
+        std::vector<VkPipelineShaderStageCreateInfo> shaderStageCreateInfo(shaderStageCount);
 
         for (int i = 0; i < m_material->getShaderModulePointers().size(); i++) {
             VkRayTracingShaderGroupCreateInfoKHR group{VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR};
@@ -91,7 +91,7 @@ namespace Kaamoo {
 
         VkRayTracingPipelineCreateInfoKHR rayTracingPipelineCreateInfo{VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR};
         rayTracingPipelineCreateInfo.stageCount = shaderStageCount;
-        rayTracingPipelineCreateInfo.pStages = shaderStageCreateInfo;
+        rayTracingPipelineCreateInfo.pStages = shaderStageCreateInfo.data();
         rayTracingPipelineCreateInfo.groupCount = static_cast<uint32_t>(m_rayTracingGroups.size());
         rayTracingPipelineCreateInfo.pGroups = m_rayTracingGroups.data();
         rayTracingPipelineCreateInfo.maxPipelineRayRecursionDepth = 16;
@@ -160,8 +160,8 @@ namespace Kaamoo {
 
     void Pipeline::createGraphicsPipeline(const PipelineConfigureInfo &pipelineConfigureInfo) {
         //Shader
-        uint32_t shaderStageCount = m_material->getShaderModulePointers().size();
-        VkPipelineShaderStageCreateInfo shaderStageCreateInfo[shaderStageCount];
+        uint32_t shaderStageCount = static_cast<uint32_t>(m_material->getShaderModulePointers().size());
+        std::vector<VkPipelineShaderStageCreateInfo> shaderStageCreateInfo(shaderStageCount);
 
         for (int i = 0; i < m_material->getShaderModulePointers().size(); i++) {
             shaderStageCreateInfo[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -203,7 +203,7 @@ namespace Kaamoo {
         VkGraphicsPipelineCreateInfo pipelineCreateInfo{};
         pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
         pipelineCreateInfo.stageCount = shaderStageCount;
-        pipelineCreateInfo.pStages = shaderStageCreateInfo;
+        pipelineCreateInfo.pStages = shaderStageCreateInfo.data();
         pipelineCreateInfo.pVertexInputState = &vertexInputStateCreateInfo;
         pipelineCreateInfo.pInputAssemblyState = &pipelineConfigureInfo.inputAssemblyInfo;
         pipelineCreateInfo.pViewportState = &pipelineConfigureInfo.viewportStateCreateInfo;
@@ -325,3 +325,6 @@ namespace Kaamoo {
     }
 
 }
+
+
+

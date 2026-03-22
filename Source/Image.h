@@ -10,7 +10,7 @@
 #include "Device.hpp"
 #include "Sampler.h"
 
-namespace Kaamoo {
+namespace FeatherVK {
     const struct ImageCategory{
         std::string Default="Default";
         std::string CubeMap="CubeMap";

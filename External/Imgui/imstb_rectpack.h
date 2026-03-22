@@ -1,4 +1,4 @@
-// [DEAR IMGUI]
+﻿// [DEAR IMGUI]
 // This is a slightly modified version of stb_rect_pack.h 1.01.
 // Grep for [DEAR IMGUI] to find the changes.
 // 
@@ -500,7 +500,7 @@ static stbrp__findresult stbrp__skyline_pack_rectangle(stbrp_context *context, i
 
 #ifdef _DEBUG
    cur = context->active_head;
-   while (cur->x < context->m_windowWidth) {
+   while (cur->x < context->width) {
       STBRP_ASSERT(cur->x < cur->next->x);
       cur = cur->next;
    }
@@ -625,3 +625,4 @@ ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ------------------------------------------------------------------------------
 */
+

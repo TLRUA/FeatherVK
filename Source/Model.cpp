@@ -15,12 +15,12 @@
 namespace std {
     //模板特化
     template<>
-    struct hash<Kaamoo::Model::Vertex> {
+    struct hash<FeatherVK::Model::Vertex> {
         //重载哈希函数对象的调用运算符
-        size_t operator()(Kaamoo::Model::Vertex const &vertex) const {
+        size_t operator()(FeatherVK::Model::Vertex const &vertex) const {
             size_t seed = 0;
-//            Kaamoo::hashCombine(seed, vertex.position, vertex.color, vertex.normal, vertex.uv);
-//            Kaamoo::hashCombine(seed, vertex.position);
+//            FeatherVK::hashCombine(seed, vertex.position, vertex.color, vertex.normal, vertex.uv);
+//            FeatherVK::hashCombine(seed, vertex.position);
 //            return seed;
 //            return ((hash<glm::vec3>()(vertex.position) ^
 //                     (hash<glm::vec3>()(vertex.color) << 1)) >> 1) ^
@@ -33,8 +33,8 @@ namespace std {
 }
 
 
-namespace Kaamoo {
-    Model::Model(Kaamoo::Device &device, const Builder &builder) : device{device} {
+namespace FeatherVK {
+    Model::Model(FeatherVK::Device &device, const Builder &builder) : device{device} {
         static uint32_t modelIndex = 0;
         indexReference = modelIndex++;
         createVertexBuffers(builder.vertices);
@@ -198,3 +198,4 @@ namespace Kaamoo {
         
     }
 }
+

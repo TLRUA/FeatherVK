@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <algorithm>
 #include <cstdint>
@@ -13,7 +13,7 @@
 #include "../GUI.hpp"
 #include "ResourceManager.hpp"
 
-namespace Kaamoo {
+namespace FeatherVK {
     class LogicManager {
     public:
         explicit LogicManager(std::shared_ptr<ResourceManager> resourceManager) {
@@ -162,7 +162,9 @@ namespace Kaamoo {
         }
 
         void SyncSelectedId(FrameInfo &frameInfo) {
-            frameInfo.selectedEntityId = GUI::HasSelection() ? GUI::GetSelectedId() : InvalidEntityId;
+            const id_t selectedId = GUI::HasSelection() ? GUI::GetSelectedId() : InvalidEntityId;
+            frameInfo.selectedEntityId = selectedId;
+            frameInfo.selectedGameObjectId = selectedId;
         }
 
         bool TryGetCursorFramebufferPosition(GLFWwindow *window, float &cursorFramebufferX, float &cursorFramebufferY) const {
@@ -393,6 +395,11 @@ namespace Kaamoo {
         float m_selectedMoveSpeed = 0.003f;
     };
 }
+
+
+
+
+
 
 
 

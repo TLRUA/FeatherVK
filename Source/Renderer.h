@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <cassert>
 #include "MyWindow.hpp"
@@ -7,7 +7,7 @@
 #include "Image.h"
 #include "Buffer.h"
 
-namespace Kaamoo {
+namespace FeatherVK {
     class Renderer {
     public:
         const float FOV_Y = 50.f;
@@ -173,3 +173,4 @@ namespace Kaamoo {
     };
 
 }
+

@@ -6,7 +6,7 @@
 #include <iostream>
 #include "ShaderBuilder.h"
 
-namespace Kaamoo {
+namespace FeatherVK {
     std::vector<char> ShaderBuilder::readFile(const std::string &filepath) {
         std::ifstream inputFileStream{filepath, std::ios::ate | std::ios::binary};
 
@@ -60,4 +60,5 @@ namespace Kaamoo {
     }
 #endif 
     
-} // Kaamoo
+} // FeatherVK
+

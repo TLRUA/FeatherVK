@@ -6,7 +6,7 @@
 #include <iostream>
 #include <unordered_map>
 
-namespace Kaamoo {
+namespace FeatherVK {
     class Model {
     public:
 
@@ -43,11 +43,13 @@ namespace Kaamoo {
             void loadModel(const std::string &filePath);
         };
 
-        static std::unique_ptr<Model> createModelFromFile(Device &device, const std::string &filePath) {
+        static std::shared_ptr<Model> createModelFromFile(Device &device, const std::string &filePath) {
             Builder builder;
             builder.loadModel(filePath);
-            return std::make_unique<Model>(device, builder);
+            return std::make_shared<Model>(device, builder);
         }
+
+        static std::string GetBaseModelsPath() { return BaseModelsPath; }
 
         Model(Device &device, const Builder &builder);
 
@@ -149,3 +151,5 @@ namespace Kaamoo {
         float m_maxRadius;
     };
 }
+
+

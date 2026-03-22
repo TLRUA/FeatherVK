@@ -1,4 +1,8 @@
-﻿#include <any>
+﻿#pragma once
+
+#include <string>
+#include <unordered_map>
+#include <any>
 #include <rapidjson/document.h>
 #include "Components/Input/ObjectMovementComponent.hpp"
 #include "Components/Input/CameraMovementComponent.hpp"
@@ -8,7 +12,7 @@
 #include "Components/RayTracingManagerComponent.hpp"
 #include "Components/RigidBodyComponent.hpp"
 
-namespace Kaamoo {
+namespace FeatherVK {
     struct ComponentName {
         inline static const std::string TransformComponent = "TransformComponent";
         inline static const std::string ObjectMovementComponent = "ObjectMovementComponent";
@@ -53,3 +57,4 @@ namespace Kaamoo {
     };
 
 }
+

@@ -2,13 +2,15 @@
 #define TRANSFORM_COMPONENT_INCLUDED
 
 #include <string>
+#include <cstdint>
+#include <vector>
 #include <glm/vec3.hpp>
 #include <glm/fwd.hpp>
 #include <glm/detail/type_mat3x3.hpp>
 #include <glm/ext/matrix_transform.hpp>
 #include "Component.hpp"
 
-namespace Kaamoo {
+namespace FeatherVK {
     class TransformComponent : public Component {
     public:
         TransformComponent() {
@@ -129,3 +131,6 @@ namespace Kaamoo {
 }
 
 #endif
+
+
+

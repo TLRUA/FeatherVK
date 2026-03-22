@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <iomanip>
 
@@ -13,7 +13,7 @@
 #include "MyWindow.hpp"
 #include "Renderer.h"
 
-namespace Kaamoo {
+namespace FeatherVK {
     class GUI {
     public:
         GUI() = delete;
@@ -305,5 +305,6 @@ namespace Kaamoo {
         }
     };
 }
+
 
 

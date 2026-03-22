@@ -1,4 +1,4 @@
-#include <utility>
+﻿#include <utility>
 
 #include "../RenderSystems/RenderSystem.h"
 #include "../RenderSystems/ShadowSystem.hpp"
@@ -14,7 +14,7 @@
 #include "../RayTracing/TLAS.hpp"
 #endif
 
-namespace Kaamoo {
+namespace FeatherVK {
     class RenderManager {
     public:
         RenderManager(std::shared_ptr<ResourceManager> resourceManager) {
@@ -104,9 +104,8 @@ namespace Kaamoo {
 #ifdef RAY_TRACING
             SyncRayTracingScene(frameInfo);
 
-            GUI::BeginFrame(ImVec2(frameInfo.extent.width, frameInfo.extent.height));
             GUI::ShowWindow(ImVec2(frameInfo.extent.width, frameInfo.extent.height),
-                            &frameInfo.gameObjects, &frameInfo.pGameObjectDescs, &hierarchyTree, frameInfo);
+                            frameInfo.sceneRegistry, &frameInfo.pGameObjectDescs, &hierarchyTree, frameInfo);
             frameInfo.pGameObjectDescBuffer->writeToBuffer(frameInfo.pGameObjectDescs.data(), frameInfo.pGameObjectDescs.size() * sizeof(GameObjectDesc));
             m_rayTracingSystem->UpdateGlobalUboBuffer(frameInfo.globalUbo, _frameIndex);
             m_rayTracingSystem->rayTrace(frameInfo);
@@ -159,9 +158,8 @@ namespace Kaamoo {
                 _renderSystem->render(frameInfo, &_gameObject);
             }
 
-            GUI::BeginFrame(ImVec2(frameInfo.extent.width, frameInfo.extent.height));
             GUI::ShowWindow(ImVec2(frameInfo.extent.width, frameInfo.extent.height),
-                            &frameInfo.gameObjects, &frameInfo.materials, &hierarchyTree, frameInfo);
+                            frameInfo.sceneRegistry, &frameInfo.materials, &hierarchyTree, frameInfo);
 #endif
             GUI::EndFrame(frameInfo.commandBuffer);
             renderer.endSwapChainRenderPass(frameInfo.commandBuffer);
@@ -220,8 +218,14 @@ namespace Kaamoo {
             renderer.beginPickingRenderPass(frameInfo.commandBuffer);
             m_editorPickingRenderSystem->UpdateGlobalUboBuffer(frameInfo.globalUbo, frameInfo.frameIndex);
 
-            for (auto &item: frameInfo.gameObjects) {
-                m_editorPickingRenderSystem->render(frameInfo, &item.second);
+            if (frameInfo.sceneRegistry != nullptr) {
+                for (const auto entityId: frameInfo.sceneRegistry->GetEntityOrder()) {
+                    m_editorPickingRenderSystem->renderEntity(frameInfo, entityId, *frameInfo.sceneRegistry);
+                }
+            } else {
+                for (auto &item: frameInfo.gameObjects) {
+                    m_editorPickingRenderSystem->render(frameInfo, &item.second);
+                }
             }
 
             renderer.endPickingRenderPass(frameInfo.commandBuffer);
@@ -229,36 +233,94 @@ namespace Kaamoo {
 
 #ifdef RAY_TRACING
         void SyncRayTracingScene(FrameInfo &frameInfo) {
-            for (auto &item: frameInfo.gameObjects) {
-                auto &gameObject = item.second;
-                MeshRendererComponent *meshRendererComponent;
-                if (!gameObject.TryGetComponent(meshRendererComponent) || meshRendererComponent->GetModelPtr() == nullptr) {
-                    continue;
-                }
+            if (frameInfo.sceneRegistry != nullptr) {
+                auto &sceneRegistry = *frameInfo.sceneRegistry;
 
-                const id_t gameObjectId = gameObject.GetId();
-                const bool isActive = gameObject.IsActive();
+                for (const auto entityId: sceneRegistry.View<MeshRendererComponent, TransformComponent>()) {
+                    MeshRendererComponent *meshRendererComponent = nullptr;
+                    TransformComponent *transformComponent = nullptr;
+                    if (!sceneRegistry.TryGetComponent(entityId, meshRendererComponent) || meshRendererComponent == nullptr ||
+                        !sceneRegistry.TryGetComponent(entityId, transformComponent) || transformComponent == nullptr ||
+                        meshRendererComponent->GetModelPtr() == nullptr) {
+                        continue;
+                    }
 
-                auto activeStateEntry = m_meshRendererActiveState.find(gameObjectId);
-                if (activeStateEntry == m_meshRendererActiveState.end()) {
-                    m_meshRendererActiveState.emplace(gameObjectId, isActive);
+                    const bool isActive = sceneRegistry.IsEntityActive(entityId);
+                    const glm::mat4 currentTransform = transformComponent->mat4();
+                    const bool transformDirty = meshRendererComponent->ConsumeTransformDirty();
+
+                    auto activeStateEntry = m_meshRendererActiveState.find(entityId);
+                    if (activeStateEntry == m_meshRendererActiveState.end()) {
+                        m_meshRendererActiveState.emplace(entityId, isActive);
+                        if (!isActive) {
+                            TLAS::updateTLAS(meshRendererComponent->GetTLASId(), currentTransform, 0x00);
+                            frameInfo.sceneUpdated = true;
+                        }
+                    } else if (activeStateEntry->second != isActive) {
+                        TLAS::updateTLAS(meshRendererComponent->GetTLASId(), currentTransform, isActive ? 0xFF : 0x00);
+                        frameInfo.sceneUpdated = true;
+                        activeStateEntry->second = isActive;
+                    }
+
+                    auto transformEntry = m_meshRendererTransformCache.find(entityId);
+                    bool transformChanged = transformEntry == m_meshRendererTransformCache.end();
+                    if (transformChanged) {
+                        m_meshRendererTransformCache.emplace(entityId, currentTransform);
+                    } else if (transformEntry->second != currentTransform) {
+                        transformChanged = true;
+                        transformEntry->second = currentTransform;
+                    }
+
                     if (!isActive) {
-                        TLAS::updateTLAS(meshRendererComponent->GetTLASId(), gameObject.transform->mat4(), 0x00);
+                        continue;
+                    }
+
+                    if (transformDirty || transformChanged) {
+                        TLAS::updateTLAS(meshRendererComponent->GetTLASId(), currentTransform);
                         frameInfo.sceneUpdated = true;
                     }
-                } else if (activeStateEntry->second != isActive) {
-                    TLAS::updateTLAS(meshRendererComponent->GetTLASId(), gameObject.transform->mat4(), isActive ? 0xFF : 0x00);
-                    frameInfo.sceneUpdated = true;
-                    activeStateEntry->second = isActive;
                 }
 
-                if (!isActive) {
-                    continue;
+                for (auto it = m_meshRendererActiveState.begin(); it != m_meshRendererActiveState.end();) {
+                    if (!sceneRegistry.IsAlive(it->first)) {
+                        m_meshRendererTransformCache.erase(it->first);
+                        it = m_meshRendererActiveState.erase(it);
+                    } else {
+                        ++it;
+                    }
                 }
+            } else {
+                for (auto &item: frameInfo.gameObjects) {
+                    auto &gameObject = item.second;
+                    MeshRendererComponent *meshRendererComponent;
+                    if (!gameObject.TryGetComponent(meshRendererComponent) || meshRendererComponent->GetModelPtr() == nullptr) {
+                        continue;
+                    }
 
-                if (meshRendererComponent->ConsumeTransformDirty()) {
-                    TLAS::updateTLAS(meshRendererComponent->GetTLASId(), meshRendererComponent->GetCachedTransform());
-                    frameInfo.sceneUpdated = true;
+                    const id_t gameObjectId = gameObject.GetId();
+                    const bool isActive = gameObject.IsActive();
+
+                    auto activeStateEntry = m_meshRendererActiveState.find(gameObjectId);
+                    if (activeStateEntry == m_meshRendererActiveState.end()) {
+                        m_meshRendererActiveState.emplace(gameObjectId, isActive);
+                        if (!isActive) {
+                            TLAS::updateTLAS(meshRendererComponent->GetTLASId(), gameObject.transform->mat4(), 0x00);
+                            frameInfo.sceneUpdated = true;
+                        }
+                    } else if (activeStateEntry->second != isActive) {
+                        TLAS::updateTLAS(meshRendererComponent->GetTLASId(), gameObject.transform->mat4(), isActive ? 0xFF : 0x00);
+                        frameInfo.sceneUpdated = true;
+                        activeStateEntry->second = isActive;
+                    }
+
+                    if (!isActive) {
+                        continue;
+                    }
+
+                    if (meshRendererComponent->ConsumeTransformDirty()) {
+                        TLAS::updateTLAS(meshRendererComponent->GetTLASId(), meshRendererComponent->GetCachedTransform());
+                        frameInfo.sceneUpdated = true;
+                    }
                 }
             }
 
@@ -281,9 +343,11 @@ namespace Kaamoo {
 #ifdef RAY_TRACING
         std::shared_ptr<RayTracingSystem> m_rayTracingSystem;
         std::unordered_map<id_t, bool> m_meshRendererActiveState{};
+        std::unordered_map<id_t, glm::mat4> m_meshRendererTransformCache{};
 #else
         std::shared_ptr<ShadowSystem> m_shadowSystem;
 #endif
 
     };
 }
+

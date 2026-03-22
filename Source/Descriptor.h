@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "Device.hpp"
 
@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace Kaamoo {
+namespace FeatherVK {
 
     class DescriptorSetLayout {
     public:
@@ -123,3 +123,4 @@ namespace Kaamoo {
     };
 
 }  // namespace 
+

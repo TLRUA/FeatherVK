@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <chrono>
 #include <glm/ext/matrix_clip_space.hpp>
@@ -26,7 +26,7 @@
 #include "ShaderBuilder.h"
 #include "Utils/JsonUtils.hpp"
 
-namespace Kaamoo {
+namespace FeatherVK {
     class Application {
     public:
         Application() {
@@ -72,10 +72,12 @@ namespace Kaamoo {
                             frameTime,
                             totalTime,
                             commandBuffer,
+                            m_legacyGameObjects,
                             &sceneRegistry,
                             materials,
                             m_ubo,
                             window.getCurrentExtent(),
+                            GUI::GetSelectedId(),
                             GUI::GetSelectedId(),
                             false};
 
@@ -93,6 +95,7 @@ namespace Kaamoo {
 
     private:
         GlobalUbo m_ubo{};
+        GameObject::Map m_legacyGameObjects{};
 
         std::shared_ptr<ResourceManager> m_resourceManager;
         std::unique_ptr<RenderManager> m_renderManager;
@@ -137,6 +140,10 @@ namespace Kaamoo {
         }
     };
 }
+
+
+
+
 
 
 

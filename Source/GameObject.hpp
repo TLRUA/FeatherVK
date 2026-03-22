@@ -1,11 +1,13 @@
-#ifndef GAME_OBJECT_INCLUDED
+﻿#ifndef GAME_OBJECT_INCLUDED
 #define GAME_OBJECT_INCLUDED
 
 #include <memory>
+#include <unordered_map>
+#include <vector>
 #include "Utils/Utils.hpp"
 #include "Components/TransformComponent.hpp"
 
-namespace Kaamoo {
+namespace FeatherVK {
     class Component;
 
     class GameObject {
@@ -222,6 +224,10 @@ namespace Kaamoo {
 }
 
 #endif
+
+
+
+
 
 
 

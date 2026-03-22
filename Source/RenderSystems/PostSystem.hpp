@@ -2,7 +2,7 @@
 
 #include "RenderSystem.h"
 
-namespace Kaamoo {
+namespace FeatherVK {
     class PostSystem : public RenderSystem {
     public:
         struct PushConstant {
@@ -95,5 +95,6 @@ namespace Kaamoo {
 
     };
 }
+
 
 

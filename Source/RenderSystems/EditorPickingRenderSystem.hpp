@@ -1,8 +1,9 @@
-#pragma once
+﻿#pragma once
 
 #include "RenderSystem.h"
+#include "../ECS/SceneRegistry.hpp"
 
-namespace Kaamoo {
+namespace FeatherVK {
     struct PickingPushConstantData {
         glm::mat4 modelMatrix{1.f};
         glm::mat4 idCarrier{1.f};
@@ -25,42 +26,51 @@ namespace Kaamoo {
                 return;
             }
 
-            const auto materialIt = frameInfo.materials.find(meshRendererComponent->GetMaterialID());
-            if (materialIt != frameInfo.materials.end()) {
-                const auto &pipelineCategory = materialIt->second->getPipelineCategory();
-                if (pipelineCategory == PipelineCategory.SkyBox ||
-                    pipelineCategory == PipelineCategory.Gizmos ||
-                    pipelineCategory == PipelineCategory.Overlay) {
-                    return;
-                }
+            if (ShouldSkipPipeline(frameInfo, meshRendererComponent->GetMaterialID())) {
+                return;
             }
 
-            m_pipeline->bind(frameInfo.commandBuffer);
-
-            std::vector<VkDescriptorSet> descriptorSets;
-            for (auto &descriptorSetPointer: m_material->getDescriptorSetPointers()) {
-                if (descriptorSetPointer != nullptr) {
-                    descriptorSets.push_back(*descriptorSetPointer);
-                }
-            }
-
-            if (!descriptorSets.empty()) {
-                vkCmdBindDescriptorSets(
-                        frameInfo.commandBuffer,
-                        VK_PIPELINE_BIND_POINT_GRAPHICS,
-                        m_pipelineLayout,
-                        0,
-                        static_cast<uint32_t>(descriptorSets.size()),
-                        descriptorSets.data(),
-                        0,
-                        nullptr
-                );
-            }
+            BindCommonDescriptors(frameInfo);
 
             PickingPushConstantData push{};
             push.modelMatrix = gameObject->transform->mat4();
             push.idCarrier = gameObject->transform->normalMatrix();
             push.idCarrier[3][3] = static_cast<float>(gameObject->GetId());
+
+            vkCmdPushConstants(frameInfo.commandBuffer,
+                               m_pipelineLayout,
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0,
+                               sizeof(PickingPushConstantData),
+                               &push);
+
+            meshRendererComponent->GetModelPtr()->bind(frameInfo.commandBuffer);
+            meshRendererComponent->GetModelPtr()->draw(frameInfo.commandBuffer);
+        }
+
+        void renderEntity(FrameInfo &frameInfo, id_t entityId, ECS::SceneRegistry &sceneRegistry) {
+            if (!sceneRegistry.IsAlive(entityId) || !sceneRegistry.IsEntityActive(entityId)) {
+                return;
+            }
+
+            TransformComponent *transformComponent = nullptr;
+            MeshRendererComponent *meshRendererComponent = nullptr;
+            if (!sceneRegistry.TryGetComponent(entityId, transformComponent) || transformComponent == nullptr ||
+                !sceneRegistry.TryGetComponent(entityId, meshRendererComponent) || meshRendererComponent == nullptr ||
+                meshRendererComponent->GetModelPtr() == nullptr) {
+                return;
+            }
+
+            if (ShouldSkipPipeline(frameInfo, meshRendererComponent->GetMaterialID())) {
+                return;
+            }
+
+            BindCommonDescriptors(frameInfo);
+
+            PickingPushConstantData push{};
+            push.modelMatrix = transformComponent->mat4();
+            push.idCarrier = transformComponent->normalMatrix();
+            push.idCarrier[3][3] = static_cast<float>(entityId);
 
             vkCmdPushConstants(frameInfo.commandBuffer,
                                m_pipelineLayout,
@@ -111,6 +121,43 @@ namespace Kaamoo {
                     pipelineConfigureInfo,
                     m_material
             );
+        }
+
+    private:
+        bool ShouldSkipPipeline(FrameInfo &frameInfo, id_t materialId) const {
+            const auto materialIt = frameInfo.materials.find(materialId);
+            if (materialIt == frameInfo.materials.end()) {
+                return false;
+            }
+
+            const auto &pipelineCategory = materialIt->second->getPipelineCategory();
+            return pipelineCategory == PipelineCategory.SkyBox ||
+                   pipelineCategory == PipelineCategory.Gizmos ||
+                   pipelineCategory == PipelineCategory.Overlay;
+        }
+
+        void BindCommonDescriptors(FrameInfo &frameInfo) {
+            m_pipeline->bind(frameInfo.commandBuffer);
+
+            std::vector<VkDescriptorSet> descriptorSets;
+            for (auto &descriptorSetPointer: m_material->getDescriptorSetPointers()) {
+                if (descriptorSetPointer != nullptr) {
+                    descriptorSets.push_back(*descriptorSetPointer);
+                }
+            }
+
+            if (!descriptorSets.empty()) {
+                vkCmdBindDescriptorSets(
+                        frameInfo.commandBuffer,
+                        VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        m_pipelineLayout,
+                        0,
+                        static_cast<uint32_t>(descriptorSets.size()),
+                        descriptorSets.data(),
+                        0,
+                        nullptr
+                );
+            }
         }
     };
 }

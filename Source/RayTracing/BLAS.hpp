@@ -1,9 +1,9 @@
-#pragma once
+﻿#pragma once
 
 #include "../Model.hpp"
 #ifdef RAY_TRACING
 
-namespace Kaamoo {
+namespace FeatherVK {
     struct BLASInput {
         std::vector<VkAccelerationStructureGeometryKHR> asGeometryArray;
         std::vector<VkAccelerationStructureBuildRangeInfoKHR> asBuildRangeInfoArray;
@@ -63,13 +63,12 @@ namespace Kaamoo {
             asBuildRangeInfo.firstVertex = 0;
             asBuildRangeInfo.transformOffset = 0;
 
-            BLASInput blasInput{
-                    .asGeometryArray = {asGeometry},
-                    .asBuildRangeInfoArray = {asBuildRangeInfo},
-                    .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
-                             VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR,
-                    .modelIndexReference=model->getIndexReference()
-            };
+            BLASInput blasInput{};
+            blasInput.asGeometryArray = {asGeometry};
+            blasInput.asBuildRangeInfoArray = {asBuildRangeInfo};
+            blasInput.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
+                              VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR;
+            blasInput.modelIndexReference = model->getIndexReference();
             blasInputs.emplace_back(blasInput);
         };
         static void buildBLAS(VkBuildAccelerationStructureFlagsKHR flags) {
@@ -262,3 +261,4 @@ namespace Kaamoo {
 
 }
 #endif
+

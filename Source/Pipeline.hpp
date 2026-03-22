@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <string>
 #include <utility>
@@ -11,7 +11,7 @@
 #include "Material.hpp"
 #include "Utils/Utils.hpp"
 
-namespace Kaamoo {
+namespace FeatherVK {
     const struct PipelineCategory {
         std::string Opaque = "Opaque";
         std::string TessellationGeometry = "TessellationGeometry";

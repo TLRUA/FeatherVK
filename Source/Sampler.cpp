@@ -1,7 +1,7 @@
 ﻿#include "Sampler.h"
 #include "Device.hpp"
 
-namespace Kaamoo{
+namespace FeatherVK{
 
 
     void Sampler::createTextureSampler() {

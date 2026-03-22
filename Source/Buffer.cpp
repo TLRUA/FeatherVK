@@ -12,7 +12,7 @@
 #include <cstring>
 #include <memory>
 
-namespace Kaamoo {
+namespace FeatherVK {
     
 
     Buffer::Buffer(

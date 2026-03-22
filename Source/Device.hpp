@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #define RAY_TRACING
 #define VALIDATION_ENABLED
@@ -9,7 +9,7 @@
 #include <map>
 #include <vulkan/vulkan.h>
 
-namespace Kaamoo {
+namespace FeatherVK {
 
     struct SwapChainSupportDetails {
         VkSurfaceCapabilitiesKHR capabilities;

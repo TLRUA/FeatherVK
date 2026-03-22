@@ -1,8 +1,8 @@
-#pragma once
+﻿#pragma once
 
 #include <deque>
 
-namespace Kaamoo {
+namespace FeatherVK {
     enum class EventType {
         WindowResized
     };

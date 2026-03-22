@@ -1,10 +1,10 @@
-#include "Descriptor.h"
+﻿#include "Descriptor.h"
 #include "RayTracing/TLAS.hpp"
 // std
 #include <cassert>
 #include <stdexcept>
 
-namespace Kaamoo {
+namespace FeatherVK {
 
     DescriptorSetLayout::Builder &DescriptorSetLayout::Builder::addBinding(
             uint32_t binding,
@@ -225,3 +225,4 @@ namespace Kaamoo {
     }
 
 } 
+

@@ -1,4 +1,4 @@
-#include "SwapChain.hpp"
+﻿#include "SwapChain.hpp"
 
 // std
 #include <array>
@@ -9,7 +9,7 @@
 #include <set>
 #include <stdexcept>
 
-namespace Kaamoo {
+namespace FeatherVK {
 
     SwapChain::SwapChain(Device &deviceRef, VkExtent2D extent)
             : device{deviceRef}, windowExtent{extent} {
@@ -485,3 +485,4 @@ namespace Kaamoo {
 
 
 }  // namespace lve
+

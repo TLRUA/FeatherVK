@@ -2,7 +2,7 @@
 
 #include "RenderSystem.h"
 
-namespace Kaamoo {
+namespace FeatherVK {
     class SkyBoxSystem : public RenderSystem {
     public:
         SkyBoxSystem(Device &device,const VkRenderPass& renderPass,std::shared_ptr<Material> material)
@@ -72,5 +72,6 @@ namespace Kaamoo {
 
     };
 }
+
 
 

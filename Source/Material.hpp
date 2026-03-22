@@ -13,7 +13,7 @@
 #include "Image.h"
 #include "Buffer.h"
 
-namespace Kaamoo {
+namespace FeatherVK {
 
     enum ShaderCategory {
         vertex,

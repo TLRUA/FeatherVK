@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "Component.hpp"
 #include "../RayTracing/BLAS.hpp"
@@ -6,7 +6,7 @@
 
 //Deprecated
 #ifdef RAY_TRACING
-namespace Kaamoo {
+namespace FeatherVK {
     class RayTracingManagerComponent : public Component {
     public:
         ~RayTracingManagerComponent() override {
@@ -41,3 +41,4 @@ namespace Kaamoo {
 }
 
 #endif
+

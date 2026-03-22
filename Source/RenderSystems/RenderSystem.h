@@ -9,7 +9,7 @@
 #include "../StructureInfos.h"
 #include "../Components/MeshRendererComponent.hpp"
 
-namespace Kaamoo {
+namespace FeatherVK {
     struct SimplePushConstantData {
         //按对角线初始化
         glm::mat4 modelMatrix{1.f};

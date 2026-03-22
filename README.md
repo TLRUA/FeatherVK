@@ -1,140 +1,75 @@
-# Tiny Vulkan Renderer
+# FeatherVK
 
+FeatherVK is a C++17 + Vulkan renderer project with an ECS-based scene runtime, editor picking, gizmos, and configurable rasterization / ray tracing pipelines.
 
+![Preview](./README.assets/image-20240924235946764.png)
 
-<img src="./README.assets/image-20240924235946764.png" alt="image-20240924235946764" style="zoom:50%;" />
+## Current Features
 
-![RigidBody](./README.assets/RigidBody.gif)
+- C++17 project, CMake build, Vulkan backend
+- ECS runtime (`SceneRegistry`) with component lifecycle (`Awake/Start/Update/LateUpdate/FixedUpdate`)
+- Scene/material/component data loaded from JSON in `Configurations/`
+- Editor-style interaction:
+  - object ID picking (left click)
+  - hierarchy + inspector (ImGui)
+  - selected object outline + gizmos axis
+- Camera and object controls (keyboard/mouse)
+- Two rendering data sets:
+  - `Configurations/RayTracing`
+  - `Configurations/Rasterization`
 
-## Introduction
+## Build Requirements
 
-- Support both rasterization and ray tracing pipeline
-- ECS architecture
-- PBR material
-- Layered transform
-- Simple gizmos, GUI
-- And so on...
+- Windows
+- CMake >= 3.25
+- C++17 compiler (Visual Studio 2022 recommended)
+- Vulkan SDK installed and available in environment
+- Git (for `FetchContent` dependencies)
 
-## Progress
+## Build
 
----------------2023----------------
+```powershell
+cmake -S . -B build
+cmake --build build --config Debug
+```
 
-9.17 完成了基本的3D单物体渲染以及Transform变换
+Dependencies fetched by CMake:
 
-9.18 添加了正交投影以及透视投影
+- `glfw` (3.4)
+- `glm` (1.0.1)
 
-9.19 实现了相机移动，视角转动
+## Run
 
-9.20~9.21 完成程序结构示例图
+Run from the `build` directory so shader relative paths resolve correctly:
 
-9.23~9.24 完成几何着色器动态生成三维分形
+```powershell
+cd build
+.\Debug\FeatherVK.exe
+```
 
-10.4 添加了index buffer，更改了buffer属性为device local并配合staging buffer以优化性能
+If you launch from IDE, set working directory to `.../FeatherVK/build`.
 
-10.5 添加了对obj文件的读取功能(调用了tiny obj loader库)，同时根据obj文件数据建立index buffer，难点在于对自定义vertex类型的hash模板特化重载
+## Controls
 
-10.6 添加了最简单的diffuse光照，抽象提取了Buffer类（依靠开源代码），创建了Uniform Buffer
+- Right mouse + drag: rotate camera
+- `W/A/S/D/Q/E`: move camera
+- Left mouse click in scene viewport: pick/select entity
+- `F`: focus camera on current selected entity
+- Arrow keys: move selected entity on X/Z plane (when scene input is not captured by UI)
 
-10.8 使用Uniform Buffer，实现逐像素光照
+## Configuration Notes
 
-10.14 实现了光源的可视化(Billboard)，实现了多光源光照
+- Runtime scene data:
+  - `Configurations/RayTracing/*.json`
+  - `Configurations/Rasterization/*.json`
+- Cubemap textures are loaded from `Textures/Cubemap/` using fixed file names:
+  - `posx.jpg`, `negx.jpg`, `posy.jpg`, `negy.jpg`, `posz.jpg`, `negz.jpg`
 
-10.21 添加了alpha blending, 初起image类
+## Rendering Mode Switch
 
-10.22 完成纹理采样，但是没有封装不同物体使用不同的材质
+Rendering path is currently selected by macro in `Source/Device.hpp`:
 
-10.28 对于不同的物体，封装了不同的材质，即可以使用不同的纹理，所有object以及material信息均在json中配置，但自定义程度还有改进
+- `#define RAY_TRACING` enabled: use ray tracing configuration path
+- comment out `RAY_TRACING`: use rasterization path
 
-11.12 初步完成阴影效果，还有待优化的点：点光源全角度阴影
-
----------------2024----------------
-
-1.1 Completed dynamic generated and interactive grass.
-
-3.24 Modified GameObject architecture, using m_components to replace hard-coded member variables.
-
-3.25 Fixed the problem when exiting the programme memory is not correctly released.
-
-3.27 Optimized run loop code structure, made camera as a component.
-
-4.17 Supported cube map. Added sky box.
-
-4.24 Completed point light omni-directional shadow map with cube map.
-
-5.5 Optimized input system. Make it as a component.
-
-5.7 Reconstructed game object and component system. Make all objects and m_components load from the configuration file. Fixed the issue of resizing the window leading cube map recreation failed.	
-
-5.10 Built the framework of creating ray tracing BLAS.
-
-5.22 Periodical backup.
-
-5.23 Constructed TLAS.
-
-5.25 Created ray tracing descriptor set. Using macro definitions to switch between ray tracing and rasterization.
-
-5.26 Completed ray tracing descriptors.
-
-5.28 Created ray tracing m_pipeline.
-
-5.29 Created shader binding table. 
-
-6.2 Started rendering by very basic ray tracing.
-
-6.30 Added simplest lighting. Fixed the problem that vertex memory alignment does not match between host and m_device. 
-
-7.1 Added directional light shadow.
-
-7.2 Completed multiple game objects, materials (shaders, textures) ray tracing.
-
-7.8 Completed PBR rendering.
-
-7.10 Completed transparent object rendering. Completed semi-transparent object and shadow. Supported dynamic acceleration structure. 
-
-7.13 Added a basic GUI, using ImGUI framework.
-
-7.16 Adjusted resolution, making window resizing is compatible with rendered image. Completed simple GUI.
-
-7.17 Completed basic UI system. Added skybox. Adjusted color space.
-
-7.19 Fixed rasterization rendering.
-
-7.23 Optimized rasterization pipeline shadow map.
-
-7.25 Optimized camera movement.
-
-7.28 Added gizmos render pass. Added a fixed axis to indicate directions.
-
-7.31 Added selected model outline.
-
-8.22 Completed simple global illumination in static scene. Using bilateral filter and temporal denoising.
-
-8.24 Completed simple global illumination in dynamic scene.
-
-8.26 Released v0.1.0
-
-9.24 Completed GameObjects hierarchy. There are parent and child objects now, and their transforms will be synchronized.
-
-11.17 Optimized synchronization between frames. In ray tracing rendering, the flickering while moving or rotating the camera is fixed.
-
-11.20 Realised RigidBodyComponent.
-
-11.25 Accomplished simple collision effects.
-
-11.30 Optimized collision
-
-12.2 Completed dynamically updated octree.
-
-12.3 Optimized camera movement. Now press "F" can focus on selected object.
-
-12.7 Now camera can move more smoothly.
-
-12.26 Updated rigidbody component, but there are still some issues.
-
----------------2025----------------
-
-1.21 Optimized rendering related code structure. Added render queue.
-
-1.27 Optimized code structure.
-
-2.5 We can disable a GameObject now.
+Rebuild after changing this macro.

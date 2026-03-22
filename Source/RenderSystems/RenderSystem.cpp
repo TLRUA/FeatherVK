@@ -5,7 +5,7 @@
 #include "../Components/MeshRendererComponent.hpp"
 #include "../Components/LightComponent.hpp"
 
-namespace Kaamoo {
+namespace FeatherVK {
 
     RenderSystem::RenderSystem(Device &device, const VkRenderPass &renderPass, const std::shared_ptr<Material> material)
             : device{device}, m_material{material}, m_renderPass{renderPass} {

@@ -9,7 +9,7 @@
 #include "../StructureInfos.h"
 #include "../Components/MeshRendererComponent.hpp"
 
-namespace Kaamoo {
+namespace FeatherVK {
     class ShadowSystem {
     public:
         ShadowSystem(Device &device, const VkRenderPass& renderPass, const std::shared_ptr<Material>& material) : device{device}, material{material} {

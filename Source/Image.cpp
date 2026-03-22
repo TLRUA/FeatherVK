@@ -4,7 +4,7 @@
 #include "Image.h"
 #include "Buffer.h"
 
-namespace Kaamoo {
+namespace FeatherVK {
     void Image::createDefaultImage(const std::string &path, VkImageCreateInfo createInfo) {
         stbi_uc *pixels = stbi_load(path.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
         VkDeviceSize imageSize = texWidth * texHeight * 4;
@@ -192,3 +192,4 @@ namespace Kaamoo {
 
 
 }
+

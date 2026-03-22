@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #define GLFW_INCLUDE_VULKAN
 
@@ -6,7 +6,7 @@
 #include <string>
 #include <stdexcept>
 
-namespace Kaamoo {
+namespace FeatherVK {
     const int UI_LEFT_WIDTH = 250;
     const int UI_LEFT_WIDTH_2 = 280;
     const int SCENE_WIDTH = 800;
@@ -68,3 +68,4 @@ namespace Kaamoo {
 
 
 }
+

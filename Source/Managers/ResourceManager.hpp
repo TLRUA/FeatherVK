@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <numeric>
 #include "../ComponentFactory.hpp"
@@ -22,7 +22,7 @@
 #include "../RayTracing/TLAS.hpp"
 #endif
 
-namespace Kaamoo {
+namespace FeatherVK {
 #ifdef RAY_TRACING
     inline const static std::string ConfigPath = "RayTracing/";
     const std::string RayTracingDenoiseComputeShaderName = "Compute/RayTracingDenoise.comp.spv";
@@ -725,6 +725,7 @@ namespace Kaamoo {
 #endif
     };
 }
+
 
 
 

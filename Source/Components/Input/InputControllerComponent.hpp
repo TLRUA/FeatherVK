@@ -10,7 +10,7 @@
 #include "../Component.hpp"
 #include <GLFW/glfw3.h>
 
-namespace Kaamoo {
+namespace FeatherVK {
     class InputControllerComponent : public Component {
     public:
         InputControllerComponent(GLFWwindow *window) {

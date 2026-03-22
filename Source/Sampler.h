@@ -3,7 +3,7 @@
 #include <vulkan/vulkan.h>
 #include "Device.hpp"
 
-namespace Kaamoo {
+namespace FeatherVK {
     class Sampler {
     public:
         //Todo: Make a sampler pool

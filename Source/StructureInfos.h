@@ -1,21 +1,30 @@
 ﻿#pragma once
 
 #include <vulkan/vulkan.h>
-#include "GameObject.hpp"
+#include <memory>
+#include <unordered_map>
+#include <vector>
+
+#include "Utils/Utils.hpp"
 #include "Material.hpp"
 
-namespace Kaamoo {
+namespace FeatherVK {
 
 #define MAX_LIGHT_NUM 10
 #define MAX_SHADOW_NUM 3
+
     class GameObject;
+
+    namespace ECS {
+        class SceneRegistry;
+    }
 
     enum LightCategory {
         NONE = -1,
         POINT_LIGHT = 0,
         DIRECTIONAL_LIGHT = 1
     };
-    
+
     struct Light {
         glm::vec4 position{};
         glm::vec4 direction{};
@@ -23,7 +32,7 @@ namespace Kaamoo {
         // 0: point lights, 1: directional lights
         alignas(16) LightCategory lightCategory;
     };
-    
+
 #ifdef RAY_TRACING
     struct GlobalUbo {
         glm::mat4 viewMatrix{1.f};
@@ -32,16 +41,15 @@ namespace Kaamoo {
         glm::mat4 inverseProjectionMatrix{1.f};
         float curTime;
         int lightNum;
-        alignas(16)Light lights[MAX_LIGHT_NUM];
+        alignas(16) Light lights[MAX_LIGHT_NUM];
     };
 
     struct GameObjectDesc {
-        uint64_t vertexBufferAddress;//0~8
-        uint64_t indexBufferAddress; //8~16
-        PBR pbr; //16~64
-        glm::i32vec2 textureEntry; //64~72
+        uint64_t vertexBufferAddress; // 0~8
+        uint64_t indexBufferAddress;  // 8~16
+        PBR pbr;                      // 16~64
+        glm::i32vec2 textureEntry;    // 64~72
     };
-
 #else
     struct GlobalUbo {
         glm::mat4 viewMatrix{1.f};
@@ -63,25 +71,29 @@ namespace Kaamoo {
         float totalTime;
         VkCommandBuffer commandBuffer;
         std::unordered_map<id_t, GameObject> &gameObjects;
+        ECS::SceneRegistry *sceneRegistry;
         Material::Map &materials;
-        GlobalUbo& globalUbo;
+        GlobalUbo &globalUbo;
         VkExtent2D extent;
         id_t selectedGameObjectId;
+        id_t selectedEntityId;
         bool sceneUpdated;
 #ifdef RAY_TRACING
         std::shared_ptr<Buffer> pGameObjectDescBuffer;
         std::vector<GameObjectDesc> pGameObjectDescs;
 #endif
     };
-    
-    struct RendererInfo{
+
+    struct RendererInfo {
         float aspectRatio;
         float fovY;
         float near;
         float far;
     };
-    
-    struct ShadowUbo{
+
+    struct ShadowUbo {
         glm::mat4 viewProjectionMatrix;
     };
 }
+
+

@@ -2,7 +2,7 @@
 
 #include "RenderSystem.h"
 
-namespace Kaamoo {
+namespace FeatherVK {
 
     const std::string RayGenShaderName = "rayGenShader";
     const std::string RayClosestHitShaderName = "rayClosestHitShader";
@@ -96,4 +96,5 @@ namespace Kaamoo {
 #endif
     };
 }
+
 

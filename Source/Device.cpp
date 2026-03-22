@@ -1,4 +1,4 @@
-#include "Device.hpp"
+﻿#include "Device.hpp"
 
 #include <cstring>
 #include <iostream>
@@ -6,7 +6,7 @@
 #include <unordered_set>
 #include <sstream>
 
-namespace Kaamoo {
+namespace FeatherVK {
 
 // local callback functions
     static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
@@ -736,8 +736,8 @@ namespace Kaamoo {
  */
     VkDeviceSize Device::getAlignment(VkDeviceSize instanceSize, VkDeviceSize minOffsetAlignment) {
         if (minOffsetAlignment > 0) {
-            //(instanceSize + minOffsetAlignment - 1) 防止instanceSize小于alignment时计算结果为0，因此加上minOffsetAlignment-1保证其结果有效，同时-1是为了防止计算结果偏大
-            //~(minOffsetAlignment-1)即取minOffsetAlignment的公倍数
+            //(instanceSize + minOffsetAlignment - 1) 闃叉instanceSize灏忎簬alignment鏃惰绠楃粨鏋滀负0锛屽洜姝ゅ姞涓妋inOffsetAlignment-1淇濊瘉鍏剁粨鏋滄湁鏁堬紝鍚屾椂-1鏄负浜嗛槻姝㈣绠楃粨鏋滃亸澶?
+            //~(minOffsetAlignment-1)鍗冲彇minOffsetAlignment鐨勫叕鍊嶆暟
             return (instanceSize + minOffsetAlignment - 1) & ~(minOffsetAlignment - 1);
         }
         return instanceSize;

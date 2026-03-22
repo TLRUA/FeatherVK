@@ -2,7 +2,7 @@
 
 #include "RenderSystem.h"
 
-namespace Kaamoo {
+namespace FeatherVK {
 
     class ComputeSystem : public RenderSystem {
     public:
@@ -86,5 +86,6 @@ namespace Kaamoo {
 
     };
 }
+
 
 

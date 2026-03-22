@@ -1,8 +1,9 @@
-#pragma  once
+﻿#pragma  once
 
 #include "RenderSystem.h"
+#include "../ECS/SceneRegistry.hpp"
 
-namespace Kaamoo {
+namespace FeatherVK {
 
     const std::string GIZMOS_MODEL_PATH = "Gizmos/";
     const std::string GIZMOS_SHADER_PATH = "Gizmos/";
@@ -215,23 +216,21 @@ namespace Kaamoo {
                             0,
                             nullptr
                     );
-                    if (frameInfo.gameObjects.find(frameInfo.selectedGameObjectId) != frameInfo.gameObjects.end()) {
-                        auto &selectedGameObject = frameInfo.gameObjects.at(frameInfo.selectedGameObjectId);
-                        MeshRendererComponent *meshRendererComponent;
-                        if (selectedGameObject.TryGetComponent<MeshRendererComponent>(meshRendererComponent) && meshRendererComponent->GetModelPtr()) {
-                            m_edgeDetectionStencilPipeline->bind(frameInfo.commandBuffer);
-                            SimplePushConstantData push{};
-                            push.modelMatrix = selectedGameObject.transform->mat4();
-                            push.normalMatrix = selectedGameObject.transform->normalMatrix();
+                    TransformComponent *selectedTransform = nullptr;
+                    MeshRendererComponent *meshRendererComponent = nullptr;
+                    if (TryGetSelectedRenderData(frameInfo, selectedTransform, meshRendererComponent)) {
+                        m_edgeDetectionStencilPipeline->bind(frameInfo.commandBuffer);
+                        SimplePushConstantData push{};
+                        push.modelMatrix = selectedTransform->mat4();
+                        push.normalMatrix = selectedTransform->normalMatrix();
 
-                            vkCmdPushConstants(frameInfo.commandBuffer, m_edgeDetectionPipelineLayout,
-                                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT,
-                                               0,
-                                               sizeof(SimplePushConstantData),
-                                               &push);
-                            meshRendererComponent->GetModelPtr()->bind(frameInfo.commandBuffer);
-                            meshRendererComponent->GetModelPtr()->draw(frameInfo.commandBuffer);
-                        };
+                        vkCmdPushConstants(frameInfo.commandBuffer, m_edgeDetectionPipelineLayout,
+                                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT,
+                                           0,
+                                           sizeof(SimplePushConstantData),
+                                           &push);
+                        meshRendererComponent->GetModelPtr()->bind(frameInfo.commandBuffer);
+                        meshRendererComponent->GetModelPtr()->draw(frameInfo.commandBuffer);
                     }
                     break;
                 }
@@ -247,22 +246,20 @@ namespace Kaamoo {
                             0,
                             nullptr
                     );
-                    if (frameInfo.gameObjects.find(frameInfo.selectedGameObjectId) != frameInfo.gameObjects.end()) {
-                        auto &selectedGameObject = frameInfo.gameObjects.at(frameInfo.selectedGameObjectId);
-                        MeshRendererComponent *meshRendererComponent;
-                        if (selectedGameObject.TryGetComponent<MeshRendererComponent>(meshRendererComponent) && meshRendererComponent->GetModelPtr()) {
-                            m_edgeDetectionPipeline->bind(frameInfo.commandBuffer);
-                            SimplePushConstantData push{};
-                            push.modelMatrix = selectedGameObject.transform->mat4();
-                            push.normalMatrix = selectedGameObject.transform->normalMatrix();
-                            vkCmdPushConstants(frameInfo.commandBuffer, m_edgeDetectionPipelineLayout,
-                                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT,
-                                               0,
-                                               sizeof(SimplePushConstantData),
-                                               &push);
-                            meshRendererComponent->GetModelPtr()->bind(frameInfo.commandBuffer);
-                            meshRendererComponent->GetModelPtr()->draw(frameInfo.commandBuffer);
-                        };
+                    TransformComponent *selectedTransform = nullptr;
+                    MeshRendererComponent *meshRendererComponent = nullptr;
+                    if (TryGetSelectedRenderData(frameInfo, selectedTransform, meshRendererComponent)) {
+                        m_edgeDetectionPipeline->bind(frameInfo.commandBuffer);
+                        SimplePushConstantData push{};
+                        push.modelMatrix = selectedTransform->mat4();
+                        push.normalMatrix = selectedTransform->normalMatrix();
+                        vkCmdPushConstants(frameInfo.commandBuffer, m_edgeDetectionPipelineLayout,
+                                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT,
+                                           0,
+                                           sizeof(SimplePushConstantData),
+                                           &push);
+                        meshRendererComponent->GetModelPtr()->bind(frameInfo.commandBuffer);
+                        meshRendererComponent->GetModelPtr()->draw(frameInfo.commandBuffer);
                     }
                     break;
                 }
@@ -271,6 +268,44 @@ namespace Kaamoo {
 
         };
 
+
+        bool TryGetSelectedRenderData(FrameInfo &frameInfo,
+                                      TransformComponent *&selectedTransform,
+                                      MeshRendererComponent *&selectedMeshRenderer) {
+            selectedTransform = nullptr;
+            selectedMeshRenderer = nullptr;
+
+            if (frameInfo.sceneRegistry != nullptr) {
+                const id_t selectedEntityId = frameInfo.selectedEntityId;
+                if (frameInfo.sceneRegistry->IsAlive(selectedEntityId) &&
+                    frameInfo.sceneRegistry->IsEntityActive(selectedEntityId) &&
+                    frameInfo.sceneRegistry->TryGetComponent(selectedEntityId, selectedTransform) &&
+                    frameInfo.sceneRegistry->TryGetComponent(selectedEntityId, selectedMeshRenderer) &&
+                    selectedTransform != nullptr &&
+                    selectedMeshRenderer != nullptr &&
+                    selectedMeshRenderer->GetModelPtr() != nullptr) {
+                    return true;
+                }
+            }
+
+            auto selectedObjectIt = frameInfo.gameObjects.find(frameInfo.selectedGameObjectId);
+            if (selectedObjectIt != frameInfo.gameObjects.end()) {
+                auto &selectedGameObject = selectedObjectIt->second;
+                if (selectedGameObject.IsActive()) {
+                    MeshRendererComponent *meshRendererComponent = nullptr;
+                    if (selectedGameObject.TryGetComponent(meshRendererComponent) &&
+                        meshRendererComponent != nullptr &&
+                        meshRendererComponent->GetModelPtr() != nullptr &&
+                        selectedGameObject.transform != nullptr) {
+                        selectedTransform = selectedGameObject.transform;
+                        selectedMeshRenderer = meshRendererComponent;
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
     private:
 
         std::shared_ptr<GameObject> m_axisObjPtr;
@@ -287,5 +322,6 @@ namespace Kaamoo {
         const float m_scaleFactor = 1.1f;
     };
 }
+
 
 

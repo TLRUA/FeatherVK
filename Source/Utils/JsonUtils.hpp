@@ -1,7 +1,10 @@
-﻿#include <string>
-#include <fstream>
+﻿#pragma once
 
-namespace Kaamoo {
+#include <fstream>
+#include <stdexcept>
+#include <string>
+
+namespace FeatherVK {
     class JsonUtils {
     public:
         static std::string ReadJsonFile(const std::string &path) {
@@ -21,3 +24,4 @@ namespace Kaamoo {
         }
     };
 }
+
