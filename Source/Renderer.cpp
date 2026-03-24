@@ -780,6 +780,7 @@ namespace FeatherVK {
         m_shadowTermImageColors.clear();
         m_shadowMomentsImageColors.clear();
         m_worldPosImage.clear();
+        m_rayTracingGuideImage.clear();
         m_denoisingAccumulationImage.reset();
         m_offscreenSampler.reset();
         offscreenImageDepth.reset();
@@ -874,6 +875,20 @@ namespace FeatherVK {
             m_worldPosImage[0]->sampler = m_offscreenSampler->getSampler();
             m_worldPosImage[1]->sampler = m_offscreenSampler->getSampler();
 
+            m_rayTracingGuideImage.push_back(std::make_shared<Image>(device));
+            m_rayTracingGuideImage.push_back(std::make_shared<Image>(device));
+            imageCreateInfo.format = worldPosColorFormat;
+            m_rayTracingGuideImage[0]->createImage(imageCreateInfo);
+            m_rayTracingGuideImage[1]->createImage(imageCreateInfo);
+            m_rayTracingGuideImage[0]->setDefaultImageViewCreateInfo(*imageViewCreateInfo);
+            imageViewCreateInfo->format = worldPosColorFormat;
+            m_rayTracingGuideImage[0]->createImageView(*imageViewCreateInfo);
+            m_rayTracingGuideImage[1]->setDefaultImageViewCreateInfo(*imageViewCreateInfo);
+            imageViewCreateInfo->format = worldPosColorFormat;
+            m_rayTracingGuideImage[1]->createImageView(*imageViewCreateInfo);
+            m_rayTracingGuideImage[0]->sampler = m_offscreenSampler->getSampler();
+            m_rayTracingGuideImage[1]->sampler = m_offscreenSampler->getSampler();
+
             m_denoisingAccumulationImage = std::make_shared<Image>(device);
             imageCreateInfo.format = offscreenColorFormat;
             m_denoisingAccumulationImage->createImage(imageCreateInfo);
@@ -920,6 +935,12 @@ namespace FeatherVK {
                                          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                                          {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1});
             device.transitionImageLayout(m_worldPosImage[1]->getImage(),
+                                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                                         {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1});
+            device.transitionImageLayout(m_rayTracingGuideImage[0]->getImage(),
+                                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                                         {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1});
+            device.transitionImageLayout(m_rayTracingGuideImage[1]->getImage(),
                                          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                                          {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1});
             
@@ -1155,6 +1176,14 @@ namespace FeatherVK {
                              1, &barrier);
 
         barrier.image = m_worldPosImage[imageIndex]->getImage();
+        vkCmdPipelineBarrier(commandBuffer,
+                             srcStage, dstStage,
+                             0,
+                             0, nullptr,
+                             0, nullptr,
+                             1, &barrier);
+
+        barrier.image = m_rayTracingGuideImage[imageIndex]->getImage();
         vkCmdPipelineBarrier(commandBuffer,
                              srcStage, dstStage,
                              0,

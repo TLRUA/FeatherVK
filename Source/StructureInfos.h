@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <vulkan/vulkan.h>
 #include <cstddef>
@@ -44,6 +44,17 @@ namespace FeatherVK {
         [[nodiscard]] bool Contains(float px, float py) const {
             return px >= x && px < Right() && py >= y && py < Bottom();
         }
+    };
+
+    class IEditorScenePersistence {
+    public:
+        virtual ~IEditorScenePersistence() = default;
+
+        [[nodiscard]] virtual bool IsSceneDirty() const = 0;
+        virtual void MarkSceneDirty() = 0;
+        virtual void ClearSceneDirty() = 0;
+        virtual void RequestSceneSave() = 0;
+        [[nodiscard]] virtual bool ConsumeSceneSaveRequest() = 0;
     };
 
 #ifdef RAY_TRACING
@@ -99,6 +110,7 @@ namespace FeatherVK {
         VkExtent2D sceneRenderExtent;
         ViewportRect scenePanelRect;
         ViewportRect sceneViewportRect;
+        IEditorScenePersistence *scenePersistence;
         id_t selectedEntityId;
         bool sceneUpdated;
 #ifdef RAY_TRACING

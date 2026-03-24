@@ -58,7 +58,6 @@ PBR reloadPBR(PBR rawPBR, ivec2 textureEntry, vec2 uv, vec3 normal, mat3 TBN) {
 
     if (rawPBR.roughness == -1) {
         pbr.roughness = texture(textureSamplers[textureIndex], uv).x;
-        pbr.roughness = 0.5;
         textureIndex++;
     } else {
         pbr.roughness = rawPBR.roughness;
@@ -141,9 +140,9 @@ vec3 sampleShadowDirection(vec3 worldPos, Light light, vec3 baseDirection, float
 }
 
 const int FirstBounceReflectionSamples = 1;
-const float ReflectionRayFadeStart = 0.24;
-const float ReflectionRayFadeEnd = 0.52;
-const float ReflectionJitterRoughness = 0.18;
+const float ReflectionRayFadeStart = 0.28;
+const float ReflectionRayFadeEnd = 0.42;
+const float MirrorRoughnessThreshold = 0.002;
 const float MaxReflectionContributionLuminance = 16.0;
 
 vec3 safeNormalize(vec3 value, vec3 fallback) {
@@ -172,13 +171,11 @@ int reflectionSampleCount(int bounceCount) {
 
 vec3 buildReflectionDirection(vec3 worldNormal, vec3 pixelToView, float roughness, float sampleSeed) {
     vec3 perfectReflection = safeNormalize(reflect(-pixelToView, worldNormal), worldNormal);
-    if (roughness <= ReflectionJitterRoughness) {
+    if (roughness <= MirrorRoughnessThreshold) {
         return perfectReflection;
     }
 
-    vec3 sampledReflection = sampleGGXReflection(worldNormal, pixelToView, roughness, sampleSeed);
-    float jitterWeight = smoothstep(ReflectionJitterRoughness, ReflectionRayFadeEnd, roughness);
-    return safeNormalize(mix(perfectReflection, sampledReflection, jitterWeight * 0.35), perfectReflection);
+    return safeNormalize(sampleGGXReflection(worldNormal, pixelToView, roughness, sampleSeed), perfectReflection);
 }
 
 float stableReflectionSeed(vec3 worldPos, int sampleIndex, int bounceCount) {
@@ -316,6 +313,7 @@ void main()
 
     if (payLoad.recursionDepth == 1) {
         payLoad.closestHitWorldPos = vec4(worldPos, 1.0);
+        payLoad.primaryMaterialGuide = vec4(pbr.roughness, pbr.metallic, 1.0, 0.0);
     }
 
     vec3 lo = vec3(0.0);

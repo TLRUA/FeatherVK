@@ -4,6 +4,8 @@
 #include <limits>
 #include <numeric>
 #include <optional>
+#include <rapidjson/prettywriter.h>
+#include <rapidjson/stringbuffer.h>
 #include "../Core/InputState.hpp"
 #include "../Descriptor.h"
 #include "../Device.hpp"
@@ -61,7 +63,7 @@ namespace FeatherVK {
     constexpr uint32_t RuntimeEntityDescCapacity = 1024;
 #endif
 
-    class ResourceManager {
+    class ResourceManager final : public IEditorScenePersistence {
     public:
         ResourceManager()
             : m_modelRepository(m_device),
@@ -131,6 +133,23 @@ namespace FeatherVK {
         RenderCore::CoreServices &GetRenderCore() { return m_renderCore; }
         const RenderCore::CoreServices &GetRenderCore() const { return m_renderCore; }
 
+        [[nodiscard]] bool IsSceneDirty() const override { return m_sceneDirty; }
+
+        void MarkSceneDirty() override { m_sceneDirty = true; }
+
+        void ClearSceneDirty() override { m_sceneDirty = false; }
+
+        void RequestSceneSave() override {
+            m_sceneSaveRequested = true;
+            m_sceneDirty = true;
+        }
+
+        [[nodiscard]] bool ConsumeSceneSaveRequest() override {
+            const bool shouldSave = m_sceneSaveRequested;
+            m_sceneSaveRequested = false;
+            return shouldSave;
+        }
+
         bool SyncSceneViewportLayout(const ViewportRect &scenePanelRect, const ViewportRect &sceneViewportRect) {
             const bool sceneExtentChanged = m_renderer.UpdateSceneViewportLayout(scenePanelRect, sceneViewportRect);
 #ifdef RAY_TRACING
@@ -160,10 +179,164 @@ namespace FeatherVK {
             return entry == m_rayTracingShaderOffsets.end() ? 0u : entry->second;
         }
 
+        bool HasValidRayTracingTlas() const {
+            return m_rayTracingSceneContext.HasValidTlas();
+        }
+
         bool RefreshRayTracingTlasDescriptor() {
             return RefreshRayTracingRayGenDescriptorSet();
         }
 #endif
+
+        void SaveScene() {
+            rapidjson::Document entitiesDocument;
+            entitiesDocument.SetArray();
+            rapidjson::Document componentsDocument;
+            componentsDocument.SetArray();
+
+            auto &entityAllocator = entitiesDocument.GetAllocator();
+            auto &componentAllocator = componentsDocument.GetAllocator();
+
+            const auto makeStringValue = [](const std::string &value, auto &allocator) {
+                rapidjson::Value stringValue;
+                stringValue.SetString(value.c_str(), static_cast<rapidjson::SizeType>(value.size()), allocator);
+                return stringValue;
+            };
+            const auto makeVec3Value = [](const glm::vec3 &value, auto &allocator) {
+                rapidjson::Value vec(rapidjson::kArrayType);
+                vec.PushBack(value.x, allocator);
+                vec.PushBack(value.y, allocator);
+                vec.PushBack(value.z, allocator);
+                return vec;
+            };
+            const auto makeTransformValue = [&](const TransformComponent &transform) {
+                rapidjson::Value transformObject(rapidjson::kObjectType);
+                transformObject.AddMember("translation", makeVec3Value(transform.GetRelativeTranslation(), entityAllocator), entityAllocator);
+                transformObject.AddMember("scale", makeVec3Value(transform.GetRelativeScale(), entityAllocator), entityAllocator);
+                transformObject.AddMember("rotation", makeVec3Value(glm::degrees(transform.GetRelativeRotation()), entityAllocator), entityAllocator);
+                return transformObject;
+            };
+            int nextComponentId = 1;
+            const auto appendComponent = [&](rapidjson::Value &componentIds, rapidjson::Value componentObject) {
+                componentObject.AddMember("id", nextComponentId, componentAllocator);
+                componentsDocument.PushBack(componentObject, componentAllocator);
+                componentIds.PushBack(nextComponentId, entityAllocator);
+                ++nextComponentId;
+            };
+
+            for (const auto entityId: m_sceneRegistry.GetEntityOrder()) {
+                if (!m_sceneRegistry.IsAlive(entityId) || m_entityCommandService.IsPendingDestroy(entityId)) {
+                    continue;
+                }
+
+                rapidjson::Value entityObject(rapidjson::kObjectType);
+                entityObject.AddMember("id", entityId, entityAllocator);
+                entityObject.AddMember("name", makeStringValue(m_sceneRegistry.GetEntityName(entityId), entityAllocator), entityAllocator);
+                entityObject.AddMember("IsActive", m_sceneRegistry.IsEntityActive(entityId), entityAllocator);
+
+                if (auto *transform = TryGetSceneComponent<TransformComponent>(entityId); transform != nullptr) {
+                    entityObject.AddMember("transform", makeTransformValue(*transform), entityAllocator);
+                    if (transform->HasParent()) {
+                        entityObject.AddMember("parentId", transform->GetParentEntityId(), entityAllocator);
+                    }
+                }
+
+                rapidjson::Value componentIds(rapidjson::kArrayType);
+
+                if (auto *meshRenderer = TryGetSceneComponent<MeshRendererComponent>(entityId); meshRenderer != nullptr) {
+                    rapidjson::Value componentObject(rapidjson::kObjectType);
+                    componentObject.AddMember("type", makeStringValue("MeshRendererComponent", componentAllocator), componentAllocator);
+                    if (meshRenderer->GetModelPtr() != nullptr) {
+                        componentObject.AddMember("model", makeStringValue(meshRenderer->GetModelPtr()->GetName(), componentAllocator), componentAllocator);
+                    }
+                    componentObject.AddMember("materialId", meshRenderer->GetMaterialID(), componentAllocator);
+                    componentObject.AddMember("visible", meshRenderer->IsVisible(), componentAllocator);
+                    componentObject.AddMember("renderLayer", meshRenderer->GetRenderLayer(), componentAllocator);
+                    componentObject.AddMember("castShadow", meshRenderer->CastsShadow(), componentAllocator);
+                    componentObject.AddMember("receiveShadow", meshRenderer->ReceivesShadow(), componentAllocator);
+                    if (meshRenderer->HasPbrOverride()) {
+                        const PBR &pbr = *meshRenderer->GetPbrOverride();
+                        rapidjson::Value pbrObject(rapidjson::kObjectType);
+                        pbrObject.AddMember("albedo", makeVec3Value(pbr.albedo, componentAllocator), componentAllocator);
+                        pbrObject.AddMember("normal", makeVec3Value(pbr.normal, componentAllocator), componentAllocator);
+                        pbrObject.AddMember("metallic", pbr.metallic, componentAllocator);
+                        pbrObject.AddMember("roughness", pbr.roughness, componentAllocator);
+                        pbrObject.AddMember("opacity", pbr.opacity, componentAllocator);
+                        pbrObject.AddMember("ao", pbr.AO, componentAllocator);
+                        pbrObject.AddMember("emissive", makeVec3Value(pbr.emissive, componentAllocator), componentAllocator);
+                        componentObject.AddMember("pbrOverride", pbrObject, componentAllocator);
+                    }
+                    appendComponent(componentIds, std::move(componentObject));
+                }
+
+                if (TryGetSceneComponent<CameraComponent>(entityId) != nullptr) {
+                    rapidjson::Value componentObject(rapidjson::kObjectType);
+                    componentObject.AddMember("type", makeStringValue("CameraComponent", componentAllocator), componentAllocator);
+                    appendComponent(componentIds, std::move(componentObject));
+                }
+
+                if (auto *cameraMovement = TryGetSceneComponent<CameraMovementComponent>(entityId); cameraMovement != nullptr) {
+                    rapidjson::Value componentObject(rapidjson::kObjectType);
+                    componentObject.AddMember("type", makeStringValue("CameraMovementComponent", componentAllocator), componentAllocator);
+                    componentObject.AddMember("moveSpeed", cameraMovement->moveSpeed, componentAllocator);
+                    componentObject.AddMember("lookSpeed", cameraMovement->lookSpeed, componentAllocator);
+                    componentObject.AddMember("focusMoveTime", cameraMovement->focusMoveTime, componentAllocator);
+                    appendComponent(componentIds, std::move(componentObject));
+                }
+
+                if (auto *objectMovement = TryGetSceneComponent<ObjectMovementComponent>(entityId); objectMovement != nullptr) {
+                    rapidjson::Value componentObject(rapidjson::kObjectType);
+                    componentObject.AddMember("type", makeStringValue("ObjectMovementComponent", componentAllocator), componentAllocator);
+                    componentObject.AddMember("moveSpeed", objectMovement->moveSpeed, componentAllocator);
+                    appendComponent(componentIds, std::move(componentObject));
+                }
+
+                if (auto *light = TryGetSceneComponent<LightComponent>(entityId); light != nullptr) {
+                    rapidjson::Value componentObject(rapidjson::kObjectType);
+                    componentObject.AddMember("type", makeStringValue("LightComponent", componentAllocator), componentAllocator);
+                    componentObject.AddMember("category", makeStringValue(light->GetLightTypeLabel(), componentAllocator), componentAllocator);
+                    componentObject.AddMember("color", makeVec3Value(light->color, componentAllocator), componentAllocator);
+                    componentObject.AddMember("intensity", light->lightIntensity, componentAllocator);
+                    appendComponent(componentIds, std::move(componentObject));
+                }
+
+                if (auto *rigidBody = TryGetSceneComponent<RigidBodyComponent>(entityId); rigidBody != nullptr) {
+                    rapidjson::Value componentObject(rapidjson::kObjectType);
+                    componentObject.AddMember("type", makeStringValue("RigidBodyComponent", componentAllocator), componentAllocator);
+                    componentObject.AddMember("velocity", makeVec3Value(rigidBody->velocity, componentAllocator), componentAllocator);
+                    componentObject.AddMember("omega", makeVec3Value(rigidBody->omega, componentAllocator), componentAllocator);
+                    componentObject.AddMember("useGravity", rigidBody->useGravity, componentAllocator);
+                    componentObject.AddMember("isKinematic", rigidBody->isKinematic, componentAllocator);
+                    componentObject.AddMember("totalMass", rigidBody->totalMass, componentAllocator);
+                    componentObject.AddMember("restitution", rigidBody->restitution, componentAllocator);
+                    componentObject.AddMember("friction", rigidBody->friction, componentAllocator);
+                    appendComponent(componentIds, std::move(componentObject));
+                }
+
+                if (auto *uiComponent = TryGetSceneComponent<UIComponent>(entityId); uiComponent != nullptr) {
+                    rapidjson::Value componentObject(rapidjson::kObjectType);
+                    componentObject.AddMember("type", makeStringValue("UIComponent", componentAllocator), componentAllocator);
+                    componentObject.AddMember("uiType", makeStringValue(UIComponent::GetElementTypeName(uiComponent->GetElementType()), componentAllocator), componentAllocator);
+                    appendComponent(componentIds, std::move(componentObject));
+                }
+
+                entityObject.AddMember("componentIds", componentIds, entityAllocator);
+                entitiesDocument.PushBack(entityObject, entityAllocator);
+            }
+
+            rapidjson::StringBuffer entitiesBuffer;
+            rapidjson::PrettyWriter<rapidjson::StringBuffer> entitiesWriter(entitiesBuffer);
+            entitiesDocument.Accept(entitiesWriter);
+
+            rapidjson::StringBuffer componentsBuffer;
+            rapidjson::PrettyWriter<rapidjson::StringBuffer> componentsWriter(componentsBuffer);
+            componentsDocument.Accept(componentsWriter);
+
+            JsonUtils::WriteJsonFile(GetBasePath() + EntitiesFileName, entitiesBuffer.GetString());
+            JsonUtils::WriteJsonFile(GetBasePath() + ComponentsFileName, componentsBuffer.GetString());
+            ClearSceneDirty();
+            m_sceneSaveRequested = false;
+        }
 
         void loadEntities() {
             struct HierarchyEntry {
@@ -179,6 +352,8 @@ namespace FeatherVK {
 #ifdef RAY_TRACING
             m_rayTracingSceneContext.Release();
 #endif
+            ClearSceneDirty();
+            m_sceneSaveRequested = false;
 
             std::string entitiesJsonString = JsonUtils::ReadJsonFile(GetBasePath() + EntitiesFileName);
             std::string componentsJsonString = JsonUtils::ReadJsonFile(GetBasePath() + ComponentsFileName);
@@ -402,6 +577,7 @@ namespace FeatherVK {
                     addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_RAYGEN_BIT_KHR, 2).
                     addBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_RAYGEN_BIT_KHR, 2).
                     addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_RAYGEN_BIT_KHR, 2).
+                    addBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_RAYGEN_BIT_KHR, 2).
                     build();
             auto rayGenDescriptorSet = std::make_shared<VkDescriptorSet>();
             descriptorSetLayoutPointers.push_back(rayGenDescriptorSetLayoutPtr);
@@ -436,11 +612,23 @@ namespace FeatherVK {
             shadowTermImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             shadowTermImageInfos.emplace_back(*shadowTermImageInfo);
 
-            DescriptorWriter(rayGenDescriptorSetLayoutPtr, *m_globalPool).
-                    writeTLAS(0, accelerationStructureInfo).
+            std::vector<VkDescriptorImageInfo> rayTracingGuideImageInfos{};
+            auto rayTracingGuideImageInfo = m_renderer.getRayTracingGuideImageColor(0)->descriptorInfo();
+            rayTracingGuideImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            rayTracingGuideImageInfos.emplace_back(*rayTracingGuideImageInfo);
+            rayTracingGuideImageInfo = m_renderer.getRayTracingGuideImageColor(1)->descriptorInfo();
+            rayTracingGuideImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            rayTracingGuideImageInfos.emplace_back(*rayTracingGuideImageInfo);
+
+            DescriptorWriter rayGenDescriptorWriter(rayGenDescriptorSetLayoutPtr, *m_globalPool);
+            if (m_rayTracingSceneContext.HasValidTlas()) {
+                rayGenDescriptorWriter.writeTLAS(0, accelerationStructureInfo);
+            }
+            rayGenDescriptorWriter.
                     writeImages(1, offscreenImageInfos).
                     writeImages(2, worldPosImageInfos).
                     writeImages(3, shadowTermImageInfos).
+                    writeImages(4, rayTracingGuideImageInfos).
                     build(rayGenDescriptorSet);
 
             //ObjectDesc
@@ -641,6 +829,7 @@ namespace FeatherVK {
                             addBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT).
                             addBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT, 2).
                             addBinding(5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT, 2).
+                            addBinding(6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT, 2).
                             build();
 
             std::vector<VkDescriptorImageInfo> offscreenImageInfos{};
@@ -678,6 +867,14 @@ namespace FeatherVK {
             shadowMomentsImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             shadowMomentsImageInfos.emplace_back(*shadowMomentsImageInfo);
 
+            std::vector<VkDescriptorImageInfo> rayTracingGuideImageInfos{};
+            auto rayTracingGuideImageInfo = m_renderer.getRayTracingGuideImageColor(0)->descriptorInfo();
+            rayTracingGuideImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            rayTracingGuideImageInfos.emplace_back(*rayTracingGuideImageInfo);
+            rayTracingGuideImageInfo = m_renderer.getRayTracingGuideImageColor(1)->descriptorInfo();
+            rayTracingGuideImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            rayTracingGuideImageInfos.emplace_back(*rayTracingGuideImageInfo);
+
             auto postDescriptorSet = std::make_shared<VkDescriptorSet>();
             DescriptorWriter(computeSystemDescriptorSetLayoutPtr, *m_globalPool).
                     writeBuffer(0, globalUboBufferPtr->descriptorInfo()).
@@ -686,6 +883,7 @@ namespace FeatherVK {
                     writeImage(3, denoisingImageInfo).
                     writeImages(4, shadowTermImageInfos).
                     writeImages(5, shadowMomentsImageInfos).
+                    writeImages(6, rayTracingGuideImageInfos).
                     build(postDescriptorSet);
 
             std::vector<std::shared_ptr<ShaderModule>> shaderModulePointers{
@@ -931,7 +1129,7 @@ namespace FeatherVK {
 #ifdef RAY_TRACING
         bool RefreshRayTracingRayGenDescriptorSet() {
             auto materialIt = m_materials.find(Material::MaterialId::rayTracing);
-            if (materialIt == m_materials.end() || materialIt->second == nullptr) {
+            if (materialIt == m_materials.end() || materialIt->second == nullptr || !m_rayTracingSceneContext.HasValidTlas()) {
                 return false;
             }
 
@@ -971,11 +1169,20 @@ namespace FeatherVK {
             shadowTermImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             shadowTermImageInfos.emplace_back(*shadowTermImageInfo);
 
+            std::vector<VkDescriptorImageInfo> rayTracingGuideImageInfos{};
+            auto rayTracingGuideImageInfo = m_renderer.getRayTracingGuideImageColor(0)->descriptorInfo();
+            rayTracingGuideImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            rayTracingGuideImageInfos.emplace_back(*rayTracingGuideImageInfo);
+            rayTracingGuideImageInfo = m_renderer.getRayTracingGuideImageColor(1)->descriptorInfo();
+            rayTracingGuideImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            rayTracingGuideImageInfos.emplace_back(*rayTracingGuideImageInfo);
+
             DescriptorWriter(descriptorSetLayouts[0], *m_globalPool).
                     writeTLAS(0, accelerationStructureInfo).
                     writeImages(1, offscreenImageInfos).
                     writeImages(2, worldPosImageInfos).
                     writeImages(3, shadowTermImageInfos).
+                    writeImages(4, rayTracingGuideImageInfos).
                     overwrite(*descriptorSets[0]);
             return true;
         }
@@ -1030,6 +1237,14 @@ namespace FeatherVK {
             shadowMomentsImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             shadowMomentsImageInfos.emplace_back(*shadowMomentsImageInfo);
 
+            std::vector<VkDescriptorImageInfo> rayTracingGuideImageInfos{};
+            auto rayTracingGuideImageInfo = m_renderer.getRayTracingGuideImageColor(0)->descriptorInfo();
+            rayTracingGuideImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            rayTracingGuideImageInfos.emplace_back(*rayTracingGuideImageInfo);
+            rayTracingGuideImageInfo = m_renderer.getRayTracingGuideImageColor(1)->descriptorInfo();
+            rayTracingGuideImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            rayTracingGuideImageInfos.emplace_back(*rayTracingGuideImageInfo);
+
             DescriptorWriter(descriptorSetLayouts[0], *m_globalPool).
                     writeBuffer(0, bufferPointers[0]->descriptorInfo()).
                     writeImages(1, offscreenImageInfos).
@@ -1037,6 +1252,7 @@ namespace FeatherVK {
                     writeImage(3, denoisingImageInfo).
                     writeImages(4, shadowTermImageInfos).
                     writeImages(5, shadowMomentsImageInfos).
+                    writeImages(6, rayTracingGuideImageInfos).
                     overwrite(*descriptorSets[0]);
             return true;
         }
@@ -1069,6 +1285,8 @@ namespace FeatherVK {
         TransformService m_transformService;
         Material::Map m_materials;
         std::unordered_map<std::string, TextureCacheEntry> m_textureCache;
+        bool m_sceneDirty = false;
+        bool m_sceneSaveRequested = false;
 
 #ifdef RAY_TRACING
         RayTracingSceneContext m_rayTracingSceneContext;

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <fstream>
 #include <stdexcept>
@@ -21,6 +21,15 @@ namespace FeatherVK {
             jsonFile.read(&jsonString[0], length);
             jsonFile.close();
             return jsonString;
+        }
+
+        static void WriteJsonFile(const std::string &path, const std::string &content) {
+            std::ofstream jsonFile(path, std::ios::trunc | std::ios::binary);
+            if (!jsonFile.is_open()) {
+                throw std::runtime_error("Failed to open for write: " + path);
+            }
+            jsonFile.write(content.data(), static_cast<std::streamsize>(content.size()));
+            jsonFile.close();
         }
     };
 }

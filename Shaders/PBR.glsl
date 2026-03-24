@@ -22,24 +22,26 @@ vec3 baseReflectivity(const vec3 albedo, const float metallicFactor)
     return mix(vec3(0.04, 0.04, 0.04), albedo, metallicFactor);
 }
 
-float schlickBeckmannGS(vec3 normal, vec3 x, float roughnessFactor)
+float schlickGGXGeometry(float nDotX, float roughnessFactor)
 {
-    float k = roughnessFactor / 2.0f;
-    float nDotX = clamp(dot(normal, x),0,1);
-
+    float roughness = clamp(roughnessFactor, 0.02, 1.0);
+    float r = roughness + 1.0;
+    float k = (r * r) / 8.0;
     return nDotX / (max((nDotX * (1.0f - k) + k), MIN_FLOAT_VALUE));
 }
 
 float smithGeometryFunction(const vec3 normal, const vec3 viewDirection, const vec3 lightDirection, const float roughnessFactor)
 {
-    return schlickBeckmannGS(normal, viewDirection, roughnessFactor) * schlickBeckmannGS(normal, lightDirection, roughnessFactor);
+    float nDotV = clamp(dot(normal, viewDirection), 0, 1);
+    float nDotL = clamp(dot(normal, lightDirection), 0, 1);
+    return schlickGGXGeometry(nDotV, roughnessFactor) * schlickGGXGeometry(nDotL, roughnessFactor);
 }
 
 // BRDF = kD * diffuseBRDF + kS * specularBRDF. (Note : kS + kD = 1).
 vec3 cookTorrenceBRDF(const vec3 normal, const vec3 viewDirection, const vec3 pixelToLightDirection, const vec3 albedo, const float roughnessFactor,
 const float metallicFactor)
 {
-    const float roughness = clamp(roughnessFactor, 0.045, 1.0);
+    const float roughness = clamp(roughnessFactor, 0.02, 1.0);
     const vec3 halfWayVector = normalize(viewDirection + pixelToLightDirection);
     const float nDotV = clamp(dot(normal, viewDirection), 0.0, 1.0);
     const float nDotL = clamp(dot(normal, pixelToLightDirection), 0.0, 1.0);

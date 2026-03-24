@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <chrono>
 #include <glm/ext/matrix_clip_space.hpp>
@@ -85,6 +85,7 @@ namespace FeatherVK {
                             renderView.renderExtent,
                             renderView.panelRect,
                             renderView.viewportRect,
+                            m_resourceManager.get(),
                             m_resourceManager->GetEditorSelectionService().GetSelectedId(),
                             false};
 
@@ -120,10 +121,12 @@ namespace FeatherVK {
             frameInfo.pEntityDescs = gameObjectDescs;
 #endif
             m_renderManager->UpdateRendering(renderer, frameInfo);
+            if (m_resourceManager->ConsumeSceneSaveRequest()) {
+                m_resourceManager->SaveScene();
+            }
         }
     };
 }
-
 
 
 

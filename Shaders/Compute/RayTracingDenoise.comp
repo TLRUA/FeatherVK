@@ -22,6 +22,7 @@ layout (set = 0, binding = 2, rgba32f) uniform image2D worldPosImage[2];
 layout (set = 0, binding = 3, rgba32f) uniform image2D denoisingAccumulationImage;
 layout (set = 0, binding = 4, rgba32f) uniform image2D shadowTermImages[2];
 layout (set = 0, binding = 5, rgba32f) uniform image2D shadowMomentsImages[2];
+layout (set = 0, binding = 6, rgba32f) uniform image2D rayTracingGuideImages[2];
 
 layout (push_constant, std430) uniform PushConstant {
     int rayTracingImageIndex;
@@ -43,6 +44,12 @@ const float HistoryClipExpansion = 3.0;
 const float TemporalCurrentWeight = 0.005;
 const float ShadowMinDirectLighting = 0.0005;
 const float ShadowVarianceScale = 8.0;
+const float LowRoughnessHistoryBlurStart = 0.28;
+const float LowRoughnessHistoryBlurEnd = 0.60;
+const float CurrentFrameBlurStart = 0.35;
+const float CurrentFrameBlurEnd = 0.75;
+const float GlossyHistoryFadeStart = 0.30;
+const float GlossyHistoryFadeEnd = 0.55;
 
 float saturate(float value) {
     return clamp(value, 0.0, 1.0);
@@ -58,6 +65,18 @@ bool isUVValid(vec2 uv) {
 
 ivec2 clampCoord(ivec2 coord, ivec2 extent) {
     return clamp(coord, ivec2(0), extent - ivec2(1));
+}
+
+bool hasSurface(vec4 worldPos) {
+    return worldPos.w > 0.0;
+}
+
+float guideRoughness(vec4 guide) {
+    return clamp(guide.x, 0.0, 1.0);
+}
+
+vec4 viewSpacePosition(mat4 viewMatrix, vec4 worldPos) {
+    return viewMatrix * vec4(worldPos.xyz, hasSurface(worldPos) ? 1.0 : 0.0);
 }
 
 vec3 stabilizeCurrentAgainstHistory(vec3 currentColor, vec3 historyColor) {
@@ -86,27 +105,39 @@ vec4 bilateralFilter(int frameIndex, ivec2 coord) {
     ivec2 safeCoord = clampCoord(coord, extent);
     vec4 centerColor = imageLoad(storageImage[frameIndex], safeCoord);
     vec4 centerWorldPos = imageLoad(worldPosImage[frameIndex], safeCoord);
-    vec4 centerViewPos = pushConstant.viewMatrix[frameIndex] * centerWorldPos;
+    if (!hasSurface(centerWorldPos)) {
+        return vec4(centerColor.rgb, 1.0);
+    }
+    vec4 centerGuide = imageLoad(rayTracingGuideImages[frameIndex], safeCoord);
+    vec4 centerViewPos = viewSpacePosition(pushConstant.viewMatrix[frameIndex], centerWorldPos);
     float centerDepth = max(abs(centerViewPos.z), 1.0);
-    float positionSigma = max(0.35, centerDepth * 0.16);
-    float depthSigma = max(0.60, centerDepth * 0.10);
+    float roughness = guideRoughness(centerGuide);
+    float roughnessFilterWeight = smoothstep(LowRoughnessHistoryBlurStart, LowRoughnessHistoryBlurEnd, roughness);
+    int effectiveFilterSize = int(mix(2.0, float(filterSize), roughnessFilterWeight) + 0.5);
+    float spatialSigma = mix(2.0, sigma_d, roughnessFilterWeight);
+    float colorSigma = mix(0.75, sigma_r, roughnessFilterWeight);
+    float positionSigma = max(0.12, centerDepth * mix(0.035, 0.16, roughnessFilterWeight));
+    float depthSigma = max(0.20, centerDepth * mix(0.035, 0.10, roughnessFilterWeight));
 
     vec3 sum = vec3(0.0);
     float wSum = 0.0;
     for (int x = -filterSize; x <= filterSize; x++) {
         for (int y = -filterSize; y <= filterSize; y++) {
+            if (abs(x) > effectiveFilterSize || abs(y) > effectiveFilterSize) {
+                continue;
+            }
             vec2 offset = vec2(x, y);
             ivec2 sampleCoord = clampCoord(safeCoord + ivec2(x, y), extent);
             vec4 neighborColor = imageLoad(storageImage[frameIndex], sampleCoord);
             vec4 neighborWorldPos = imageLoad(worldPosImage[frameIndex], sampleCoord);
 
-            float spatialWeight = exp(-0.5 * dot(offset, offset) / (sigma_d * sigma_d));
+            float spatialWeight = exp(-0.5 * dot(offset, offset) / (spatialSigma * spatialSigma));
             float colorDistance = length(centerColor.rgb - neighborColor.rgb);
-            float colorWeight = exp(-0.5 * (colorDistance * colorDistance) / (sigma_r * sigma_r));
+            float colorWeight = exp(-0.5 * (colorDistance * colorDistance) / (colorSigma * colorSigma));
             float geometryWeight = 1.0;
 
             if (centerWorldPos.w > 0.0 && neighborWorldPos.w > 0.0) {
-                vec4 neighborViewPos = pushConstant.viewMatrix[frameIndex] * neighborWorldPos;
+                vec4 neighborViewPos = viewSpacePosition(pushConstant.viewMatrix[frameIndex], neighborWorldPos);
                 float worldDistance = length(neighborWorldPos.xyz - centerWorldPos.xyz);
                 float depthDelta = abs(neighborViewPos.z - centerViewPos.z);
                 float positionWeight = exp(-0.5 * (worldDistance * worldDistance) / (positionSigma * positionSigma));
@@ -138,7 +169,7 @@ void computeShadowStatistics(int frameIndex,
                              out float maxVisibility,
                              out float meanVisibility) {
     ivec2 safeCoord = clampCoord(coord, extent);
-    vec4 centerViewPos = pushConstant.viewMatrix[frameIndex] * centerWorldPos;
+    vec4 centerViewPos = viewSpacePosition(pushConstant.viewMatrix[frameIndex], centerWorldPos);
     float centerDepth = max(abs(centerViewPos.z), 1.0);
     float positionSigma = max(0.30, centerDepth * 0.11);
     float depthSigma = max(0.30, centerDepth * 0.06);
@@ -166,7 +197,7 @@ void computeShadowStatistics(int frameIndex,
             float visibilityWeight = 1.0;
 
             if (centerWorldPos.w > 0.0 && neighborWorldPos.w > 0.0) {
-                vec4 neighborViewPos = pushConstant.viewMatrix[frameIndex] * neighborWorldPos;
+                vec4 neighborViewPos = viewSpacePosition(pushConstant.viewMatrix[frameIndex], neighborWorldPos);
                 float worldDistance = length(neighborWorldPos.xyz - centerWorldPos.xyz);
                 float depthDelta = abs(neighborViewPos.z - centerViewPos.z);
                 float positionWeight = exp(-0.5 * (worldDistance * worldDistance) / (positionSigma * positionSigma));
@@ -207,8 +238,15 @@ void main() {
     }
 
     vec4 worldPos = imageLoad(worldPosImage[currentFrameIndex], coord);
-    vec4 currentFilteredColor = vec4(imageLoad(storageImage[currentFrameIndex], coord).rgb, 1.0);
     vec4 currentShadowTerm = imageLoad(shadowTermImages[currentFrameIndex], coord);
+    vec4 currentGuide = imageLoad(rayTracingGuideImages[currentFrameIndex], coord);
+    float primaryRoughness = hasSurface(worldPos) ? guideRoughness(currentGuide) : 0.0;
+    vec3 currentRawColor = imageLoad(storageImage[currentFrameIndex], coord).rgb;
+    float currentFrameBlurWeight = hasSurface(worldPos) ? smoothstep(CurrentFrameBlurStart, CurrentFrameBlurEnd, primaryRoughness) : 0.0;
+    vec3 currentSpatialColor = currentFrameBlurWeight > 0.001
+        ? mix(currentRawColor, bilateralFilter(currentFrameIndex, coord).rgb, currentFrameBlurWeight)
+        : currentRawColor;
+    vec4 currentFilteredColor = vec4(currentSpatialColor, 1.0);
     vec3 currentDirectLighting = max(currentShadowTerm.rgb, vec3(0.0));
     float currentShadowVisibility = saturate(currentShadowTerm.a);
     bool hasDirectLighting = luminance(currentDirectLighting) > ShadowMinDirectLighting;
@@ -221,7 +259,7 @@ void main() {
     ivec2 lastFrameCoord = coord;
 
     if (!resetAccumulation) {
-        vec4 lastFrameViewPos = pushConstant.viewMatrix[lastFrameIndex] * worldPos;
+        vec4 lastFrameViewPos = viewSpacePosition(pushConstant.viewMatrix[lastFrameIndex], worldPos);
         vec4 clipPos = ubo.projectionMatrix * lastFrameViewPos;
         if (clipPos.w <= 0.0) {
             resetAccumulation = true;
@@ -233,8 +271,11 @@ void main() {
             } else {
                 lastFrameCoord = clampCoord(ivec2(lastFrameUv * vec2(extent)), extent);
                 vec4 reprojectedWorldPos = imageLoad(worldPosImage[lastFrameIndex], lastFrameCoord);
+                vec4 reprojectedGuide = imageLoad(rayTracingGuideImages[lastFrameIndex], lastFrameCoord);
                 float resetThreshold = max(WorldPositionResetThreshold, length(worldPos.xyz) * 0.002);
-                if (reprojectedWorldPos.w == 0.0 || distance(reprojectedWorldPos.xyz, worldPos.xyz) > resetThreshold) {
+                bool materialGuideChanged = abs(guideRoughness(reprojectedGuide) - primaryRoughness) > 0.06;
+                materialGuideChanged = materialGuideChanged || abs(reprojectedGuide.y - currentGuide.y) > 0.10;
+                if (reprojectedWorldPos.w == 0.0 || distance(reprojectedWorldPos.xyz, worldPos.xyz) > resetThreshold || materialGuideChanged) {
                     resetAccumulation = true;
                 }
             }
@@ -306,9 +347,14 @@ void main() {
     if (resetAccumulation) {
         accumulation = vec4(max(shadowCorrectedColor, vec3(0.0)), 1.0);
     } else {
-        vec3 historyColor = bilateralFilter(lastFrameIndex, lastFrameCoord).rgb;
+        vec3 rawHistoryColor = imageLoad(storageImage[lastFrameIndex], lastFrameCoord).rgb;
+        float historyBlurWeight = smoothstep(LowRoughnessHistoryBlurStart, LowRoughnessHistoryBlurEnd, primaryRoughness);
+        vec3 filteredHistoryColor = historyBlurWeight > 0.001 ? bilateralFilter(lastFrameIndex, lastFrameCoord).rgb : rawHistoryColor;
+        vec3 historyColor = mix(rawHistoryColor, filteredHistoryColor, historyBlurWeight);
         vec3 stableCurrent = stabilizeCurrentAgainstHistory(shadowCorrectedColor, historyColor);
-        vec3 averagedColor = mix(historyColor, stableCurrent, TemporalCurrentWeight);
+        float glossyHistoryFade = hasSurface(worldPos) ? smoothstep(GlossyHistoryFadeStart, GlossyHistoryFadeEnd, primaryRoughness) : 0.0;
+        float currentWeight = mix(TemporalCurrentWeight, 0.35, glossyHistoryFade);
+        vec3 averagedColor = mix(historyColor, stableCurrent, currentWeight);
         accumulation = vec4(averagedColor, 1.0);
     }
 

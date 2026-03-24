@@ -153,22 +153,27 @@ namespace FeatherVK {
             }
 
             SyncRayTracingScene(frameInfo);
-            frameInfo.pEntityDescBuffer->writeToBuffer(frameInfo.pEntityDescs.data(), frameInfo.pEntityDescs.size() * sizeof(EntityDesc));
+            const bool hasValidRayTracingTlas = m_resourceManager->HasValidRayTracingTlas();
+            if (hasValidRayTracingTlas && frameInfo.pEntityDescBuffer != nullptr && !frameInfo.pEntityDescs.empty()) {
+                frameInfo.pEntityDescBuffer->writeToBuffer(frameInfo.pEntityDescs.data(), frameInfo.pEntityDescs.size() * sizeof(EntityDesc));
+            }
 
             renderer.beginSceneColorRenderPass(frameInfo.commandBuffer, frameIndex % 2);
             RenderRasterScene(frameInfo);
             renderer.endSceneColorRenderPass(frameInfo.commandBuffer);
             renderer.setSceneColorToPostSynchronization(frameInfo.commandBuffer, frameIndex % 2);
 
-            m_rayTracingSystem->UpdateGlobalUboBuffer(frameInfo.globalUbo, frameIndex);
-            m_rayTracingSystem->rayTrace(frameInfo);
+            if (hasValidRayTracingTlas) {
+                m_rayTracingSystem->UpdateGlobalUboBuffer(frameInfo.globalUbo, frameIndex);
+                m_rayTracingSystem->rayTrace(frameInfo);
 
-            renderer.setDenoiseRtxToComputeSynchronization(frameInfo.commandBuffer, frameIndex % 2);
+                renderer.setDenoiseRtxToComputeSynchronization(frameInfo.commandBuffer, frameIndex % 2);
 
-            m_computeSystem->UpdateGlobalUboBuffer(frameInfo.globalUbo, frameIndex);
-            m_computeSystem->render(frameInfo);
+                m_computeSystem->UpdateGlobalUboBuffer(frameInfo.globalUbo, frameIndex);
+                m_computeSystem->render(frameInfo);
 
-            renderer.setDenoiseComputeToPostSynchronization(frameInfo.commandBuffer, frameIndex % 2);
+                renderer.setDenoiseComputeToPostSynchronization(frameInfo.commandBuffer, frameIndex % 2);
+            }
 
             RenderEditorPickingPass(renderer, frameInfo);
 

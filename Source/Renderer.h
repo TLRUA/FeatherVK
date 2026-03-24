@@ -161,6 +161,10 @@ namespace FeatherVK {
             return m_worldPosImage[index];
         };
 
+        const std::shared_ptr<Image> &getRayTracingGuideImageColor(int index) const {
+            return m_rayTracingGuideImage[index];
+        };
+
         const std::shared_ptr<Image> &getDenoisingAccumulationImageColor() const {
             return m_denoisingAccumulationImage;
         };
@@ -215,6 +219,7 @@ namespace FeatherVK {
         std::vector<std::shared_ptr<Image>> m_shadowTermImageColors;
         std::vector<std::shared_ptr<Image>> m_shadowMomentsImageColors;
         std::vector<std::shared_ptr<Image>> m_worldPosImage;
+        std::vector<std::shared_ptr<Image>> m_rayTracingGuideImage;
         std::shared_ptr<Image> m_denoisingAccumulationImage;
         std::shared_ptr<Sampler> m_offscreenSampler;
         std::shared_ptr<Image> offscreenImageDepth;

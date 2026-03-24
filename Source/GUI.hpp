@@ -106,6 +106,10 @@ namespace FeatherVK {
         static void UpdateLayout(ImVec2 windowExtent) {
             viewportLayoutWidth = std::max(1.0f, SnapToPixel(windowExtent.x));
             viewportLayoutHeight = std::max(1.0f, SnapToPixel(windowExtent.y));
+            toolbarRect = {0.0f, 0.0f, viewportLayoutWidth, std::min(ComputeToolbarHeight(), viewportLayoutHeight)};
+
+            const float editorPanelsTop = toolbarRect.Bottom();
+            const float editorPanelsHeight = std::max(1.0f, viewportLayoutHeight - toolbarRect.height);
 
             const float minEditorPanelsWidth = MinInspectorPanelWidth + InspectorHierarchySplitterWidth + MinHierarchyPanelWidth;
             const float maxEditorPanelsWidth = std::max(
@@ -122,17 +126,17 @@ namespace FeatherVK {
                 MinHierarchyPanelWidth,
                 editorPanelsWidth - inspectorPanelWidth - InspectorHierarchySplitterWidth);
 
-            inspectorPanelRect = {0.0f, 0.0f, inspectorPanelWidth, viewportLayoutHeight};
+            inspectorPanelRect = {0.0f, editorPanelsTop, inspectorPanelWidth, editorPanelsHeight};
             hierarchyPanelRect = {
                 inspectorPanelRect.Right() + InspectorHierarchySplitterWidth,
-                0.0f,
+                editorPanelsTop,
                 SnapToPixel(hierarchyPanelWidth),
-                viewportLayoutHeight};
+                editorPanelsHeight};
             scenePanelRect = {
                 editorPanelsWidth + HierarchySceneSplitterWidth,
-                0.0f,
+                editorPanelsTop,
                 std::max(1.0f, viewportLayoutWidth - editorPanelsWidth - HierarchySceneSplitterWidth),
-                viewportLayoutHeight};
+                editorPanelsHeight};
             sceneContentRect = FitRectToAspect(scenePanelRect, SceneAspectRatio);
 
             if (committedScenePanelRect.width <= 0.0f || committedScenePanelRect.height <= 0.0f) {
@@ -142,11 +146,11 @@ namespace FeatherVK {
         }
 
         [[nodiscard]] static const ViewportRect &GetScenePanelRect() {
-            return committedScenePanelRect;
+            return layoutInteractionActive ? committedScenePanelRect : scenePanelRect;
         }
 
         [[nodiscard]] static const ViewportRect &GetSceneContentRect() {
-            return committedSceneContentRect;
+            return layoutInteractionActive ? committedSceneContentRect : sceneContentRect;
         }
 
         [[nodiscard]] static bool IsLayoutInteractionActive() {
@@ -163,7 +167,8 @@ namespace FeatherVK {
                                TransformService &transformService,
                                FrameInfo &frameInfo) {
             (void)windowExtent;
-            ShowInspectorRayTracing(windowExtent, sceneRegistry, gameObjectDescs, selectionService, transformService, frameInfo);
+            ShowToolbarWindow(frameInfo);
+            ShowInspectorRayTracing(windowExtent, sceneRegistry, gameObjectDescs, entityCommandService, selectionService, transformService, frameInfo);
             ShowHierarchyWindow(sceneRegistry, hierarchyService, entityCommandService, selectionService, transformService, frameInfo);
             DrawSplitters();
         }
@@ -177,7 +182,8 @@ namespace FeatherVK {
                                TransformService &transformService,
                                FrameInfo &frameInfo) {
             (void)windowExtent;
-            ShowInspectorRaster(windowExtent, sceneRegistry, materials, selectionService, transformService, frameInfo);
+            ShowToolbarWindow(frameInfo);
+            ShowInspectorRaster(windowExtent, sceneRegistry, materials, entityCommandService, selectionService, transformService, frameInfo);
             ShowHierarchyWindow(sceneRegistry, hierarchyService, entityCommandService, selectionService, transformService, frameInfo);
             DrawSplitters();
         }
@@ -203,12 +209,16 @@ namespace FeatherVK {
         inline static float viewportLayoutHeight = static_cast<float>(SCENE_HEIGHT);
         inline static bool layoutInteractionActive = false;
         inline static bool layoutInteractionActiveThisFrame = false;
+        inline static constexpr float ToolbarHorizontalPadding = 10.0f;
+        inline static constexpr float ToolbarVerticalPadding = 4.0f;
+        inline static constexpr float ToolbarItemSpacingX = 8.0f;
         inline static constexpr float InspectorHierarchySplitterWidth = 10.0f;
         inline static constexpr float HierarchySceneSplitterWidth = 10.0f;
         inline static constexpr float MinInspectorPanelWidth = 180.0f;
         inline static constexpr float MinHierarchyPanelWidth = 180.0f;
         inline static constexpr float MinScenePanelWidth = 180.0f;
         inline static constexpr float SceneAspectRatio = static_cast<float>(SCENE_WIDTH) / static_cast<float>(SCENE_HEIGHT);
+        inline static ViewportRect toolbarRect{};
         inline static ViewportRect inspectorPanelRect{};
         inline static ViewportRect hierarchyPanelRect{};
         inline static ViewportRect scenePanelRect{};
@@ -227,6 +237,15 @@ namespace FeatherVK {
 
         static float SnapToPixel(float value) {
             return std::max(0.0f, std::round(value));
+        }
+
+        static float ComputeToolbarHeight() {
+            if (ImGui::GetCurrentContext() == nullptr) {
+                return 32.0f;
+            }
+
+            const float rowHeight = std::max(ImGui::GetFrameHeight(), ImGui::GetTextLineHeight());
+            return SnapToPixel(rowHeight + ToolbarVerticalPadding * 2.0f);
         }
 
         static ViewportRect FitRectToAspect(const ViewportRect &containerRect, float aspectRatio) {
@@ -272,13 +291,14 @@ namespace FeatherVK {
         static void DrawVerticalSplitter(const char *windowName,
                                          const char *buttonName,
                                          float x,
+                                         float y,
                                          float height,
                                          float width,
                                          const std::function<void(float)> &onDrag) {
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
             ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
             ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 0));
-            ImGui::SetNextWindowPos(ImVec2(x, 0.0f), ImGuiCond_Always);
+            ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
             ImGui::SetNextWindowSize(ImVec2(width, height), ImGuiCond_Always);
 
             constexpr ImGuiWindowFlags splitterWindowFlags =
@@ -323,6 +343,7 @@ namespace FeatherVK {
                 "InspectorHierarchySplitter",
                 "##InspectorHierarchySplitterButton",
                 inspectorPanelRect.Right(),
+                inspectorPanelRect.y,
                 inspectorPanelRect.height,
                 InspectorHierarchySplitterWidth,
                 [](float deltaX) {
@@ -333,12 +354,50 @@ namespace FeatherVK {
                 "HierarchySceneSplitter",
                 "##HierarchySceneSplitterButton",
                 editorPanelsWidth,
+                hierarchyPanelRect.y,
                 hierarchyPanelRect.height,
                 HierarchySceneSplitterWidth,
                 [](float deltaX) {
                     editorPanelsWidth = ClampEditorPanelsWidth(editorPanelsWidth + deltaX, viewportLayoutWidth);
                     inspectorPanelWidth = ClampInspectorPanelWidth(inspectorPanelWidth);
                 });
+        }
+
+        static void ShowToolbarWindow(FrameInfo &frameInfo) {
+            ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoDecoration |
+                                           ImGuiWindowFlags_NoMove |
+                                           ImGuiWindowFlags_NoResize |
+                                           ImGuiWindowFlags_NoSavedSettings |
+                                           ImGuiWindowFlags_NoScrollbar |
+                                           ImGuiWindowFlags_NoScrollWithMouse |
+                                           ImGuiWindowFlags_NoCollapse;
+
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ToolbarHorizontalPadding, ToolbarVerticalPadding));
+            ImGui::SetNextWindowPos(ImVec2(toolbarRect.x, toolbarRect.y), ImGuiCond_Always);
+            ImGui::SetNextWindowSize(ImVec2(toolbarRect.width, toolbarRect.height), ImGuiCond_Always);
+            ImGui::Begin("Editor Toolbar", nullptr, windowFlags);
+
+            const float rowHeight = std::max(ImGui::GetFrameHeight(), ImGui::GetTextLineHeight());
+            const float rowOffsetY = std::max(0.0f, (toolbarRect.height - rowHeight) * 0.5f);
+            ImGui::SetCursorPosY(rowOffsetY);
+
+            const bool sceneDirty = frameInfo.scenePersistence != nullptr && frameInfo.scenePersistence->IsSceneDirty();
+            if (!sceneDirty) {
+                ImGui::BeginDisabled();
+            }
+            if (ImGui::Button("Save") && frameInfo.scenePersistence != nullptr) {
+                frameInfo.scenePersistence->RequestSceneSave();
+            }
+            if (!sceneDirty) {
+                ImGui::EndDisabled();
+            }
+
+            ImGui::SameLine(0.0f, ToolbarItemSpacingX);
+            ImGui::AlignTextToFramePadding();
+            const ImVec4 statusColor = sceneDirty ? ImVec4(0.95f, 0.75f, 0.25f, 1.0f) : ImVec4(0.45f, 0.90f, 0.45f, 1.0f);
+            ImGui::TextColored(statusColor, "%s", sceneDirty ? "Unsaved Changes" : "Saved");
+            ImGui::End();
+            ImGui::PopStyleVar();
         }
 
         static void ShowHierarchyWindow(ECS::SceneRegistry *sceneRegistry,
@@ -362,7 +421,7 @@ namespace FeatherVK {
             ShowPerformance(frameInfo);
             if (sceneRegistry != nullptr && ImGui::TreeNode("Hierarchy")) {
                 ImGui::BeginChild("HierarchyTreePanel", ImVec2(0, 0), false, ImGuiWindowFlags_None);
-                ShowHierarchyChildren(hierarchyService, std::nullopt, *sceneRegistry, selectionService, entityCommandService);
+                ShowHierarchyChildren(hierarchyService, std::nullopt, *sceneRegistry, selectionService, entityCommandService, frameInfo);
                 ShowHierarchyBackgroundContextMenu(entityCommandService);
                 ImGui::EndChild();
                 entityCommandService.ApplyPendingCommands(*sceneRegistry, hierarchyService, transformService, selectionService, frameInfo);
@@ -375,6 +434,7 @@ namespace FeatherVK {
         static void ShowInspectorRayTracing(ImVec2 windowExtent,
                                             ECS::SceneRegistry *sceneRegistry,
                                             std::vector<EntityDesc> *gameObjectDescs,
+                                            EntityCommandService &entityCommandService,
                                             EditorSelectionService &selectionService,
                                             TransformService &transformService,
                                             FrameInfo &frameInfo) {
@@ -387,13 +447,14 @@ namespace FeatherVK {
             ImGui::SetNextWindowSize(ImVec2(inspectorPanelRect.width, inspectorPanelRect.height), ImGuiCond_Always);
             ImGui::Begin("Inspector", nullptr, window_flags);
 
-            ShowInspectorContent(sceneRegistry, gameObjectDescs, nullptr, selectionService, transformService, frameInfo);
+            ShowInspectorContent(sceneRegistry, gameObjectDescs, nullptr, entityCommandService, selectionService, transformService, frameInfo);
             ImGui::End();
         }
 #else
         static void ShowInspectorRaster(ImVec2 windowExtent,
                                         ECS::SceneRegistry *sceneRegistry,
                                         Material::Map *materials,
+                                        EntityCommandService &entityCommandService,
                                         EditorSelectionService &selectionService,
                                         TransformService &transformService,
                                         FrameInfo &frameInfo) {
@@ -406,7 +467,7 @@ namespace FeatherVK {
             ImGui::SetNextWindowSize(ImVec2(inspectorPanelRect.width, inspectorPanelRect.height), ImGuiCond_Always);
             ImGui::Begin("Inspector", nullptr, window_flags);
 
-            ShowInspectorContent(sceneRegistry, nullptr, materials, selectionService, transformService, frameInfo);
+            ShowInspectorContent(sceneRegistry, nullptr, materials, entityCommandService, selectionService, transformService, frameInfo);
             ImGui::End();
         }
 #endif
@@ -414,6 +475,7 @@ namespace FeatherVK {
         static void ShowInspectorContent(ECS::SceneRegistry *sceneRegistry,
                                          std::vector<EntityDesc> *gameObjectDescs,
                                          Material::Map *materials,
+                                         EntityCommandService &entityCommandService,
                                          EditorSelectionService &selectionService,
                                          TransformService &transformService,
                                          FrameInfo &frameInfo) {
@@ -427,7 +489,7 @@ namespace FeatherVK {
                 return;
             }
 
-            EditorInspectorSystem::RenderSelectedEntity(sceneRegistry, transformService, selectedId, gameObjectDescs, materials, frameInfo);
+            EditorInspectorSystem::RenderSelectedEntity(sceneRegistry, transformService, entityCommandService, selectedId, gameObjectDescs, materials, frameInfo);
         }
 
         static void ShowPerformance(FrameInfo &frameInfo) {
@@ -444,7 +506,8 @@ namespace FeatherVK {
                                           std::optional<id_t> parentEntityId,
                                           ECS::SceneRegistry &sceneRegistry,
                                           EditorSelectionService &selectionService,
-                                          EntityCommandService &entityCommandService) {
+                                          EntityCommandService &entityCommandService,
+                                          FrameInfo &frameInfo) {
             const auto &children = parentEntityId.has_value()
                 ? hierarchyService.GetTree().GetChildren(*parentEntityId)
                 : hierarchyService.GetTree().GetRootChildren();
@@ -504,7 +567,7 @@ namespace FeatherVK {
                     if (cancel) {
                         CancelHierarchyRename();
                     } else if (confirm || deactivated) {
-                        CommitHierarchyRename(sceneRegistry);
+                        CommitHierarchyRename(sceneRegistry, frameInfo);
                     }
                 }
 
@@ -513,11 +576,11 @@ namespace FeatherVK {
                 }
 
                 ShowHierarchyNodeContextMenu(entityId, sceneRegistry, selectionService, entityCommandService);
-                DrawSelectionRect(entityId, sceneRegistry);
+                DrawSelectionRect(entityId, sceneRegistry, frameInfo);
                 ImGui::PopID();
 
                 if (!grandChildren.empty() && isOpen) {
-                    ShowHierarchyChildren(hierarchyService, entityId, sceneRegistry, selectionService, entityCommandService);
+                    ShowHierarchyChildren(hierarchyService, entityId, sceneRegistry, selectionService, entityCommandService, frameInfo);
                     ImGui::TreePop();
                 }
             }
@@ -561,6 +624,18 @@ namespace FeatherVK {
                 if (ImGui::MenuItem("Cube")) {
                     entityCommandService.QueueCreateEntity(EntityCommandService::EntityPreset::Cube, parentEntityId);
                 }
+                if (ImGui::MenuItem("Sphere")) {
+                    entityCommandService.QueueCreateEntity(EntityCommandService::EntityPreset::Sphere, parentEntityId);
+                }
+                if (ImGui::MenuItem("Cylinder")) {
+                    entityCommandService.QueueCreateEntity(EntityCommandService::EntityPreset::Cylinder, parentEntityId);
+                }
+                if (ImGui::MenuItem("Plane")) {
+                    entityCommandService.QueueCreateEntity(EntityCommandService::EntityPreset::Plane, parentEntityId);
+                }
+                if (ImGui::MenuItem("Torus")) {
+                    entityCommandService.QueueCreateEntity(EntityCommandService::EntityPreset::Torus, parentEntityId);
+                }
                 ImGui::EndMenu();
             }
 
@@ -598,7 +673,7 @@ namespace FeatherVK {
             }
         }
 
-        static void DrawSelectionRect(id_t entityId, ECS::SceneRegistry &sceneRegistry) {
+        static void DrawSelectionRect(id_t entityId, ECS::SceneRegistry &sceneRegistry, FrameInfo &frameInfo) {
             auto extent = ImGui::GetContentRegionAvail();
             ImGui::SameLine(extent.x);
 
@@ -611,6 +686,7 @@ namespace FeatherVK {
 
             if (requestedActive != currentActive) {
                 sceneRegistry.SetEntityActive(entityId, requestedActive);
+                MarkSceneDirty(frameInfo, true);
             }
         }
 
@@ -640,7 +716,7 @@ namespace FeatherVK {
             hierarchyRenameState = {};
         }
 
-        static void CommitHierarchyRename(ECS::SceneRegistry &sceneRegistry) {
+        static void CommitHierarchyRename(ECS::SceneRegistry &sceneRegistry, FrameInfo &frameInfo) {
             if (!sceneRegistry.IsAlive(hierarchyRenameState.entityId)) {
                 CancelHierarchyRename();
                 return;
@@ -648,10 +724,20 @@ namespace FeatherVK {
 
             std::string newName = hierarchyRenameState.buffer.data();
             TrimInPlace(newName);
-            if (!newName.empty()) {
+            if (!newName.empty() && newName != sceneRegistry.GetEntityName(hierarchyRenameState.entityId)) {
                 sceneRegistry.SetEntityName(hierarchyRenameState.entityId, std::move(newName));
+                MarkSceneDirty(frameInfo, false);
             }
             CancelHierarchyRename();
+        }
+
+        static void MarkSceneDirty(FrameInfo &frameInfo, bool updateScene) {
+            if (updateScene) {
+                frameInfo.sceneUpdated = true;
+            }
+            if (frameInfo.scenePersistence != nullptr) {
+                frameInfo.scenePersistence->MarkSceneDirty();
+            }
         }
 
         static void TrimInPlace(std::string &value) {

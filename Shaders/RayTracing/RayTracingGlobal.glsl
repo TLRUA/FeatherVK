@@ -20,6 +20,7 @@ struct hitPayLoad {
     float primaryShadowVisibility;
     vec3 primaryDirectLighting;
     vec4 closestHitWorldPos;
+    vec4 primaryMaterialGuide;
     int recursionDepth;
 };
 

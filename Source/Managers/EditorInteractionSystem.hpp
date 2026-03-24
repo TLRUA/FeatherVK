@@ -159,6 +159,7 @@ namespace FeatherVK {
                     *frameInfo.sceneRegistry,
                     selectedId,
                     m_gizmoState.dragStartRelativeTranslation + delta);
+                MarkSceneDirty(frameInfo);
                 return true;
             }
 
@@ -625,6 +626,14 @@ namespace FeatherVK {
 
             if (glm::dot(delta, delta) > std::numeric_limits<float>::epsilon()) {
                 m_transformService.Translate(*frameInfo.sceneRegistry, selectedId, delta);
+                MarkSceneDirty(frameInfo);
+            }
+        }
+
+        static void MarkSceneDirty(FrameInfo &frameInfo) {
+            frameInfo.sceneUpdated = true;
+            if (frameInfo.scenePersistence != nullptr) {
+                frameInfo.scenePersistence->MarkSceneDirty();
             }
         }
 

@@ -1,70 +1,55 @@
 [
-  {
-    "id": 1,
-    "type": "MeshRendererComponent",
-    "model": "sphere.obj",
-    "materialId": 2
-  },
-  {
-    "id": 2,
-    "type": "MeshRendererComponent",
-    "model": "Ground.obj",
-    "materialId": 3
-  },
-  {
-    "id": 9,
-    "type": "CameraComponent"
-  },
-  {
-    "id": 10,
-    "type": "CameraMovementComponent"
-  },
-  {
-    "id": 12,
-    "type": "MeshRendererComponent",
-    "model": "cube.obj",
-    "materialId": 4
-  },
-  {
-    "id": 13,
-    "type": "MeshRendererComponent",
-    "model": "cube.obj",
-    "materialId": 5
-  },
-  {
-    "id": 14,
-    "type": "MeshRendererComponent",
-    "model": "cube.obj",
-    "materialId": 6
-  },
-  {
-    "id": 15,
-    "type": "MeshRendererComponent",
-    "model": "smooth_vase.obj",
-    "materialId": 8
-  },
-  {
-    "id": 16,
-    "type": "RigidBodyComponent"
-  },
-  {
-    "id": 50,
-    "type": "LightComponent",
-    "category": "Directional",
-    "color": [1, 1, 1],
-    "intensity": 3
-  },
-  {
-    "id": 51,
-    "type": "LightComponent",
-    "category": "Point",
-    "color": [1, 1, 1],
-    "intensity": 3
-  },
-  {
-    "id": 60,
-    "type": "MeshRendererComponent",
-    "model": "sphere.obj",
-    "materialId": 60
-  }
+    {
+        "type": "LightComponent",
+        "category": "Directional",
+        "color": [
+            1.0,
+            1.0,
+            1.0
+        ],
+        "intensity": 1.0,
+        "id": 1
+    },
+    {
+        "type": "CameraComponent",
+        "id": 2
+    },
+    {
+        "type": "CameraMovementComponent",
+        "moveSpeed": 3.0,
+        "lookSpeed": 2.0,
+        "focusMoveTime": 1.0,
+        "id": 3
+    },
+    {
+        "type": "MeshRendererComponent",
+        "model": "cube.obj",
+        "materialId": 2,
+        "visible": true,
+        "renderLayer": 0,
+        "castShadow": true,
+        "receiveShadow": true,
+        "pbrOverride": {
+            "albedo": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "normal": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "metallic": 1.0,
+            "roughness": 0.0,
+            "opacity": 1.0,
+            "ao": 0.0,
+            "emissive": [
+                0.0,
+                0.0,
+                0.0
+            ]
+        },
+        "id": 4
+    }
 ]

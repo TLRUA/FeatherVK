@@ -14,6 +14,7 @@
 #include "../Components/RigidBodyComponent.hpp"
 #include "../Components/TransformComponent.hpp"
 #include "../Components/UIComponent.hpp"
+#include "../Managers/EntityCommandService.hpp"
 #include "../Managers/TransformService.hpp"
 #include "Imgui/imgui.h"
 #include "../Utils/Utils.hpp"
@@ -23,6 +24,7 @@ namespace FeatherVK {
     public:
         static void RenderSelectedEntity(ECS::SceneRegistry *sceneRegistry,
                                          TransformService &transformService,
+                                         EntityCommandService &entityCommandService,
                                          id_t selectedId,
                                          std::vector<EntityDesc> *gameObjectDescs,
                                          Material::Map *materials,
@@ -38,6 +40,7 @@ namespace FeatherVK {
             RenderTransform(sceneRegistry, transformService, selectedId, frameInfo);
 
             if (ImGui::TreeNode("Components")) {
+                RenderAddComponent(sceneRegistry, entityCommandService, selectedId, frameInfo);
                 RenderCameraMovement(sceneRegistry, selectedId, frameInfo);
                 RenderObjectMovement(sceneRegistry, selectedId, frameInfo);
                 RenderMeshRenderer(sceneRegistry, selectedId, gameObjectDescs, materials, frameInfo);
@@ -56,6 +59,126 @@ namespace FeatherVK {
             return sceneRegistry != nullptr && sceneRegistry->TryGetComponent(entityId, component) ? component : nullptr;
         }
 
+        static void MarkSceneDirty(FrameInfo &frameInfo) {
+            frameInfo.sceneUpdated = true;
+            if (frameInfo.scenePersistence != nullptr) {
+                frameInfo.scenePersistence->MarkSceneDirty();
+            }
+        }
+
+        static glm::vec3 CreateLightEmitterEmissive(const LightComponent &lightComponent) {
+            const glm::vec3 color{
+                std::max(lightComponent.GetColor().x, 0.0f),
+                std::max(lightComponent.GetColor().y, 0.0f),
+                std::max(lightComponent.GetColor().z, 0.0f)};
+            return color * std::max(lightComponent.GetLightIntensity(), 0.0f);
+        }
+
+        static PBR CreateLightEmitterPbr(const MeshRendererComponent &meshRenderer,
+                                         const LightComponent &lightComponent) {
+            PBR pbr = meshRenderer.HasPbrOverride() ? *meshRenderer.GetPbrOverride() : PBR{};
+            if (!meshRenderer.HasPbrOverride() || pbr.albedo == glm::vec3{-1.0f}) {
+                pbr.albedo = glm::vec3{1.0f};
+            }
+            if (!meshRenderer.HasPbrOverride() || pbr.normal == glm::vec3{-1.0f}) {
+                pbr.normal = glm::vec3{0.0f};
+            }
+            if (!meshRenderer.HasPbrOverride() || pbr.metallic < 0.0f) {
+                pbr.metallic = 0.0f;
+            }
+            if (!meshRenderer.HasPbrOverride() || pbr.roughness < 0.0f) {
+                pbr.roughness = 0.35f;
+            }
+            if (!meshRenderer.HasPbrOverride() || pbr.opacity < 0.0f) {
+                pbr.opacity = 1.0f;
+            }
+            if (!meshRenderer.HasPbrOverride() || pbr.AO < 0.0f) {
+                pbr.AO = 1.0f;
+            }
+            pbr.emissive = CreateLightEmitterEmissive(lightComponent);
+            return pbr;
+        }
+
+        static void SyncLightEmitterEmissive(ECS::SceneRegistry *sceneRegistry,
+                                             id_t entityId,
+                                             const LightComponent &lightComponent) {
+            auto *meshRenderer = TryGet<MeshRendererComponent>(sceneRegistry, entityId);
+            if (meshRenderer == nullptr) {
+                return;
+            }
+            meshRenderer->SetPbrOverride(CreateLightEmitterPbr(*meshRenderer, lightComponent));
+        }
+
+        static bool IsLightEmitterMesh(ECS::SceneRegistry *sceneRegistry, id_t entityId) {
+            return TryGet<LightComponent>(sceneRegistry, entityId) != nullptr &&
+                   TryGet<MeshRendererComponent>(sceneRegistry, entityId) != nullptr;
+        }
+
+        static bool ApplyLightEmitterMeshConstraints(ECS::SceneRegistry *sceneRegistry, id_t entityId) {
+            auto *lightComponent = TryGet<LightComponent>(sceneRegistry, entityId);
+            auto *meshRenderer = TryGet<MeshRendererComponent>(sceneRegistry, entityId);
+            if (lightComponent == nullptr || meshRenderer == nullptr) {
+                return false;
+            }
+
+            bool changed = false;
+            if (meshRenderer->CastsShadow()) {
+                meshRenderer->SetCastShadow(false);
+                changed = true;
+            }
+            if (meshRenderer->ReceivesShadow()) {
+                meshRenderer->SetReceiveShadow(false);
+                changed = true;
+            }
+
+            const PBR emitterPbr = CreateLightEmitterPbr(*meshRenderer, *lightComponent);
+            if (!meshRenderer->HasPbrOverride() || meshRenderer->GetPbrOverride()->emissive != emitterPbr.emissive) {
+                meshRenderer->SetPbrOverride(emitterPbr);
+                changed = true;
+            }
+            return changed;
+        }
+
+        static void RenderAddComponent(ECS::SceneRegistry *sceneRegistry,
+                                       EntityCommandService &entityCommandService,
+                                       id_t entityId,
+                                       FrameInfo &frameInfo) {
+            if (sceneRegistry == nullptr || !sceneRegistry->IsAlive(entityId)) {
+                return;
+            }
+
+            if (ImGui::Button("Add Component")) {
+                ImGui::OpenPopup("AddComponentPopup");
+            }
+
+            if (ImGui::BeginPopup("AddComponentPopup")) {
+                const auto options = entityCommandService.GetAvailableComponentOptions(*sceneRegistry, entityId);
+                if (options.empty()) {
+                    ImGui::TextDisabled("No supported components available");
+                }
+
+                for (const auto &option: options) {
+                    if (option.enabled) {
+                        if (ImGui::MenuItem(option.label)) {
+                            if (entityCommandService.AddComponent(*sceneRegistry, entityId, option.preset, frameInfo)) {
+                                ImGui::CloseCurrentPopup();
+                                break;
+                            }
+                        }
+                    } else {
+                        ImGui::MenuItem(option.label, nullptr, false, false);
+                        if (option.disabledReason != nullptr) {
+                            ImGui::TextDisabled("  %s", option.disabledReason);
+                        }
+                    }
+                }
+
+                ImGui::EndPopup();
+            }
+
+            ImGui::Separator();
+        }
+
         static void RenderTransform(ECS::SceneRegistry *sceneRegistry,
                                     TransformService &transformService,
                                     id_t entityId,
@@ -70,7 +193,7 @@ namespace FeatherVK {
             glm::vec3 tempPosition = transform->GetRelativeTranslation();
             if (ImGui::InputFloat3("##Position", &tempPosition.x)) {
                 transformService.SetTranslation(*sceneRegistry, entityId, tempPosition);
-                frameInfo.sceneUpdated = true;
+                MarkSceneDirty(frameInfo);
             }
 
             ImGui::Text("Rotation:");
@@ -78,7 +201,7 @@ namespace FeatherVK {
             glm::vec3 rotationByDegrees = glm::degrees(transform->GetRelativeRotation());
             if (ImGui::InputFloat3("##Rotation", &rotationByDegrees.x)) {
                 transformService.SetRotation(*sceneRegistry, entityId, glm::radians(rotationByDegrees));
-                frameInfo.sceneUpdated = true;
+                MarkSceneDirty(frameInfo);
             }
 
             ImGui::Text("Scale:");
@@ -86,7 +209,7 @@ namespace FeatherVK {
             glm::vec3 tempScale = transform->GetRelativeScale();
             if (ImGui::InputFloat3("##Scale", &tempScale.x)) {
                 transformService.SetScale(*sceneRegistry, entityId, tempScale);
-                frameInfo.sceneUpdated = true;
+                MarkSceneDirty(frameInfo);
             }
 
             ImGui::TreePop();
@@ -99,13 +222,13 @@ namespace FeatherVK {
             }
 
             if (ImGui::InputFloat("Move Speed", &component->moveSpeed)) {
-                frameInfo.sceneUpdated = true;
+                MarkSceneDirty(frameInfo);
             }
             if (ImGui::InputFloat("Look Speed", &component->lookSpeed)) {
-                frameInfo.sceneUpdated = true;
+                MarkSceneDirty(frameInfo);
             }
             if (ImGui::InputFloat("Focus Move Time", &component->focusMoveTime)) {
-                frameInfo.sceneUpdated = true;
+                MarkSceneDirty(frameInfo);
             }
 
             ImGui::TreePop();
@@ -118,7 +241,7 @@ namespace FeatherVK {
             }
 
             if (ImGui::InputFloat("Move Speed", &component->moveSpeed)) {
-                frameInfo.sceneUpdated = true;
+                MarkSceneDirty(frameInfo);
             }
 
             ImGui::TreePop();
@@ -134,6 +257,10 @@ namespace FeatherVK {
             if (component == nullptr || !ImGui::TreeNode("MeshRendererComponent")) {
                 return;
             }
+            const bool isLightEmitterMesh = IsLightEmitterMesh(sceneRegistry, entityId);
+            if (isLightEmitterMesh && ApplyLightEmitterMeshConstraints(sceneRegistry, entityId)) {
+                MarkSceneDirty(frameInfo);
+            }
 
             if (component->GetModelPtr() != nullptr) {
                 ImGui::Text("Model:       %s", component->GetModelPtr()->GetName().c_str());
@@ -147,25 +274,51 @@ namespace FeatherVK {
             bool visible = component->IsVisible();
             if (ImGui::Checkbox("Visible", &visible)) {
                 component->SetVisible(visible);
-                frameInfo.sceneUpdated = true;
+                MarkSceneDirty(frameInfo);
             }
             bool castShadow = component->CastsShadow();
+            if (isLightEmitterMesh) {
+                castShadow = false;
+                ImGui::BeginDisabled(true);
+            }
             if (ImGui::Checkbox("Cast Shadow", &castShadow)) {
                 component->SetCastShadow(castShadow);
-                frameInfo.sceneUpdated = true;
+                MarkSceneDirty(frameInfo);
+            }
+            if (isLightEmitterMesh) {
+                ImGui::EndDisabled();
             }
             bool receiveShadow = component->ReceivesShadow();
+            if (isLightEmitterMesh) {
+                receiveShadow = false;
+                ImGui::BeginDisabled(true);
+            }
             if (ImGui::Checkbox("Receive Shadow", &receiveShadow)) {
                 component->SetReceiveShadow(receiveShadow);
-                frameInfo.sceneUpdated = true;
+                MarkSceneDirty(frameInfo);
+            }
+            if (isLightEmitterMesh) {
+                ImGui::EndDisabled();
             }
             uint32_t renderLayer = component->GetRenderLayer();
             if (ImGui::InputScalar("Render Layer", ImGuiDataType_U32, &renderLayer)) {
                 component->SetRenderLayer(std::min(renderLayer, 7u));
-                frameInfo.sceneUpdated = true;
+                MarkSceneDirty(frameInfo);
             }
 
 #ifdef RAY_TRACING
+            if (isLightEmitterMesh &&
+                gameObjectDescs != nullptr &&
+                rayTracingInstance != nullptr &&
+                rayTracingInstance->IsValid() &&
+                static_cast<size_t>(rayTracingInstance->instanceId) < gameObjectDescs->size()) {
+                EntityDesc &entityDesc = gameObjectDescs->at(rayTracingInstance->instanceId);
+                if (component->HasPbrOverride()) {
+                    entityDesc.pbr = *component->GetPbrOverride();
+                }
+                entityDesc.renderOptions = 0;
+            }
+
             if (rayTracingInstance != nullptr && rayTracingInstance->IsValid()) {
                 ImGui::Text("RT Instance: %u", rayTracingInstance->instanceId);
             }
@@ -177,6 +330,11 @@ namespace FeatherVK {
                 ImGui::TreeNode("PBR")) {
                 const EntityDesc &desc = gameObjectDescs->at(rayTracingInstance->instanceId);
                 PBR editablePbr = component->HasPbrOverride() ? *component->GetPbrOverride() : desc.pbr;
+                if (isLightEmitterMesh) {
+                    if (auto *lightComponent = TryGet<LightComponent>(sceneRegistry, entityId); lightComponent != nullptr) {
+                        editablePbr.emissive = CreateLightEmitterEmissive(*lightComponent);
+                    }
+                }
                 auto validProperty = PBRLoader::GetValidProperty(editablePbr);
                 bool pbrChanged = false;
                 for (const auto &item: validProperty) {
@@ -221,19 +379,31 @@ namespace FeatherVK {
                             ImGui::Text("Emissive:");
                             ImGui::SameLine(120);
                             ImGui::SetNextItemWidth(140);
+                            if (isLightEmitterMesh) {
+                                ImGui::BeginDisabled(true);
+                            }
                             if (ImGui::InputFloat3("##Emissive", &editablePbr.emissive.x)) {
                                 pbrChanged = true;
                             }
-                            Utils::ClampVec3(editablePbr.emissive, 0, 1);
+                            if (isLightEmitterMesh) {
+                                ImGui::EndDisabled();
+                            } else {
+                                Utils::ClampVec3(editablePbr.emissive, 0, 1);
+                            }
                             break;
                         default:
                             break;
                     }
                 }
                 if (pbrChanged) {
+                    if (isLightEmitterMesh) {
+                        if (auto *lightComponent = TryGet<LightComponent>(sceneRegistry, entityId); lightComponent != nullptr) {
+                            editablePbr.emissive = CreateLightEmitterEmissive(*lightComponent);
+                        }
+                    }
                     component->SetPbrOverride(editablePbr);
                     gameObjectDescs->at(rayTracingInstance->instanceId).pbr = editablePbr;
-                    frameInfo.sceneUpdated = true;
+                    MarkSceneDirty(frameInfo);
                 }
                 ImGui::TreePop();
             }
@@ -265,16 +435,25 @@ namespace FeatherVK {
                 return;
             }
 
+            bool lightChanged = false;
+
             ImGui::Text("Color:");
             ImGui::SameLine(90);
             if (ImGui::InputFloat3("##Color", &component->color.x)) {
-                frameInfo.sceneUpdated = true;
+                Utils::ClampVec3(component->color, 0.0f, 1.0f);
+                lightChanged = true;
             }
 
             ImGui::Text("Intensity:");
             ImGui::SameLine(90);
             if (ImGui::InputFloat("##Intensity", &component->lightIntensity)) {
-                frameInfo.sceneUpdated = true;
+                component->lightIntensity = std::max(component->lightIntensity, 0.0f);
+                lightChanged = true;
+            }
+
+            if (lightChanged) {
+                SyncLightEmitterEmissive(sceneRegistry, entityId, *component);
+                MarkSceneDirty(frameInfo);
             }
 
             ImGui::Text("Type:");
@@ -292,27 +471,27 @@ namespace FeatherVK {
             ImGui::Text("Velocity:");
             ImGui::SameLine(90);
             if (ImGui::InputFloat3("##Velocity", &component->velocity.x)) {
-                frameInfo.sceneUpdated = true;
+                MarkSceneDirty(frameInfo);
             }
 
             ImGui::Text("Omega:");
             ImGui::SameLine(90);
             if (ImGui::InputFloat3("##Omega", &component->omega.x)) {
-                frameInfo.sceneUpdated = true;
+                MarkSceneDirty(frameInfo);
             }
 
             ImGui::Text("Mass:");
             ImGui::SameLine(90);
             if (ImGui::InputFloat("##Mass", &component->totalMass)) {
                 component->inverseMass = component->totalMass > RigidBodyComponent::EPSILON ? 1.0f / component->totalMass : 0.0f;
-                frameInfo.sceneUpdated = true;
+                MarkSceneDirty(frameInfo);
             }
 
             if (ImGui::Checkbox("Use Gravity", &component->useGravity)) {
-                frameInfo.sceneUpdated = true;
+                MarkSceneDirty(frameInfo);
             }
             if (ImGui::Checkbox("Is Kinematic", &component->isKinematic)) {
-                frameInfo.sceneUpdated = true;
+                MarkSceneDirty(frameInfo);
             }
 
             ImGui::TreePop();
@@ -334,3 +513,4 @@ namespace FeatherVK {
         }
     };
 }
+

@@ -90,6 +90,9 @@ namespace FeatherVK {
             if (componentObject.HasMember("receiveShadow")) {
                 component->receiveShadow = componentObject["receiveShadow"].GetBool();
             }
+            if (componentObject.HasMember("pbrOverride") && componentObject["pbrOverride"].IsObject()) {
+                component->SetPbrOverride(PBRLoader::loadPBR(componentObject["pbrOverride"]));
+            }
         }
 
         static void EmplaceLight(ECS::SceneRegistry &sceneRegistry, id_t entityId, const rapidjson::Value &componentObject) {
@@ -139,6 +142,16 @@ namespace FeatherVK {
             }
             if (componentObject.HasMember("useGravity")) {
                 component->useGravity = componentObject["useGravity"].GetBool();
+            }
+            if (componentObject.HasMember("totalMass")) {
+                component->totalMass = componentObject["totalMass"].GetFloat();
+                component->inverseMass = component->totalMass > RigidBodyComponent::EPSILON ? 1.0f / component->totalMass : 0.0f;
+            }
+            if (componentObject.HasMember("restitution")) {
+                component->restitution = componentObject["restitution"].GetFloat();
+            }
+            if (componentObject.HasMember("friction")) {
+                component->friction = componentObject["friction"].GetFloat();
             }
         }
 

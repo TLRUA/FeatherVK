@@ -352,6 +352,7 @@ namespace FeatherVK {
 
         bool ShouldUpdate() const { return m_shouldUpdate; }
         void ClearUpdateFlag() { m_shouldUpdate = false; }
+        bool HasValidTlas() const { return m_tlas != VK_NULL_HANDLE && m_tlasBuffer != nullptr; }
         const VkAccelerationStructureKHR &GetTlasHandle() const { return m_tlas; }
 
     private:

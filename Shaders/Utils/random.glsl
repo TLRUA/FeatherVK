@@ -90,7 +90,7 @@ vec3 sampleGGXReflection(vec3 normal, vec3 viewDirection, float roughness, float
     localView.z = max(localView.z, 0.0001);
 
     // Heitz GGX VNDF sampling. The alpha mapping matches the direct GGX BRDF: alpha = roughness^2.
-    float alpha = max(roughness * roughness, 0.001);
+    float alpha = max(roughness * roughness, 0.0001);
     vec3 stretchedView = normalize(vec3(alpha * localView.x, alpha * localView.y, localView.z));
 
     vec3 tangent1 = stretchedView.z < 0.999
