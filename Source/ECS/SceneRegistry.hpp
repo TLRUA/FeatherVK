@@ -27,9 +27,7 @@ namespace FeatherVK::ECS {
     public:
         EntityId CreateEntity(std::string name = "Entity", bool active = true) {
             const EntityId entityId = m_nextEntityId++;
-            m_entities.emplace(entityId, EntityMeta{std::move(name), active});
-            m_entityOrder.push_back(entityId);
-            return entityId;
+            return RegisterEntity(entityId, std::move(name), active);
         }
 
         EntityId CreateEntityWithId(EntityId entityId, std::string name = "Entity", bool active = true) {
@@ -41,9 +39,7 @@ namespace FeatherVK::ECS {
                 m_nextEntityId = entityId + 1;
             }
 
-            m_entities.emplace(entityId, EntityMeta{std::move(name), active});
-            m_entityOrder.push_back(entityId);
-            return entityId;
+            return RegisterEntity(entityId, std::move(name), active);
         }
 
         bool DestroyEntity(EntityId entityId) {
@@ -189,6 +185,12 @@ namespace FeatherVK::ECS {
         }
 
     private:
+        EntityId RegisterEntity(EntityId entityId, std::string name, bool active) {
+            m_entities.emplace(entityId, EntityMeta{std::move(name), active});
+            m_entityOrder.push_back(entityId);
+            return entityId;
+        }
+
         struct ComponentPool {
             std::vector<EntityId> denseEntities{};
             std::vector<Component *> denseComponents{};

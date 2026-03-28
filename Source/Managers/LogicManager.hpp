@@ -45,11 +45,7 @@ namespace FeatherVK {
                 for (const auto entityId: sceneRegistry.GetEntityOrder()) {
                     if (!sceneRegistry.IsEntityActive(entityId)) continue;
                     ComponentUpdateInfo updateInfo = BuildUpdateInfo(sceneRegistry, frameInfo, rendererInfo, entityId);
-                    for (auto *component: sceneRegistry.GetComponents(entityId)) {
-                        if (component != nullptr) {
-                            component->Start(updateInfo);
-                        }
-                    }
+                    ForEachValidComponent(sceneRegistry, entityId, [&updateInfo](Component *component) { component->Start(updateInfo); });
                 }
                 firstFrame = false;
             }
@@ -64,41 +60,25 @@ namespace FeatherVK {
                 if (meta->onDisabled) {
                     meta->active = false;
                     meta->onDisabled = false;
-                    for (auto *component: sceneRegistry.GetComponents(entityId)) {
-                        if (component != nullptr) {
-                            component->OnDisable(updateInfo);
-                        }
-                    }
+                    ForEachValidComponent(sceneRegistry, entityId, [&updateInfo](Component *component) { component->OnDisable(updateInfo); });
                 }
                 if (meta->onEnabled) {
                     meta->active = true;
                     meta->onEnabled = false;
-                    for (auto *component: sceneRegistry.GetComponents(entityId)) {
-                        if (component != nullptr) {
-                            component->OnEnable(updateInfo);
-                        }
-                    }
+                    ForEachValidComponent(sceneRegistry, entityId, [&updateInfo](Component *component) { component->OnEnable(updateInfo); });
                 }
             }
 
             for (const auto entityId: sceneRegistry.GetEntityOrder()) {
                 if (!sceneRegistry.IsEntityActive(entityId)) continue;
                 ComponentUpdateInfo updateInfo = BuildUpdateInfo(sceneRegistry, frameInfo, rendererInfo, entityId);
-                for (auto *component: sceneRegistry.GetComponents(entityId)) {
-                    if (component != nullptr) {
-                        component->Update(updateInfo);
-                    }
-                }
+                ForEachValidComponent(sceneRegistry, entityId, [&updateInfo](Component *component) { component->Update(updateInfo); });
             }
 
             for (const auto entityId: sceneRegistry.GetEntityOrder()) {
                 if (!sceneRegistry.IsEntityActive(entityId)) continue;
                 ComponentUpdateInfo updateInfo = BuildUpdateInfo(sceneRegistry, frameInfo, rendererInfo, entityId);
-                for (auto *component: sceneRegistry.GetComponents(entityId)) {
-                    if (component != nullptr) {
-                        component->LateUpdate(updateInfo);
-                    }
-                }
+                ForEachValidComponent(sceneRegistry, entityId, [&updateInfo](Component *component) { component->LateUpdate(updateInfo); });
             }
 
             FixedUpdateComponents(frameInfo);
@@ -122,21 +102,13 @@ namespace FeatherVK {
                 for (const auto entityId: sceneRegistry.GetEntityOrder()) {
                     if (!sceneRegistry.IsEntityActive(entityId)) continue;
                     ComponentUpdateInfo updateInfo = BuildUpdateInfo(sceneRegistry, frameInfo, rendererInfo, entityId);
-                    for (auto *component: sceneRegistry.GetComponents(entityId)) {
-                        if (component != nullptr) {
-                            component->FixedUpdate(updateInfo);
-                        }
-                    }
+                    ForEachValidComponent(sceneRegistry, entityId, [&updateInfo](Component *component) { component->FixedUpdate(updateInfo); });
                 }
 
                 for (const auto entityId: sceneRegistry.GetEntityOrder()) {
                     if (!sceneRegistry.IsEntityActive(entityId)) continue;
                     ComponentUpdateInfo updateInfo = BuildUpdateInfo(sceneRegistry, frameInfo, rendererInfo, entityId);
-                    for (auto *component: sceneRegistry.GetComponents(entityId)) {
-                        if (component != nullptr) {
-                            component->LateFixedUpdate(updateInfo);
-                        }
-                    }
+                    ForEachValidComponent(sceneRegistry, entityId, [&updateInfo](Component *component) { component->LateFixedUpdate(updateInfo); });
                 }
             }
             reservedFrameTime = frameTime;
@@ -148,6 +120,15 @@ namespace FeatherVK {
         }
 
     private:
+        template<typename Callback>
+        static void ForEachValidComponent(ECS::SceneRegistry &sceneRegistry, id_t entityId, Callback &&callback) {
+            for (auto *component: sceneRegistry.GetComponents(entityId)) {
+                if (component != nullptr) {
+                    callback(component);
+                }
+            }
+        }
+
         static constexpr id_t InvalidEntityId = std::numeric_limits<id_t>::max();
 
         ComponentUpdateInfo BuildUpdateInfo(ECS::SceneRegistry &sceneRegistry, FrameInfo &frameInfo, RendererInfo &rendererInfo, id_t entityId) const {
@@ -157,7 +138,6 @@ namespace FeatherVK {
             updateInfo.frameInfo = &frameInfo;
             updateInfo.rendererInfo = &rendererInfo;
             sceneRegistry.TryGetComponent(entityId, updateInfo.transform);
-            updateInfo.gameObject = nullptr;
             return updateInfo;
         }
 

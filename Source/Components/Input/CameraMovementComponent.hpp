@@ -23,14 +23,9 @@ namespace FeatherVK {
         float m_focusMoveTime = 1.f;
         float m_lookSpeed{2.f};
         float moveSpeed{3.f};
-        glm::vec2 m_deltaPos{};
-
-        static TransformComponent *ResolveTransform(const ComponentUpdateInfo &updateInfo) {
-            return updateInfo.transform;
-        }
 
         void MoveCamera(const ComponentUpdateInfo &updateInfo) {
-            TransformComponent *cameraTransform = ResolveTransform(updateInfo);
+            TransformComponent *cameraTransform = updateInfo.transform;
             if (cameraTransform == nullptr || updateInfo.frameInfo == nullptr) {
                 return;
             }
@@ -39,10 +34,10 @@ namespace FeatherVK {
 
             static glm::vec2 lastFrameCursorPos = glm::vec2{std::numeric_limits<float>::max()};
             if (rightMousePressed && glm::length(lastFrameCursorPos - curPos) > std::numeric_limits<float>::epsilon()) {
-                m_deltaPos = curPos - lastPos;
+                const glm::vec2 deltaPos = curPos - lastPos;
                 lastFrameCursorPos = curPos;
-                rotation.x -= m_deltaPos.y;
-                rotation.y += m_deltaPos.x;
+                rotation.x -= deltaPos.y;
+                rotation.y += deltaPos.x;
             }
 
             if (glm::dot(rotation, rotation) > std::numeric_limits<float>::epsilon()) {
@@ -71,7 +66,7 @@ namespace FeatherVK {
         }
 
         void FocusOnObject(const ComponentUpdateInfo &updateInfo) {
-            TransformComponent *cameraTransform = ResolveTransform(updateInfo);
+            TransformComponent *cameraTransform = updateInfo.transform;
             if (cameraTransform == nullptr || updateInfo.frameInfo == nullptr || updateInfo.rendererInfo == nullptr) {
                 return;
             }
