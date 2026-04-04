@@ -86,8 +86,10 @@ namespace FeatherVK {
                             renderView.panelRect,
                             renderView.viewportRect,
                             m_resourceManager.get(),
+                            &m_resourceManager->GetEntityCommandService(),
                             m_resourceManager->GetEditorSelectionService().GetSelectedId(),
-                            false};
+                            false,
+                            nullptr};
 
                     GUI::BeginFrame(ImVec2(static_cast<float>(windowExtent.width), static_cast<float>(windowExtent.height)));
                     UpdateComponents(frameInfo);

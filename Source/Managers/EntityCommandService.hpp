@@ -26,6 +26,8 @@
 #include "../Model.hpp"
 #include "../StructureInfos.h"
 #include "../SwapChain.hpp"
+#include "EditorSceneUtils.hpp"
+#include "LightEmitterMeshUtils.hpp"
 #include "EditorSelectionService.hpp"
 #include "HierarchyService.hpp"
 #include "ModelRepository.hpp"
@@ -143,7 +145,7 @@ namespace FeatherVK {
                 return false;
             }
 
-            MarkSceneDirty(frameInfo, true);
+            EditorSceneUtils::MarkSceneDirty(frameInfo, true);
             return true;
         }
 
@@ -393,7 +395,7 @@ namespace FeatherVK {
                     break;
             }
 
-            MarkSceneDirty(frameInfo, true);
+            EditorSceneUtils::MarkSceneDirty(frameInfo, true);
             return entityId;
         }
 
@@ -431,7 +433,8 @@ namespace FeatherVK {
             const Material::id_t materialId = PickDefaultMeshMaterialId(materials);
             auto *meshRenderer = sceneRegistry.EmplaceComponent<MeshRendererComponent>(entityId, model, materialId);
             if (meshRenderer != nullptr) {
-                meshRenderer->SetPbrOverride(CreateDefaultPrimitivePbr());
+                meshRenderer->SetMeshResourceHandle(m_modelRepository->FindMeshResource(model->GetName()));
+                meshRenderer->SetPbrOverride(LightEmitterMeshUtils::CreateDefaultPrimitivePbr());
                 LightComponent *lightComponent = nullptr;
                 if (sceneRegistry.TryGetComponent(entityId, lightComponent) && lightComponent != nullptr) {
                     ApplyLightEmitterDefaults(sceneRegistry, entityId, *lightComponent);
@@ -542,7 +545,7 @@ namespace FeatherVK {
 
             hierarchyService.RemoveEntity(entityId);
             m_deferredDestroyRequests.emplace_back(std::move(destroyRequest));
-            MarkSceneDirty(frameInfo, true);
+            EditorSceneUtils::MarkSceneDirty(frameInfo, true);
         }
 
         void ProcessDeferredDestroy(ECS::SceneRegistry &sceneRegistry,
@@ -559,17 +562,8 @@ namespace FeatherVK {
                     selectionService.ClearIfSelected(entityId);
                     sceneRegistry.DestroyEntity(entityId);
                 }
-                MarkSceneDirty(frameInfo, true);
+                EditorSceneUtils::MarkSceneDirty(frameInfo, true);
                 requestIt = m_deferredDestroyRequests.erase(requestIt);
-            }
-        }
-
-        static void MarkSceneDirty(FrameInfo &frameInfo, bool updateScene) {
-            if (updateScene) {
-                frameInfo.sceneUpdated = true;
-            }
-            if (frameInfo.scenePersistence != nullptr) {
-                frameInfo.scenePersistence->MarkSceneDirty();
             }
         }
 
@@ -585,51 +579,6 @@ namespace FeatherVK {
             indices.push_back(c);
         }
 
-        static PBR CreateDefaultPrimitivePbr() {
-            PBR pbr{};
-            pbr.albedo = glm::vec3{1.0f, 1.0f, 1.0f};
-            pbr.normal = glm::vec3{0.0f};
-            pbr.metallic = 0.0f;
-            pbr.roughness = 1.0f;
-            pbr.opacity = 1.0f;
-            pbr.AO = 1.0f;
-            pbr.emissive = glm::vec3{0.0f};
-            return pbr;
-        }
-
-        static glm::vec3 CreateLightEmitterEmissive(const LightComponent &lightComponent) {
-            const glm::vec3 color{
-                std::max(lightComponent.GetColor().x, 0.0f),
-                std::max(lightComponent.GetColor().y, 0.0f),
-                std::max(lightComponent.GetColor().z, 0.0f)};
-            return color * std::max(lightComponent.GetLightIntensity(), 0.0f);
-        }
-
-        static PBR CreateLightEmitterPbr(const MeshRendererComponent &meshRenderer,
-                                         const LightComponent &lightComponent) {
-            PBR pbr = meshRenderer.HasPbrOverride() ? *meshRenderer.GetPbrOverride() : CreateDefaultPrimitivePbr();
-            if (pbr.albedo == glm::vec3{-1.0f}) {
-                pbr.albedo = glm::vec3{1.0f};
-            }
-            if (pbr.normal == glm::vec3{-1.0f}) {
-                pbr.normal = glm::vec3{0.0f};
-            }
-            if (pbr.metallic < 0.0f) {
-                pbr.metallic = 0.0f;
-            }
-            if (pbr.roughness < 0.0f) {
-                pbr.roughness = 0.35f;
-            }
-            if (pbr.opacity < 0.0f) {
-                pbr.opacity = 1.0f;
-            }
-            if (pbr.AO < 0.0f) {
-                pbr.AO = 1.0f;
-            }
-            pbr.emissive = CreateLightEmitterEmissive(lightComponent);
-            return pbr;
-        }
-
         static void ApplyLightEmitterDefaults(ECS::SceneRegistry &sceneRegistry,
                                               id_t entityId,
                                               const LightComponent &lightComponent) {
@@ -640,7 +589,7 @@ namespace FeatherVK {
 
             meshRenderer->SetCastShadow(false);
             meshRenderer->SetReceiveShadow(false);
-            meshRenderer->SetPbrOverride(CreateLightEmitterPbr(*meshRenderer, lightComponent));
+            meshRenderer->SetPbrOverride(LightEmitterMeshUtils::CreateLightEmitterPbr(*meshRenderer, lightComponent));
         }
 
         std::shared_ptr<Model> CreateRuntimeCubeModel() {

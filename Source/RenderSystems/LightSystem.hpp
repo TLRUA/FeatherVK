@@ -5,6 +5,7 @@
 #include "../Components/LightComponent.hpp"
 #include "../Components/TransformComponent.hpp"
 #include "../ECS/SceneRegistry.hpp"
+#include "../RenderScene/RenderScene.hpp"
 #include "../StructureInfos.h"
 
 namespace FeatherVK {
@@ -16,6 +17,24 @@ namespace FeatherVK {
                 light.lightCategory = LightCategory::NONE;
             }
             frameInfo.globalUbo.lightNum = 0;
+
+            if (frameInfo.renderScene != nullptr) {
+                int lightIndex = 0;
+                for (const auto &lightInstance: frameInfo.renderScene->GetLightInstances()) {
+                    if (!lightInstance.active || lightIndex >= MAX_LIGHT_NUM) {
+                        continue;
+                    }
+
+                    Light light{};
+                    light.lightCategory = lightInstance.lightCategory;
+                    light.position = glm::vec4(lightInstance.position, 1.0f);
+                    light.direction = glm::vec4(lightInstance.direction, 0.0f);
+                    light.color = glm::vec4(lightInstance.color, lightInstance.intensity);
+                    frameInfo.globalUbo.lights[lightIndex++] = light;
+                }
+                frameInfo.globalUbo.lightNum = lightIndex;
+                return;
+            }
 
             if (frameInfo.sceneRegistry == nullptr) {
                 return;

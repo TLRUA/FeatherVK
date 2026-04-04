@@ -8,6 +8,7 @@
 
 #include "../Material.hpp"
 #include "../Model.hpp"
+#include "../RenderCore/RenderResourceHandle.hpp"
 
 namespace FeatherVK {
     class MeshRendererComponent {
@@ -56,6 +57,18 @@ namespace FeatherVK {
 
         void ClearPbrOverride() { runtimePbrOverride.reset(); }
 
+        RenderCore::RenderResourceHandle GetMeshResourceHandle() const { return meshResourceHandle; }
+
+        void SetMeshResourceHandle(RenderCore::RenderResourceHandle handle) { meshResourceHandle = handle; }
+
+        RenderCore::RenderResourceHandle GetMaterialResourceHandle() const { return materialResourceHandle; }
+
+        void SetMaterialResourceHandle(RenderCore::RenderResourceHandle handle) { materialResourceHandle = handle; }
+
+        RenderCore::RenderResourceHandle GetMaterialInstanceHandle() const { return materialInstanceHandle; }
+
+        void SetMaterialInstanceHandle(RenderCore::RenderResourceHandle handle) { materialInstanceHandle = handle; }
+
         bool visible = true;
         uint32_t renderLayer = 0;
         bool castShadow = true;
@@ -65,5 +78,8 @@ namespace FeatherVK {
         id_t materialId{};
         std::shared_ptr<Model> model = nullptr;
         std::optional<PBR> runtimePbrOverride{};
+        RenderCore::RenderResourceHandle meshResourceHandle{};
+        RenderCore::RenderResourceHandle materialResourceHandle{};
+        RenderCore::RenderResourceHandle materialInstanceHandle{};
     };
 }

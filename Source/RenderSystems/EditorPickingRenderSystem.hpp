@@ -2,6 +2,7 @@
 
 #include "RenderSystem.h"
 #include "../ECS/SceneRegistry.hpp"
+#include "../Managers/EntityLifecycleUtils.hpp"
 
 namespace FeatherVK {
     struct PickingPushConstantData {
@@ -20,7 +21,7 @@ namespace FeatherVK {
         }
 
         void render(FrameInfo &frameInfo, id_t entityId, ECS::SceneRegistry &sceneRegistry) override {
-            if (!sceneRegistry.IsAlive(entityId) || !sceneRegistry.IsEntityActive(entityId)) {
+            if (!EntityLifecycle::IsActive(frameInfo, entityId)) {
                 return;
             }
 
@@ -50,6 +51,34 @@ namespace FeatherVK {
 
             if (frameInfo.commandList != nullptr) {
                 SubmitRenderMeshDraw(*frameInfo.commandList, meshRendererComponent->GetModelPtr()->GetRenderMesh());
+            }
+        }
+
+        void render(FrameInfo &frameInfo, const RenderMeshInstance &meshInstance) {
+            if (!meshInstance.IsRenderable() || !meshInstance.defaultRenderLayer) {
+                return;
+            }
+
+            if (!EntityLifecycle::IsActive(frameInfo, meshInstance.entityId)) {
+                return;
+            }
+
+            if (ShouldSkipPipeline(frameInfo, meshInstance.materialId)) {
+                return;
+            }
+
+            BindCommonDescriptors(frameInfo);
+
+            PickingPushConstantData push{};
+            push.modelMatrix = meshInstance.worldTransform;
+            push.idCarrier = glm::mat4(meshInstance.normalMatrix);
+            push.idCarrier[3][3] = static_cast<float>(meshInstance.entityId);
+
+            frameInfo.commandList->PushConstants(*m_pipeline, RHI::ShaderStage::Vertex | RHI::ShaderStage::Fragment,
+                                                 0, sizeof(PickingPushConstantData), &push);
+
+            if (frameInfo.commandList != nullptr) {
+                SubmitRenderMeshDraw(*frameInfo.commandList, meshInstance.renderMesh);
             }
         }
 

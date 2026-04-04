@@ -14,6 +14,7 @@
 #include "Device.hpp"
 #include "ECS/SceneRegistry.hpp"
 #include "Managers/EditorInspectorSystem.hpp"
+#include "Managers/EditorSceneUtils.hpp"
 #include "Managers/EditorSelectionService.hpp"
 #include "Managers/EntityCommandService.hpp"
 #include "Managers/HierarchyService.hpp"
@@ -686,7 +687,7 @@ namespace FeatherVK {
 
             if (requestedActive != currentActive) {
                 sceneRegistry.SetEntityActive(entityId, requestedActive);
-                MarkSceneDirty(frameInfo, true);
+                EditorSceneUtils::MarkSceneDirty(frameInfo, true);
             }
         }
 
@@ -726,18 +727,9 @@ namespace FeatherVK {
             TrimInPlace(newName);
             if (!newName.empty() && newName != sceneRegistry.GetEntityName(hierarchyRenameState.entityId)) {
                 sceneRegistry.SetEntityName(hierarchyRenameState.entityId, std::move(newName));
-                MarkSceneDirty(frameInfo, false);
+                EditorSceneUtils::MarkSceneDirty(frameInfo, false);
             }
             CancelHierarchyRename();
-        }
-
-        static void MarkSceneDirty(FrameInfo &frameInfo, bool updateScene) {
-            if (updateScene) {
-                frameInfo.sceneUpdated = true;
-            }
-            if (frameInfo.scenePersistence != nullptr) {
-                frameInfo.scenePersistence->MarkSceneDirty();
-            }
         }
 
         static void TrimInPlace(std::string &value) {

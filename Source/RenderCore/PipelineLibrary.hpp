@@ -7,11 +7,13 @@
 
 #include "../Descriptor.h"
 #include "../Pipeline.hpp"
+#include "RenderResourceRegistry.hpp"
 
 namespace FeatherVK::RenderCore {
     class PipelineLibrary {
     public:
-        explicit PipelineLibrary(Device &device) : m_device(device) {}
+        explicit PipelineLibrary(Device &device, RenderResourceRegistry *resourceRegistry = nullptr)
+            : m_device(device), m_resourceRegistry(resourceRegistry) {}
 
         ~PipelineLibrary();
 
@@ -27,6 +29,7 @@ namespace FeatherVK::RenderCore {
 
     private:
         Device &m_device;
+        RenderResourceRegistry *m_resourceRegistry = nullptr;
         std::unordered_map<std::string, VkPipelineLayout> m_pipelineLayouts{};
         std::unordered_map<std::string, std::shared_ptr<Pipeline>> m_pipelines{};
     };

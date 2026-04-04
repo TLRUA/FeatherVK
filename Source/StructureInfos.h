@@ -19,6 +19,9 @@ namespace FeatherVK {
         class SceneRegistry;
     }
 
+    class RenderScene;
+    class EntityCommandService;
+
     enum LightCategory {
         NONE = -1,
         POINT_LIGHT = 0,
@@ -111,8 +114,10 @@ namespace FeatherVK {
         ViewportRect scenePanelRect;
         ViewportRect sceneViewportRect;
         IEditorScenePersistence *scenePersistence;
+        const EntityCommandService *entityCommandService;
         id_t selectedEntityId;
         bool sceneUpdated;
+        const RenderScene *renderScene;
 #ifdef RAY_TRACING
         std::shared_ptr<Buffer> pEntityDescBuffer;
         std::vector<EntityDesc> pEntityDescs;

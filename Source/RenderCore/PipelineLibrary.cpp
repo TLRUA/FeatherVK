@@ -35,6 +35,9 @@ namespace FeatherVK::RenderCore {
         }
 
         m_pipelineLayouts.emplace(key, pipelineLayout);
+        if (m_resourceRegistry != nullptr) {
+            m_resourceRegistry->ImportPipeline(key, nullptr, pipelineLayout);
+        }
         return pipelineLayout;
     }
 
@@ -49,6 +52,9 @@ namespace FeatherVK::RenderCore {
 
         auto pipeline = std::make_shared<Pipeline>(m_device, pipelineConfigureInfo, material);
         m_pipelines.emplace(key, pipeline);
+        if (m_resourceRegistry != nullptr) {
+            m_resourceRegistry->ImportPipeline(key, pipeline);
+        }
         return pipeline;
     }
 }

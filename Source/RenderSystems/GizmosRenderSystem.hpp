@@ -2,6 +2,7 @@
 
 #include "RenderSystem.h"
 #include "../ECS/SceneRegistry.hpp"
+#include "../Managers/EntityLifecycleUtils.hpp"
 #include "../Managers/ModelRepository.hpp"
 #include "../RenderCore/RenderCore.hpp"
 
@@ -231,8 +232,7 @@ namespace FeatherVK {
             }
 
             const id_t selectedEntityId = frameInfo.selectedEntityId;
-            if (frameInfo.sceneRegistry->IsAlive(selectedEntityId) &&
-                frameInfo.sceneRegistry->IsEntityActive(selectedEntityId) &&
+            if (EntityLifecycle::IsActive(frameInfo, selectedEntityId) &&
                 frameInfo.sceneRegistry->TryGetComponent(selectedEntityId, selectedTransform) &&
                 frameInfo.sceneRegistry->TryGetComponent(selectedEntityId, selectedMeshRenderer) &&
                 selectedTransform != nullptr &&

@@ -12,8 +12,10 @@
 #include "../RenderSystems/RenderSystem.h"
 #include "../RenderSystems/ShadowSystem.hpp"
 #include "../RenderSystems/SkyBoxSystem.hpp"
+#include "../RenderScene/RenderSceneBuilder.hpp"
 #include "../Components/RayTracingInstanceComponent.hpp"
 #include "../RenderCore/FrameData.hpp"
+#include "EntityLifecycleUtils.hpp"
 #include "ResourceManager.hpp"
 
 namespace FeatherVK {
@@ -128,7 +130,9 @@ namespace FeatherVK {
 
         void UpdateRendering(Renderer &renderer, FrameInfo &frameInfo) {
             [[maybe_unused]] auto renderFrame = RenderCore::BuildFrameContext(frameInfo);
-            UpdateUbo(frameInfo);
+            m_resourceManager->GetRenderCore().GetResourceRegistry().AdvanceFrame();
+            m_resourceManager->SyncRenderCoreSceneResources();
+            SanitizeSelection(frameInfo);
 
             const auto frameIndex = frameInfo.frameIndex;
 #ifdef RAY_TRACING
@@ -140,6 +144,8 @@ namespace FeatherVK {
                             m_resourceManager->GetEditorSelectionService(),
                             m_resourceManager->GetTransformService(),
                             frameInfo);
+            BuildRenderScene(frameInfo, renderer);
+            UpdateUbo(frameInfo);
             if (GUI::IsLayoutInteractionActive()) {
                 renderer.beginSwapChainRenderPass(frameInfo.commandBuffer);
                 if (m_postSystem != nullptr) {
@@ -191,6 +197,8 @@ namespace FeatherVK {
                             m_resourceManager->GetEditorSelectionService(),
                             m_resourceManager->GetTransformService(),
                             frameInfo);
+            BuildRenderScene(frameInfo, renderer);
+            UpdateUbo(frameInfo);
             if (GUI::IsLayoutInteractionActive()) {
                 // Raster path renders directly to the swapchain; keep rendering to avoid a black scene region.
             }
@@ -205,41 +213,7 @@ namespace FeatherVK {
             RenderEditorPickingPass(renderer, frameInfo);
 
             renderer.beginSwapChainRenderPass(frameInfo.commandBuffer);
-
-            std::vector<std::pair<std::shared_ptr<RenderSystem>, id_t>> renderQueue;
-            if (frameInfo.sceneRegistry != nullptr) {
-                auto &sceneRegistry = *frameInfo.sceneRegistry;
-                for (const id_t entityId: sceneRegistry.View<MeshRendererComponent, TransformComponent>()) {
-                    if (!sceneRegistry.IsEntityActive(entityId)) {
-                        continue;
-                    }
-
-                    MeshRendererComponent *meshRendererComponent = nullptr;
-                    if (!sceneRegistry.TryGetComponent(entityId, meshRendererComponent) || meshRendererComponent == nullptr) {
-                        continue;
-                    }
-                    if (!meshRendererComponent->IsVisible() || !meshRendererComponent->IsOnDefaultRenderLayer()) {
-                        continue;
-                    }
-
-                    const auto renderSystemIt = m_renderSystemMap.find(meshRendererComponent->GetMaterialID());
-                    if (renderSystemIt == m_renderSystemMap.end() || renderSystemIt->second == nullptr) {
-                        continue;
-                    }
-                    renderQueue.emplace_back(renderSystemIt->second, entityId);
-                }
-
-                std::sort(renderQueue.begin(), renderQueue.end(), [](const auto &a, const auto &b) {
-                    return a.first->GetRenderQueue() < b.first->GetRenderQueue();
-                });
-
-                for (auto &item: renderQueue) {
-                    auto renderSystem = item.first;
-                    const id_t entityId = item.second;
-                    renderSystem->UpdateGlobalUboBuffer(frameInfo.globalUbo, frameIndex);
-                    renderSystem->render(frameInfo, entityId, sceneRegistry);
-                }
-            }
+            RenderRasterScene(frameInfo);
 #endif
             GUI::EndFrame(frameInfo.commandBuffer);
             renderer.endSwapChainRenderPass(frameInfo.commandBuffer);
@@ -255,6 +229,56 @@ namespace FeatherVK {
         }
 
     private:
+        template<typename Predicate, typename Func>
+        void ForEachRenderSceneMeshInstance(const FrameInfo &frameInfo, Predicate &&predicate, Func &&func) const {
+            if (frameInfo.renderScene == nullptr) {
+                return;
+            }
+
+            for (const auto &meshInstance: frameInfo.renderScene->GetMeshInstances()) {
+                if (predicate(meshInstance)) {
+                    func(meshInstance);
+                }
+            }
+        }
+
+        template<typename Func>
+        void ForEachDefaultLayerMeshInstance(const FrameInfo &frameInfo, Func &&func) const {
+            ForEachRenderSceneMeshInstance(
+                frameInfo,
+                [](const RenderMeshInstance &meshInstance) {
+                    return meshInstance.IsDefaultLayerRenderable();
+                },
+                std::forward<Func>(func));
+        }
+
+#ifdef RAY_TRACING
+        template<typename Func>
+        void ForEachRayTracingMeshInstance(const FrameInfo &frameInfo, Func &&func) const {
+            ForEachRenderSceneMeshInstance(
+                frameInfo,
+                [](const RenderMeshInstance &meshInstance) {
+                    return meshInstance.IsRayTracingRenderable();
+                },
+                std::forward<Func>(func));
+        }
+#endif
+
+        void SanitizeSelection(FrameInfo &frameInfo) {
+            auto &selectionService = m_resourceManager->GetEditorSelectionService();
+            if (selectionService.HasSelection() &&
+                !EntityLifecycle::IsAlive(frameInfo, selectionService.GetSelectedId())) {
+                selectionService.ClearSelection();
+            }
+            frameInfo.selectedEntityId =
+                selectionService.HasSelection() ? selectionService.GetSelectedId() : EditorSelectionService::InvalidEntityId;
+        }
+
+        void BuildRenderScene(FrameInfo &frameInfo, Renderer &renderer) {
+            m_renderScene = RenderSceneBuilder::Build(frameInfo, renderer);
+            frameInfo.renderScene = &m_renderScene;
+        }
+
         void CreateEditorPickingSystem(Material::Map &materials, Device &device, Renderer &renderer) {
             auto gizmosMaterialEntry = materials.find(Material::MaterialId::gizmos);
             if (gizmosMaterialEntry == materials.end()) {
@@ -293,95 +317,92 @@ namespace FeatherVK {
         }
 
         void RenderEditorPickingPass(Renderer &renderer, FrameInfo &frameInfo) {
-            if (m_editorPickingRenderSystem == nullptr || frameInfo.sceneRegistry == nullptr) {
+            if (m_editorPickingRenderSystem == nullptr || frameInfo.renderScene == nullptr) {
                 return;
             }
 
             renderer.beginPickingRenderPass(frameInfo.commandBuffer);
             m_editorPickingRenderSystem->UpdateGlobalUboBuffer(frameInfo.globalUbo, frameInfo.frameIndex);
 
-            for (const auto entityId: frameInfo.sceneRegistry->GetEntityOrder()) {
-                m_editorPickingRenderSystem->render(frameInfo, entityId, *frameInfo.sceneRegistry);
-            }
+            ForEachDefaultLayerMeshInstance(frameInfo, [&](const RenderMeshInstance &meshInstance) {
+                m_editorPickingRenderSystem->render(frameInfo, meshInstance);
+            });
 
             renderer.endPickingRenderPass(frameInfo.commandBuffer);
         }
 
         void RenderRasterScene(FrameInfo &frameInfo) {
-            if (frameInfo.sceneRegistry == nullptr) {
+            if (frameInfo.sceneRegistry == nullptr || frameInfo.renderScene == nullptr) {
                 return;
             }
 
             auto &sceneRegistry = *frameInfo.sceneRegistry;
-            std::vector<std::pair<std::shared_ptr<RenderSystem>, id_t>> renderQueue;
-            for (const id_t entityId: sceneRegistry.View<MeshRendererComponent, TransformComponent>()) {
-                if (!sceneRegistry.IsEntityActive(entityId)) {
-                    continue;
-                }
+            struct RenderQueueItem {
+                std::shared_ptr<RenderSystem> renderSystem{};
+                const RenderMeshInstance *meshInstance{nullptr};
+                id_t entityId{0};
+            };
 
-                MeshRendererComponent *meshRendererComponent = nullptr;
-                if (!sceneRegistry.TryGetComponent(entityId, meshRendererComponent) || meshRendererComponent == nullptr) {
-                    continue;
-                }
-                if (!meshRendererComponent->IsVisible() || !meshRendererComponent->IsOnDefaultRenderLayer()) {
-                    continue;
-                }
-
-                const auto renderSystemIt = m_renderSystemMap.find(meshRendererComponent->GetMaterialID());
+            std::vector<RenderQueueItem> renderQueue;
+            ForEachDefaultLayerMeshInstance(frameInfo, [&](const RenderMeshInstance &meshInstance) {
+                const auto renderSystemIt = m_renderSystemMap.find(meshInstance.materialId);
                 if (renderSystemIt == m_renderSystemMap.end() || renderSystemIt->second == nullptr) {
-                    continue;
+                    return;
                 }
-                renderQueue.emplace_back(renderSystemIt->second, entityId);
-            }
+                renderQueue.push_back({renderSystemIt->second, &meshInstance, meshInstance.entityId});
+            });
 
             std::sort(renderQueue.begin(), renderQueue.end(), [](const auto &a, const auto &b) {
-                return a.first->GetRenderQueue() < b.first->GetRenderQueue();
+                return a.renderSystem->GetRenderQueue() < b.renderSystem->GetRenderQueue();
             });
 
             for (auto &item: renderQueue) {
-                auto renderSystem = item.first;
-                const id_t entityId = item.second;
+                auto renderSystem = item.renderSystem;
                 renderSystem->UpdateGlobalUboBuffer(frameInfo.globalUbo, frameInfo.frameIndex);
-                renderSystem->render(frameInfo, entityId, sceneRegistry);
+                const RenderMeshInstance &meshInstance = *item.meshInstance;
+                const auto &pipelineCategory = renderSystem->GetPipelineCategory();
+                if (pipelineCategory == PipelineCategory.SkyBox ||
+                    pipelineCategory == PipelineCategory.TessellationGeometry) {
+                    renderSystem->render(frameInfo, meshInstance.entityId, sceneRegistry);
+                } else {
+                    renderSystem->render(frameInfo, meshInstance, &sceneRegistry);
+                }
             }
         }
 #ifdef RAY_TRACING
         void SyncRayTracingScene(FrameInfo &frameInfo) {
-            if (frameInfo.sceneRegistry == nullptr) {
+            if (frameInfo.sceneRegistry == nullptr || frameInfo.renderScene == nullptr) {
                 return;
             }
 
             auto &rayTracingSceneContext = m_resourceManager->GetRayTracingSceneContext();
+            auto &renderResourceRegistry = m_resourceManager->GetRenderCore().GetResourceRegistry();
             rayTracingSceneContext.ProcessDeferredDestroy();
             auto &sceneRegistry = *frameInfo.sceneRegistry;
             bool addedNewTlasInstance = false;
             bool tlasHandleChanged = false;
 
-            for (const auto entityId: sceneRegistry.View<MeshRendererComponent, TransformComponent>()) {
-                MeshRendererComponent *meshRendererComponent = nullptr;
-                TransformComponent *transformComponent = nullptr;
-                RayTracingInstanceComponent *rayTracingInstanceComponent = nullptr;
-                if (!sceneRegistry.TryGetComponent(entityId, meshRendererComponent) || meshRendererComponent == nullptr ||
-                    !sceneRegistry.TryGetComponent(entityId, transformComponent) || transformComponent == nullptr ||
-                    meshRendererComponent->GetModelPtr() == nullptr) {
-                    continue;
+            auto processMeshInstance = [&](const RenderMeshInstance &meshInstance, const std::shared_ptr<Model> &model) {
+                if (model == nullptr) {
+                    return;
                 }
 
-                if (!sceneRegistry.TryGetComponent(entityId, rayTracingInstanceComponent) || rayTracingInstanceComponent == nullptr) {
+                RayTracingInstanceComponent *rayTracingInstanceComponent = nullptr;
+                if (!sceneRegistry.TryGetComponent(meshInstance.entityId, rayTracingInstanceComponent) || rayTracingInstanceComponent == nullptr) {
                     rayTracingInstanceComponent =
-                        sceneRegistry.EmplaceComponent<RayTracingInstanceComponent>(entityId, rayTracingSceneContext.AllocateInstanceId());
+                        sceneRegistry.EmplaceComponent<RayTracingInstanceComponent>(meshInstance.entityId, rayTracingSceneContext.AllocateInstanceId());
                 } else if (!rayTracingInstanceComponent->IsValid()) {
                     rayTracingInstanceComponent->instanceId = rayTracingSceneContext.AllocateInstanceId();
                 }
 
-                const bool isActive = sceneRegistry.IsEntityActive(entityId) && meshRendererComponent->IsVisible();
-                const uint32_t instanceMask = isActive ? meshRendererComponent->GetRayTracingVisibilityMask() : 0x00;
-                const glm::mat4 currentTransform = transformComponent->mat4();
+                const bool isActive = meshInstance.active && meshInstance.visible;
+                const uint32_t instanceMask = isActive ? (1u << std::min(meshInstance.renderLayer, 7u)) : 0x00;
+                const glm::mat4 currentTransform = meshInstance.worldTransform;
                 const id_t tlasId = rayTracingInstanceComponent->instanceId;
-                m_entityToTlasId[entityId] = tlasId;
+                m_entityToTlasId[meshInstance.entityId] = tlasId;
 
                 if (static_cast<size_t>(tlasId) >= static_cast<size_t>(RuntimeEntityDescCapacity)) {
-                    continue;
+                    return;
                 }
 
                 if (static_cast<size_t>(tlasId) >= frameInfo.pEntityDescs.size()) {
@@ -391,7 +412,7 @@ namespace FeatherVK {
                 EntityDesc &entityDesc = frameInfo.pEntityDescs[tlasId];
                 EntityDesc baseEntityDesc{};
                 const bool hasBaseEntityDesc =
-                    m_resourceManager->TryGetRayTracingMaterialDesc(meshRendererComponent->GetMaterialID(), baseEntityDesc);
+                    m_resourceManager->TryGetRayTracingMaterialDesc(meshInstance.materialId, baseEntityDesc);
                 if (hasBaseEntityDesc) {
                     entityDesc = baseEntityDesc;
                 } else if (entityDesc.vertexBufferAddress == 0 || entityDesc.indexBufferAddress == 0) {
@@ -404,24 +425,25 @@ namespace FeatherVK {
                     entityDesc.pbr.AO = 1.0f;
                     entityDesc.pbr.emissive = glm::vec3{0.0f};
                 }
-                entityDesc.vertexBufferAddress = meshRendererComponent->GetModelPtr()->getVertexBuffer()->getDeviceAddress();
-                entityDesc.indexBufferAddress = meshRendererComponent->GetModelPtr()->getIndexBuffer()->getDeviceAddress();
-                if (meshRendererComponent->HasPbrOverride()) {
-                    entityDesc.pbr = *meshRendererComponent->GetPbrOverride();
+
+                entityDesc.vertexBufferAddress = model->getVertexBuffer()->getDeviceAddress();
+                entityDesc.indexBufferAddress = model->getIndexBuffer()->getDeviceAddress();
+                if (meshInstance.pbrOverride.has_value()) {
+                    entityDesc.pbr = *meshInstance.pbrOverride;
                 }
                 entityDesc.renderOptions =
-                    (meshRendererComponent->CastsShadow() ? EntityRenderOptionCastShadow : 0) |
-                    (meshRendererComponent->ReceivesShadow() ? EntityRenderOptionReceiveShadow : 0);
-                entityDesc.renderLayer = static_cast<int32_t>(std::min(meshRendererComponent->GetRenderLayer(), 7u));
+                    (meshInstance.castShadow ? EntityRenderOptionCastShadow : 0) |
+                    (meshInstance.receiveShadow ? EntityRenderOptionReceiveShadow : 0);
+                entityDesc.renderLayer = static_cast<int32_t>(std::min(meshInstance.renderLayer, 7u));
 
-                if (!rayTracingSceneContext.HasBlas(meshRendererComponent->GetModelPtr())) {
-                    rayTracingSceneContext.EnsureBlasBuilt(meshRendererComponent->GetModelPtr());
+                if (!rayTracingSceneContext.HasBlas(model)) {
+                    rayTracingSceneContext.EnsureBlasBuilt(model);
                 }
 
                 if (!rayTracingSceneContext.HasInstance(tlasId)) {
-                    const uint32_t shaderOffset = m_resourceManager->GetRayTracingShaderOffset(meshRendererComponent->GetMaterialID());
+                    const uint32_t shaderOffset = m_resourceManager->GetRayTracingShaderOffset(meshInstance.materialId);
                     rayTracingSceneContext.CreateInstance(
-                        *meshRendererComponent->GetModelPtr(),
+                        *model,
                         tlasId,
                         static_cast<id_t>(shaderOffset),
                         currentTransform,
@@ -430,19 +452,19 @@ namespace FeatherVK {
                     frameInfo.sceneUpdated = true;
                 }
 
-                auto maskEntry = m_meshRendererMaskCache.find(entityId);
+                auto maskEntry = m_meshRendererMaskCache.find(meshInstance.entityId);
                 bool maskChanged = maskEntry == m_meshRendererMaskCache.end();
                 if (maskChanged) {
-                    m_meshRendererMaskCache.emplace(entityId, instanceMask);
+                    m_meshRendererMaskCache.emplace(meshInstance.entityId, instanceMask);
                 } else if (maskEntry->second != instanceMask) {
                     maskChanged = true;
                     maskEntry->second = instanceMask;
                 }
 
-                auto transformEntry = m_meshRendererTransformCache.find(entityId);
+                auto transformEntry = m_meshRendererTransformCache.find(meshInstance.entityId);
                 bool transformChanged = transformEntry == m_meshRendererTransformCache.end();
                 if (transformChanged) {
-                    m_meshRendererTransformCache.emplace(entityId, currentTransform);
+                    m_meshRendererTransformCache.emplace(meshInstance.entityId, currentTransform);
                 } else if (transformEntry->second != currentTransform) {
                     transformChanged = true;
                     transformEntry->second = currentTransform;
@@ -453,11 +475,19 @@ namespace FeatherVK {
                         frameInfo.sceneUpdated = true;
                     }
                 }
-            }
+            };
+
+            ForEachRayTracingMeshInstance(frameInfo, [&](const RenderMeshInstance &meshInstance) {
+                const auto *meshResource = renderResourceRegistry.GetMesh(meshInstance.meshResource);
+                if (meshResource == nullptr || meshResource->legacyModel == nullptr) {
+                    return;
+                }
+                processMeshInstance(meshInstance, meshResource->legacyModel);
+            });
 
             for (auto it = m_entityToTlasId.begin(); it != m_entityToTlasId.end();) {
                 MeshRendererComponent *meshRendererComponent = nullptr;
-                const bool hasMeshRenderer = sceneRegistry.IsAlive(it->first) &&
+                const bool hasMeshRenderer = EntityLifecycle::IsAlive(frameInfo, it->first) &&
                                              sceneRegistry.TryGetComponent(it->first, meshRendererComponent) &&
                                              meshRendererComponent != nullptr;
                 if (hasMeshRenderer) {
@@ -466,7 +496,7 @@ namespace FeatherVK {
                 }
 
                 const id_t staleTlasId = it->second;
-                rayTracingSceneContext.UpdateInstance(staleTlasId, glm::mat4{1.0f}, 0x00);
+                rayTracingSceneContext.RetireInstance(staleTlasId);
                 if (staleTlasId >= 0 && static_cast<size_t>(staleTlasId) < frameInfo.pEntityDescs.size()) {
                     frameInfo.pEntityDescs[staleTlasId] = EntityDesc{};
                 }
@@ -477,7 +507,7 @@ namespace FeatherVK {
             }
 
             for (auto it = m_meshRendererMaskCache.begin(); it != m_meshRendererMaskCache.end();) {
-                if (!sceneRegistry.IsAlive(it->first)) {
+                if (!EntityLifecycle::IsAlive(frameInfo, it->first)) {
                     m_meshRendererTransformCache.erase(it->first);
                     it = m_meshRendererMaskCache.erase(it);
                 } else {
@@ -485,12 +515,12 @@ namespace FeatherVK {
                 }
             }
 
-            if (addedNewTlasInstance) {
+            if (addedNewTlasInstance || rayTracingSceneContext.RequiresRebuild()) {
                 tlasHandleChanged = rayTracingSceneContext.BuildTopLevel(VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR, false);
-                rayTracingSceneContext.ClearUpdateFlag();
+                rayTracingSceneContext.ClearBuildFlags();
             } else if (rayTracingSceneContext.ShouldUpdate()) {
                 tlasHandleChanged = rayTracingSceneContext.BuildTopLevel(VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR, true);
-                rayTracingSceneContext.ClearUpdateFlag();
+                rayTracingSceneContext.ClearBuildFlags();
             }
 
             if (tlasHandleChanged) {
@@ -510,6 +540,7 @@ namespace FeatherVK {
         std::shared_ptr<Material> m_editorPickingMaterial;
         std::shared_ptr<EditorPickingRenderSystem> m_editorPickingRenderSystem;
         LightSystem m_lightSystem;
+        RenderScene m_renderScene{};
 
 #ifdef RAY_TRACING
         std::shared_ptr<RayTracingSystem> m_rayTracingSystem;

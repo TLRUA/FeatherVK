@@ -6,6 +6,7 @@
 #include "../Pipeline.hpp"
 #include "../RenderCore/MaterialBindings.hpp"
 #include "../RenderCore/PipelineLibrary.hpp"
+#include "../RenderScene/RenderScene.hpp"
 #include "../Device.hpp"
 #include "../Model.hpp"
 #include "../StructureInfos.h"
@@ -47,6 +48,10 @@ namespace FeatherVK {
 
         virtual void render(FrameInfo &frameInfo, id_t entityId, ECS::SceneRegistry &sceneRegistry);
 
+        virtual void render(FrameInfo &frameInfo,
+                            const RenderMeshInstance &meshInstance,
+                            ECS::SceneRegistry *sceneRegistry = nullptr);
+
 
         template<class T>
         void UpdateGlobalUboBuffer(T &globalUbo, uint32_t frameIndex) {
@@ -57,6 +62,10 @@ namespace FeatherVK {
         unsigned int GetRenderQueue() const {
             auto _pipelineCategory = m_material->getPipelineCategory();
             return PipelineRenderQueue.at(_pipelineCategory);
+        }
+
+        const std::string &GetPipelineCategory() const {
+            return m_material->getPipelineCategory();
         }
 
     protected:

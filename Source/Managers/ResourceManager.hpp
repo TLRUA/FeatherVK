@@ -80,6 +80,7 @@ namespace FeatherVK {
                     addPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, SwapChain::MAX_FRAMES_IN_FLIGHT * MATERIAL_NUMBER).
                     addPoolSize(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, SwapChain::MAX_FRAMES_IN_FLIGHT * MATERIAL_NUMBER).
                     addPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, SwapChain::MAX_FRAMES_IN_FLIGHT * MATERIAL_NUMBER).build();
+            m_modelRepository.SetRenderResourceRegistry(&m_renderCore.GetResourceRegistry());
             m_entityCommandService.SetDependencies(m_modelRepository
 #ifdef RAY_TRACING
                 , &m_rayTracingSceneContext
@@ -157,7 +158,23 @@ namespace FeatherVK {
                 RefreshSceneSizedDescriptors();
             }
 #endif
+            if (sceneExtentChanged) {
+                m_renderCoreRenderTargetsDirty = true;
+            }
             return sceneExtentChanged;
+        }
+
+        void SyncRenderCoreSceneResources() {
+            if (!m_renderCoreStaticResourcesRegistered) {
+                RegisterStaticRenderCoreResources();
+                m_renderCoreStaticResourcesRegistered = true;
+                m_renderCoreRenderTargetsDirty = true;
+            }
+            if (m_renderCoreRenderTargetsDirty) {
+                RegisterRendererRenderTargets();
+                m_renderCoreRenderTargetsDirty = false;
+            }
+            SyncMeshRendererRenderCoreResources();
         }
 
 #ifdef RAY_TRACING
@@ -352,6 +369,7 @@ namespace FeatherVK {
 #ifdef RAY_TRACING
             m_rayTracingSceneContext.Release();
 #endif
+            InvalidateRenderCoreRegistry();
             ClearSceneDirty();
             m_sceneSaveRequested = false;
 
@@ -1053,16 +1071,23 @@ namespace FeatherVK {
                                                              PipelineCategory.Gizmos);
                 m_materials.emplace(Material::MaterialId::gizmos, std::move(uiMaterial));
             }
+            RegisterStaticRenderCoreResources();
+            m_renderCoreStaticResourcesRegistered = true;
+            m_renderCoreRenderTargetsDirty = true;
         }
         struct TextureCacheEntry {
             std::shared_ptr<Image> image;
             std::shared_ptr<Sampler> sampler;
+            RenderCore::RenderResourceHandle textureHandle{};
         };
 
         TextureCacheEntry GetOrCreateTexture(const std::string &textureName, bool isCubeMap = false, bool srgb = false) {
             const std::string key = (isCubeMap ? "CubeMap:" : "Default:") + std::string(srgb ? "SRGB:" : "Linear:") + textureName;
             auto entry = m_textureCache.find(key);
             if (entry != m_textureCache.end()) {
+                if (m_renderCoreStaticResourcesRegistered && !IsTextureResourceCurrent(entry->second)) {
+                    entry->second.textureHandle = RegisterTextureResource(key, entry->second);
+                }
                 return entry->second;
             }
 
@@ -1074,10 +1099,271 @@ namespace FeatherVK {
             sampler->createTextureSampler();
 
             TextureCacheEntry cacheEntry{image, sampler};
+            if (m_renderCoreStaticResourcesRegistered) {
+                cacheEntry.textureHandle = RegisterTextureResource(key, cacheEntry);
+            }
             m_textureCache.emplace(key, cacheEntry);
             return cacheEntry;
         }
     private:
+        void InvalidateRenderCoreRegistry() {
+            m_renderCore.GetResourceRegistry().Clear();
+            m_modelRepository.SetRenderResourceRegistry(&m_renderCore.GetResourceRegistry());
+            m_renderCoreStaticResourcesRegistered = false;
+            m_renderCoreRenderTargetsDirty = true;
+            m_materialResourceHandles.clear();
+            for (auto &[textureKey, textureEntry]: m_textureCache) {
+                (void) textureKey;
+                textureEntry.textureHandle = {};
+            }
+        }
+
+        static RHI::Extent2D ToRhiExtent(const VkExtent2D extent) {
+            return {extent.width, extent.height};
+        }
+
+        std::string MakeMaterialResourceName(Material::id_t materialId) const {
+            return "Material/" + std::to_string(materialId);
+        }
+
+        std::string MakeMaterialInstanceResourceName(id_t entityId) const {
+            return "MaterialInstance/Entity/" + std::to_string(entityId);
+        }
+
+        std::optional<PBR> FindDefaultPbrForMaterial(Material::id_t materialId) const {
+#ifdef RAY_TRACING
+            const auto rtMaterial = m_rayTracingMaterialDescs.find(materialId);
+            if (rtMaterial != m_rayTracingMaterialDescs.end()) {
+                return rtMaterial->second.pbr;
+            }
+#endif
+            return std::nullopt;
+        }
+
+        static bool AreVec3Equal(const glm::vec3 &lhs, const glm::vec3 &rhs) {
+            return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z;
+        }
+
+        static bool ArePbrEqual(const PBR &lhs, const PBR &rhs) {
+            return AreVec3Equal(lhs.albedo, rhs.albedo) &&
+                   AreVec3Equal(lhs.normal, rhs.normal) &&
+                   lhs.metallic == rhs.metallic &&
+                   lhs.roughness == rhs.roughness &&
+                   lhs.opacity == rhs.opacity &&
+                   lhs.AO == rhs.AO &&
+                   AreVec3Equal(lhs.emissive, rhs.emissive);
+        }
+
+        static bool MaterialInstanceMatches(
+            const RenderCore::MaterialInstance *materialInstance,
+            RenderCore::RenderResourceHandle materialHandle,
+            id_t ownerEntityId,
+            const std::optional<PBR> &pbrOverride) {
+            if (materialInstance == nullptr) {
+                return false;
+            }
+
+            if (materialInstance->material != materialHandle ||
+                materialInstance->ownerEntityId != ownerEntityId ||
+                materialInstance->hasPbrOverride != pbrOverride.has_value()) {
+                return false;
+            }
+
+            if (!pbrOverride.has_value()) {
+                return true;
+            }
+
+            return ArePbrEqual(materialInstance->pbrOverride, *pbrOverride);
+        }
+
+        bool IsTextureResourceCurrent(const TextureCacheEntry &textureEntry) const {
+            if (!textureEntry.textureHandle.IsValid()) {
+                return false;
+            }
+
+            const auto *textureResource = m_renderCore.GetResourceRegistry().GetTexture(textureEntry.textureHandle);
+            return textureResource != nullptr &&
+                   textureResource->texture == textureEntry.image &&
+                   textureResource->view == textureEntry.image &&
+                   textureResource->sampler == textureEntry.sampler;
+        }
+
+        RenderCore::RenderResourceHandle RegisterTextureResource(const std::string &textureKey, TextureCacheEntry &textureEntry) {
+            if (textureEntry.image == nullptr) {
+                return {};
+            }
+
+            if (IsTextureResourceCurrent(textureEntry)) {
+                return textureEntry.textureHandle;
+            }
+
+            textureEntry.textureHandle = m_renderCore.GetResourceRegistry().ImportTexture(
+                "Texture/" + textureKey,
+                textureEntry.image,
+                textureEntry.image,
+                textureEntry.sampler);
+            return textureEntry.textureHandle;
+        }
+
+        RenderCore::RenderResourceHandle GetOrCreateMaterialResourceHandle(Material::id_t materialId) {
+            auto &registry = m_renderCore.GetResourceRegistry();
+            const auto materialEntry = m_materials.find(materialId);
+            if (materialEntry == m_materials.end() || materialEntry->second == nullptr) {
+                m_materialResourceHandles.erase(materialId);
+                return {};
+            }
+
+            auto handleEntry = m_materialResourceHandles.find(materialId);
+            if (handleEntry != m_materialResourceHandles.end()) {
+                const auto *materialResource = registry.GetMaterial(handleEntry->second);
+                if (materialResource != nullptr &&
+                    materialResource->legacyMaterialId == materialId &&
+                    materialResource->legacyMaterial == materialEntry->second) {
+                    return handleEntry->second;
+                }
+            }
+
+            auto materialHandle = registry.ImportMaterial(
+                MakeMaterialResourceName(materialId),
+                materialEntry->second,
+                FindDefaultPbrForMaterial(materialId));
+            m_materialResourceHandles[materialId] = materialHandle;
+            return materialHandle;
+        }
+
+        bool IsMeshResourceCurrent(const RenderCore::MeshResource *meshResource,
+                                   const std::shared_ptr<Model> &model) const {
+            return meshResource != nullptr && meshResource->legacyModel == model;
+        }
+
+        void RegisterStaticRenderCoreResources() {
+            for (auto &[textureKey, textureEntry]: m_textureCache) {
+                RegisterTextureResource(textureKey, textureEntry);
+            }
+
+            for (auto &[materialId, material]: m_materials) {
+                (void) material;
+                GetOrCreateMaterialResourceHandle(materialId);
+            }
+        }
+
+        void RegisterRendererRenderTargets() {
+            auto &registry = m_renderCore.GetResourceRegistry();
+            const auto sceneExtent = m_renderer.getSceneRenderExtent();
+            const RHI::Extent2D extent = ToRhiExtent(sceneExtent);
+
+            for (int index = 0; index < 2; ++index) {
+                std::vector<RenderCore::RenderResourceHandle> sceneColorAttachments{
+                    registry.ImportTexture(
+                        "Renderer/SceneColor/" + std::to_string(index),
+                        m_renderer.getSceneColorImageColor(index),
+                        m_renderer.getSceneColorImageColor(index))};
+                registry.ImportRenderTarget(
+                    "Renderer/RenderTarget/SceneColor/" + std::to_string(index),
+                    extent,
+                    std::move(sceneColorAttachments));
+
+#ifdef RAY_TRACING
+                registry.ImportTexture(
+                    "Renderer/RayTracingOutput/" + std::to_string(index),
+                    m_renderer.getOffscreenImageColor(index),
+                    m_renderer.getOffscreenImageColor(index));
+                registry.ImportTexture(
+                    "Renderer/WorldPosition/" + std::to_string(index),
+                    m_renderer.getWorldPosImageColor(index),
+                    m_renderer.getWorldPosImageColor(index));
+                registry.ImportTexture(
+                    "Renderer/ShadowTerm/" + std::to_string(index),
+                    m_renderer.getShadowTermImageColor(index),
+                    m_renderer.getShadowTermImageColor(index));
+                registry.ImportTexture(
+                    "Renderer/ShadowMoments/" + std::to_string(index),
+                    m_renderer.getShadowMomentsImageColor(index),
+                    m_renderer.getShadowMomentsImageColor(index));
+                registry.ImportTexture(
+                    "Renderer/RayTracingGuide/" + std::to_string(index),
+                    m_renderer.getRayTracingGuideImageColor(index),
+                    m_renderer.getRayTracingGuideImageColor(index));
+#endif
+            }
+
+#ifdef RAY_TRACING
+            registry.ImportTexture(
+                "Renderer/DenoisingAccumulation",
+                m_renderer.getDenoisingAccumulationImageColor(),
+                m_renderer.getDenoisingAccumulationImageColor());
+#else
+            registry.ImportTexture(
+                "Renderer/ShadowMap",
+                m_renderer.getShadowImage(),
+                m_renderer.getShadowImage(),
+                m_renderer.getShadowSampler());
+#endif
+        }
+
+        void SyncMeshRendererRenderCoreResources() {
+            auto &registry = m_renderCore.GetResourceRegistry();
+            for (const auto entityId: m_sceneRegistry.View<MeshRendererComponent>()) {
+                auto *meshRenderer = TryGetSceneComponent<MeshRendererComponent>(entityId);
+                if (meshRenderer == nullptr) {
+                    continue;
+                }
+
+                if (m_entityCommandService.IsPendingDestroy(entityId)) {
+                    if (meshRenderer->GetMaterialInstanceHandle().IsValid()) {
+                        registry.Destroy(meshRenderer->GetMaterialInstanceHandle());
+                        meshRenderer->SetMaterialInstanceHandle({});
+                    }
+                    continue;
+                }
+
+                if (auto model = meshRenderer->GetModelPtr(); model != nullptr) {
+                    auto meshHandle = meshRenderer->GetMeshResourceHandle();
+                    const auto *meshResource = registry.GetMesh(meshHandle);
+                    if (!IsMeshResourceCurrent(meshResource, model)) {
+                        meshHandle = m_modelRepository.FindMeshResource(model->GetName());
+                    }
+                    if (!meshHandle.IsValid()) {
+                        meshHandle = registry.ImportMesh("Mesh/" + model->GetName(), model, {}, model->GetName());
+                    }
+                    meshRenderer->SetMeshResourceHandle(meshHandle);
+                } else if (meshRenderer->GetMeshResourceHandle().IsValid()) {
+                    meshRenderer->SetMeshResourceHandle({});
+                }
+
+                auto materialHandle = meshRenderer->GetMaterialResourceHandle();
+                const auto *materialResource = registry.GetMaterial(materialHandle);
+                const auto materialEntry = m_materials.find(meshRenderer->GetMaterialID());
+                const bool materialHandleCurrent =
+                    materialEntry != m_materials.end() &&
+                    materialEntry->second != nullptr &&
+                    materialResource != nullptr &&
+                    materialResource->legacyMaterialId == meshRenderer->GetMaterialID() &&
+                    materialResource->legacyMaterial == materialEntry->second;
+                if (!materialHandleCurrent) {
+                    materialHandle = GetOrCreateMaterialResourceHandle(meshRenderer->GetMaterialID());
+                }
+
+                meshRenderer->SetMaterialResourceHandle(materialHandle);
+                if (materialHandle.IsValid()) {
+                    auto materialInstanceHandle = meshRenderer->GetMaterialInstanceHandle();
+                    const auto pbrOverride = meshRenderer->GetPbrOverride();
+                    const auto *materialInstance = registry.GetMaterialInstance(materialInstanceHandle);
+                    if (!MaterialInstanceMatches(materialInstance, materialHandle, entityId, pbrOverride)) {
+                        materialInstanceHandle = registry.ImportMaterialInstance(
+                            MakeMaterialInstanceResourceName(entityId),
+                            materialHandle,
+                            entityId,
+                            pbrOverride);
+                    }
+                    meshRenderer->SetMaterialInstanceHandle(materialInstanceHandle);
+                } else if (meshRenderer->GetMaterialInstanceHandle().IsValid()) {
+                    registry.Destroy(meshRenderer->GetMaterialInstanceHandle());
+                    meshRenderer->SetMaterialInstanceHandle({});
+                }
+            }
+        }
+
         bool RefreshPostDescriptorSet() {
             auto materialIt = m_materials.find(Material::MaterialId::post);
             if (materialIt == m_materials.end() || materialIt->second == nullptr) {
@@ -1285,8 +1571,11 @@ namespace FeatherVK {
         TransformService m_transformService;
         Material::Map m_materials;
         std::unordered_map<std::string, TextureCacheEntry> m_textureCache;
+        std::unordered_map<Material::id_t, RenderCore::RenderResourceHandle> m_materialResourceHandles;
         bool m_sceneDirty = false;
         bool m_sceneSaveRequested = false;
+        bool m_renderCoreStaticResourcesRegistered = false;
+        bool m_renderCoreRenderTargetsDirty = true;
 
 #ifdef RAY_TRACING
         RayTracingSceneContext m_rayTracingSceneContext;

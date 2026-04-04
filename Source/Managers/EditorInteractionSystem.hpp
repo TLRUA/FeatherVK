@@ -13,6 +13,8 @@
 #include "../MyWindow.hpp"
 #include "../Renderer.h"
 #include "Imgui/imgui.h"
+#include "EntityLifecycleUtils.hpp"
+#include "EditorSceneUtils.hpp"
 #include "EditorSelectionService.hpp"
 #include "TransformService.hpp"
 
@@ -31,6 +33,7 @@ namespace FeatherVK {
               m_transformService(transformService) {}
 
         void Update(FrameInfo &frameInfo) {
+            SanitizeSelection(frameInfo);
             SyncSelectedId(frameInfo);
             const bool gizmoConsumed = HandleTranslationGizmo(frameInfo);
             if (!gizmoConsumed) {
@@ -66,6 +69,17 @@ namespace FeatherVK {
             }
         };
 
+        void SanitizeSelection(FrameInfo &frameInfo) {
+            if (!m_selectionService.HasSelection()) {
+                return;
+            }
+
+            const id_t selectedId = m_selectionService.GetSelectedId();
+            if (!EntityLifecycle::IsAlive(frameInfo, selectedId)) {
+                m_selectionService.ClearSelection();
+            }
+        }
+
         void SyncSelectedId(FrameInfo &frameInfo) const {
             frameInfo.selectedEntityId = m_selectionService.HasSelection() ? m_selectionService.GetSelectedId() : InvalidEntityId;
         }
@@ -78,8 +92,7 @@ namespace FeatherVK {
 
             const id_t selectedId = frameInfo.selectedEntityId;
             if (!m_selectionService.HasSelection() ||
-                !frameInfo.sceneRegistry->IsAlive(selectedId) ||
-                !frameInfo.sceneRegistry->IsEntityActive(selectedId)) {
+                !EntityLifecycle::IsActive(frameInfo, selectedId)) {
                 ResetGizmoState();
                 return false;
             }
@@ -159,7 +172,7 @@ namespace FeatherVK {
                     *frameInfo.sceneRegistry,
                     selectedId,
                     m_gizmoState.dragStartRelativeTranslation + delta);
-                MarkSceneDirty(frameInfo);
+                EditorSceneUtils::MarkSceneDirty(frameInfo);
                 return true;
             }
 
@@ -574,7 +587,7 @@ namespace FeatherVK {
 
             if (pickedEntityId >= 0) {
                 const id_t selectedId = static_cast<id_t>(pickedEntityId);
-                if (frameInfo.sceneRegistry->IsAlive(selectedId) && frameInfo.sceneRegistry->IsEntityActive(selectedId)) {
+                if (EntityLifecycle::IsActive(frameInfo, selectedId)) {
                     m_selectionService.Select(selectedId);
                 } else {
                     m_selectionService.ClearSelection();
@@ -601,7 +614,7 @@ namespace FeatherVK {
             }
 
             const id_t selectedId = m_selectionService.GetSelectedId();
-            if (!frameInfo.sceneRegistry->IsAlive(selectedId) || !frameInfo.sceneRegistry->IsEntityActive(selectedId)) {
+            if (!EntityLifecycle::IsActive(frameInfo, selectedId)) {
                 return;
             }
 
@@ -626,14 +639,7 @@ namespace FeatherVK {
 
             if (glm::dot(delta, delta) > std::numeric_limits<float>::epsilon()) {
                 m_transformService.Translate(*frameInfo.sceneRegistry, selectedId, delta);
-                MarkSceneDirty(frameInfo);
-            }
-        }
-
-        static void MarkSceneDirty(FrameInfo &frameInfo) {
-            frameInfo.sceneUpdated = true;
-            if (frameInfo.scenePersistence != nullptr) {
-                frameInfo.scenePersistence->MarkSceneDirty();
+                EditorSceneUtils::MarkSceneDirty(frameInfo);
             }
         }
 

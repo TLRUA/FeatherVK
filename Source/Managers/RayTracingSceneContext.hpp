@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <deque>
 #include <iostream>
 #include <memory>
 #include <unordered_map>
@@ -28,6 +29,11 @@ namespace FeatherVK {
             int framesRemaining{DeferredDestroyFrameCount};
         };
 
+        struct RetiredInstance {
+            id_t instanceId{0};
+            int framesRemaining{DeferredDestroyFrameCount};
+        };
+
         explicit RayTracingSceneContext(Device &device) : m_device(device) {}
 
         ~RayTracingSceneContext() {
@@ -38,6 +44,11 @@ namespace FeatherVK {
         RayTracingSceneContext &operator=(const RayTracingSceneContext &) = delete;
 
         id_t AllocateInstanceId() {
+            if (!m_reusableInstanceIds.empty()) {
+                const id_t reusedId = m_reusableInstanceIds.back();
+                m_reusableInstanceIds.pop_back();
+                return reusedId;
+            }
             return m_nextInstanceId++;
         }
 
@@ -69,13 +80,18 @@ namespace FeatherVK {
             m_pendingModelIndexReferences.clear();
             m_instances.clear();
             m_instanceIdToIndexMap.clear();
+            m_retiredInstances.clear();
+            m_retiringInstanceIds.clear();
+            m_reusableInstanceIds.clear();
             m_shouldUpdate = false;
             m_lastBuildRecreatedHandle = false;
+            m_requiresRebuild = false;
             m_nextInstanceId = 0;
         }
 
         void ProcessDeferredDestroy() {
             DestroyRetiredTlasResources(false);
+            ProcessRetiredInstances();
         }
 
         bool HasBlas(const std::shared_ptr<Model> &model) const {
@@ -283,6 +299,8 @@ namespace FeatherVK {
 
             m_instances.emplace_back(instance);
             m_instanceIdToIndexMap[instanceId] = static_cast<id_t>(m_instances.size() - 1);
+            m_retiringInstanceIds.erase(instanceId);
+            m_requiresRebuild = true;
         }
 
         bool UpdateInstance(id_t instanceId, const glm::mat4 &transform, uint32_t mask = 0xFF) {
@@ -299,6 +317,21 @@ namespace FeatherVK {
             m_instances[index].transform = Utils::GlmMatrixToVulkanMatrix(transform);
             m_instances[index].mask = mask;
             m_shouldUpdate = true;
+            return true;
+        }
+
+        bool RetireInstance(id_t instanceId) {
+            if (!HasInstance(instanceId)) {
+                return false;
+            }
+
+            if (m_retiringInstanceIds.find(instanceId) != m_retiringInstanceIds.end()) {
+                return false;
+            }
+
+            UpdateInstance(instanceId, glm::mat4{1.0f}, 0x00);
+            m_retiringInstanceIds.insert(instanceId);
+            m_retiredInstances.emplace_back(RetiredInstance{instanceId, DeferredDestroyFrameCount});
             return true;
         }
 
@@ -351,7 +384,11 @@ namespace FeatherVK {
         }
 
         bool ShouldUpdate() const { return m_shouldUpdate; }
-        void ClearUpdateFlag() { m_shouldUpdate = false; }
+        bool RequiresRebuild() const { return m_requiresRebuild; }
+        void ClearBuildFlags() {
+            m_shouldUpdate = false;
+            m_requiresRebuild = false;
+        }
         bool HasValidTlas() const { return m_tlas != VK_NULL_HANDLE && m_tlasBuffer != nullptr; }
         const VkAccelerationStructureKHR &GetTlasHandle() const { return m_tlas; }
 
@@ -402,6 +439,44 @@ namespace FeatherVK {
                 }
                 it = m_retiredTlasResources.erase(it);
             }
+        }
+
+        void ProcessRetiredInstances() {
+            for (auto it = m_retiredInstances.begin(); it != m_retiredInstances.end();) {
+                if (--it->framesRemaining > 0) {
+                    ++it;
+                    continue;
+                }
+
+                RemoveInstance(it->instanceId);
+                m_retiringInstanceIds.erase(it->instanceId);
+                m_reusableInstanceIds.push_back(it->instanceId);
+                m_requiresRebuild = true;
+                it = m_retiredInstances.erase(it);
+            }
+        }
+
+        void RemoveInstance(id_t instanceId) {
+            const auto mapEntry = m_instanceIdToIndexMap.find(instanceId);
+            if (mapEntry == m_instanceIdToIndexMap.end()) {
+                return;
+            }
+
+            const size_t removedIndex = static_cast<size_t>(mapEntry->second);
+            if (removedIndex >= m_instances.size()) {
+                m_instanceIdToIndexMap.erase(mapEntry);
+                return;
+            }
+
+            const size_t lastIndex = m_instances.size() - 1;
+            if (removedIndex != lastIndex) {
+                m_instances[removedIndex] = m_instances[lastIndex];
+                const id_t movedInstanceId = static_cast<id_t>(m_instances[removedIndex].instanceCustomIndex);
+                m_instanceIdToIndexMap[movedInstanceId] = static_cast<id_t>(removedIndex);
+            }
+
+            m_instances.pop_back();
+            m_instanceIdToIndexMap.erase(instanceId);
         }
 
         void CmdCreateBlas(VkCommandBuffer commandBuffer,
@@ -628,6 +703,7 @@ namespace FeatherVK {
         id_t m_nextInstanceId = 0;
         bool m_shouldUpdate = false;
         bool m_lastBuildRecreatedHandle = false;
+        bool m_requiresRebuild = false;
 
         std::vector<PendingBlasInput> m_pendingBlasInputs{};
         std::unordered_set<uint32_t> m_pendingModelIndexReferences{};
@@ -640,6 +716,9 @@ namespace FeatherVK {
         std::vector<VkAccelerationStructureInstanceKHR> m_instances{};
         std::unordered_map<id_t, id_t> m_instanceIdToIndexMap{};
         std::vector<RetiredTlasResource> m_retiredTlasResources{};
+        std::vector<RetiredInstance> m_retiredInstances{};
+        std::unordered_set<id_t> m_retiringInstanceIds{};
+        std::vector<id_t> m_reusableInstanceIds{};
     };
 }
 

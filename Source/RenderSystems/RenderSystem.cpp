@@ -81,6 +81,39 @@ namespace FeatherVK {
 
 
     void RenderSystem::render(FrameInfo &frameInfo, id_t entityId, ECS::SceneRegistry &sceneRegistry) {
+        if (m_material->getPipelineCategory() == PipelineCategory.Opaque ||
+            m_material->getPipelineCategory() == PipelineCategory.Transparent) {
+            TransformComponent *transformComponent = nullptr;
+            MeshRendererComponent *meshRendererComponent = nullptr;
+            if (!sceneRegistry.TryGetComponent(entityId, transformComponent) || transformComponent == nullptr ||
+                !sceneRegistry.TryGetComponent(entityId, meshRendererComponent) || meshRendererComponent == nullptr ||
+                !meshRendererComponent->IsVisible() ||
+                !meshRendererComponent->IsOnDefaultRenderLayer() ||
+                meshRendererComponent->GetModelPtr() == nullptr) {
+                return;
+            }
+
+            RenderMeshInstance meshInstance{};
+            meshInstance.entityId = entityId;
+            meshInstance.worldTransform = transformComponent->mat4();
+            meshInstance.normalMatrix = transformComponent->normalMatrix();
+            meshInstance.materialId = meshRendererComponent->GetMaterialID();
+            meshInstance.renderMesh = meshRendererComponent->GetModelPtr()->GetRenderMesh();
+            meshInstance.active = sceneRegistry.IsEntityActive(entityId);
+            meshInstance.visible = meshRendererComponent->IsVisible();
+            meshInstance.defaultRenderLayer = meshRendererComponent->IsOnDefaultRenderLayer();
+#ifdef RAY_TRACING
+            RayTracingInstanceComponent *rayTracingInstanceComponent = nullptr;
+            if (sceneRegistry.TryGetComponent(entityId, rayTracingInstanceComponent) &&
+                rayTracingInstanceComponent != nullptr &&
+                rayTracingInstanceComponent->IsValid()) {
+                meshInstance.rayTracingInstanceId = rayTracingInstanceComponent->instanceId;
+            }
+#endif
+            render(frameInfo, meshInstance, &sceneRegistry);
+            return;
+        }
+
         if (frameInfo.commandList == nullptr) {
             return;
         }
@@ -137,6 +170,71 @@ namespace FeatherVK {
                                                  0, sizeof(SimplePushConstantData), &push);
             SubmitRenderMeshDraw(*frameInfo.commandList, meshRendererComponent->GetModelPtr()->GetRenderMesh());
         }
+    }
+
+    void RenderSystem::render(FrameInfo &frameInfo,
+                              const RenderMeshInstance &meshInstance,
+                              ECS::SceneRegistry *sceneRegistry) {
+        if (frameInfo.commandList == nullptr) {
+            return;
+        }
+
+        frameInfo.commandList->BindPipeline(*m_pipeline);
+        BindMaterialResources(frameInfo);
+
+        if (m_material->getPipelineCategory() == "Overlay") {
+            frameInfo.commandList->Draw(6, 1, 0, 0);
+            return;
+        }
+
+        if (m_material->getPipelineCategory() == "Light") {
+            if (sceneRegistry == nullptr) {
+                return;
+            }
+
+            PointLightPushConstant pointLightPushConstant{};
+            TransformComponent *transformComponent = nullptr;
+            LightComponent *lightComponent = nullptr;
+            if (!sceneRegistry->TryGetComponent(meshInstance.entityId, transformComponent) || transformComponent == nullptr ||
+                !sceneRegistry->TryGetComponent(meshInstance.entityId, lightComponent) || lightComponent == nullptr) {
+                return;
+            }
+
+            pointLightPushConstant.position = glm::vec4(transformComponent->GetTranslation(), 1.f);
+            pointLightPushConstant.color = glm::vec4(lightComponent->GetColor(), lightComponent->GetLightIntensity());
+            pointLightPushConstant.radius = transformComponent->GetScale().x;
+            frameInfo.commandList->PushConstants(*m_pipeline, RHI::ShaderStage::Vertex | RHI::ShaderStage::Fragment,
+                                                 0, sizeof(PointLightPushConstant), &pointLightPushConstant);
+            frameInfo.commandList->Draw(6, 1, 0, 0);
+            return;
+        }
+
+        if (m_material->getPipelineCategory() != PipelineCategory.Opaque &&
+            m_material->getPipelineCategory() != PipelineCategory.Transparent) {
+            return;
+        }
+
+        if (!meshInstance.IsRenderable() || !meshInstance.defaultRenderLayer) {
+            return;
+        }
+
+        SimplePushConstantData push{};
+        push.modelMatrix = meshInstance.worldTransform;
+        push.normalMatrix = glm::mat4(meshInstance.normalMatrix);
+#ifdef RAY_TRACING
+        if (meshInstance.rayTracingInstanceId != std::numeric_limits<id_t>::max() &&
+            static_cast<size_t>(meshInstance.rayTracingInstanceId) < frameInfo.pEntityDescs.size()) {
+            const PBR &pbr = frameInfo.pEntityDescs[meshInstance.rayTracingInstanceId].pbr;
+            const glm::vec3 baseColor = pbr.albedo.x >= 0.0f ? pbr.albedo : glm::vec3{0.8f};
+            const glm::vec3 emissive = pbr.emissive.x >= 0.0f ? pbr.emissive : glm::vec3{0.0f};
+            push.baseColorMetallic = glm::vec4(baseColor, pbr.metallic >= 0.0f ? pbr.metallic : 0.0f);
+            push.emissiveRoughnessOpacity = glm::vec4(emissive, pbr.opacity >= 0.0f ? pbr.opacity : 1.0f);
+        }
+#endif
+
+        frameInfo.commandList->PushConstants(*m_pipeline, RHI::ShaderStage::Vertex | RHI::ShaderStage::Fragment,
+                                             0, sizeof(SimplePushConstantData), &push);
+        SubmitRenderMeshDraw(*frameInfo.commandList, meshInstance.renderMesh);
     }
 
     void RenderSystem::Init() {
