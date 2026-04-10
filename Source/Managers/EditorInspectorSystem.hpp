@@ -10,7 +10,6 @@
 #include "../Components/Input/ObjectMovementComponent.hpp"
 #include "../Components/LightComponent.hpp"
 #include "../Components/MeshRendererComponent.hpp"
-#include "../Components/RayTracingInstanceComponent.hpp"
 #include "../Components/RigidBodyComponent.hpp"
 #include "../Components/TransformComponent.hpp"
 #include "../Components/UIComponent.hpp"
@@ -55,10 +54,21 @@ namespace FeatherVK {
         }
 
     private:
+        static constexpr id_t InvalidRayTracingInstanceId = std::numeric_limits<id_t>::max();
+
         template<typename T>
         static T *TryGet(ECS::SceneRegistry *sceneRegistry, id_t entityId) {
             T *component = nullptr;
             return sceneRegistry != nullptr && sceneRegistry->TryGetComponent(entityId, component) ? component : nullptr;
+        }
+
+        static id_t ResolveRuntimeRayTracingInstanceId(const FrameInfo &frameInfo, id_t entityId) {
+            if (frameInfo.rayTracingInstanceIds == nullptr) {
+                return InvalidRayTracingInstanceId;
+            }
+
+            const auto instanceIt = frameInfo.rayTracingInstanceIds->find(entityId);
+            return instanceIt == frameInfo.rayTracingInstanceIds->end() ? InvalidRayTracingInstanceId : instanceIt->second;
         }
 
         static void SyncLightEmitterEmissive(ECS::SceneRegistry *sceneRegistry,
@@ -192,12 +202,12 @@ namespace FeatherVK {
                                        Material::Map *materials,
                                        FrameInfo &frameInfo) {
             auto *component = TryGet<MeshRendererComponent>(sceneRegistry, entityId);
-            auto *rayTracingInstance = TryGet<RayTracingInstanceComponent>(sceneRegistry, entityId);
             if (component == nullptr || !ImGui::TreeNode("MeshRendererComponent")) {
                 return;
             }
             const bool isLightEmitterMesh = IsLightEmitterMesh(sceneRegistry, entityId);
             if (isLightEmitterMesh && ApplyLightEmitterMeshConstraints(sceneRegistry, entityId)) {
+                EditorSceneUtils::MarkMeshRendererRenderResourcesDirty(frameInfo, entityId);
                 EditorSceneUtils::MarkSceneDirty(frameInfo);
             }
 
@@ -246,28 +256,23 @@ namespace FeatherVK {
             }
 
 #ifdef RAY_TRACING
+            const id_t runtimeRayTracingInstanceId = ResolveRuntimeRayTracingInstanceId(frameInfo, entityId);
             if (isLightEmitterMesh &&
                 gameObjectDescs != nullptr &&
-                rayTracingInstance != nullptr &&
-                rayTracingInstance->IsValid() &&
-                static_cast<size_t>(rayTracingInstance->instanceId) < gameObjectDescs->size()) {
-                EntityDesc &entityDesc = gameObjectDescs->at(rayTracingInstance->instanceId);
+                runtimeRayTracingInstanceId != InvalidRayTracingInstanceId &&
+                static_cast<size_t>(runtimeRayTracingInstanceId) < gameObjectDescs->size()) {
+                EntityDesc &entityDesc = gameObjectDescs->at(runtimeRayTracingInstanceId);
                 if (component->HasPbrOverride()) {
                     entityDesc.pbr = *component->GetPbrOverride();
                 }
                 entityDesc.renderOptions = 0;
             }
 
-            if (rayTracingInstance != nullptr && rayTracingInstance->IsValid()) {
-                ImGui::Text("RT Instance: %u", rayTracingInstance->instanceId);
-            }
-
             if (gameObjectDescs != nullptr &&
-                rayTracingInstance != nullptr &&
-                rayTracingInstance->IsValid() &&
-                static_cast<size_t>(rayTracingInstance->instanceId) < gameObjectDescs->size() &&
+                runtimeRayTracingInstanceId != InvalidRayTracingInstanceId &&
+                static_cast<size_t>(runtimeRayTracingInstanceId) < gameObjectDescs->size() &&
                 ImGui::TreeNode("PBR")) {
-                const EntityDesc &desc = gameObjectDescs->at(rayTracingInstance->instanceId);
+                const EntityDesc &desc = gameObjectDescs->at(runtimeRayTracingInstanceId);
                 PBR editablePbr = component->HasPbrOverride() ? *component->GetPbrOverride() : desc.pbr;
                 if (isLightEmitterMesh) {
                     if (auto *lightComponent = TryGet<LightComponent>(sceneRegistry, entityId); lightComponent != nullptr) {
@@ -341,7 +346,8 @@ namespace FeatherVK {
                         }
                     }
                     component->SetPbrOverride(editablePbr);
-                    gameObjectDescs->at(rayTracingInstance->instanceId).pbr = editablePbr;
+                    gameObjectDescs->at(runtimeRayTracingInstanceId).pbr = editablePbr;
+                    EditorSceneUtils::MarkMeshRendererRenderResourcesDirty(frameInfo, entityId);
                     EditorSceneUtils::MarkSceneDirty(frameInfo);
                 }
                 ImGui::TreePop();
@@ -392,6 +398,9 @@ namespace FeatherVK {
 
             if (lightChanged) {
                 SyncLightEmitterEmissive(sceneRegistry, entityId, *component);
+                if (sceneRegistry != nullptr && sceneRegistry->HasComponent<MeshRendererComponent>(entityId)) {
+                    EditorSceneUtils::MarkMeshRendererRenderResourcesDirty(frameInfo, entityId);
+                }
                 EditorSceneUtils::MarkSceneDirty(frameInfo);
             }
 
@@ -450,6 +459,7 @@ namespace FeatherVK {
             ImGui::Text("Editor marker only");
             ImGui::TreePop();
         }
+
     };
 }
 

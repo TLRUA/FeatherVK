@@ -9,11 +9,6 @@ layout (location = 3) in vec2 uv;
 
 layout (location = 0) out vec4 outColor;
 
-layout (push_constant) uniform PushConstantData {
-    mat4 modelMatrix;
-    mat4 vaseModelMatrix;
-} push;
-
 layout (set = 1, binding = 0) uniform sampler2D texSampler;
 layout (set = 1, binding = 1) uniform samplerCube shadowSampler;
 

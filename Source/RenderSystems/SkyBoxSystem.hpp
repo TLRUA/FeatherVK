@@ -11,6 +11,16 @@ namespace FeatherVK {
                      RenderCore::PipelineLibrary &pipelineLibrary)
                 : RenderSystem(device, renderPass, material, pipelineLibrary) {};
 
+        void render(FrameInfo &frameInfo, const RenderMeshInstance &meshInstance) override {
+            if (frameInfo.commandList == nullptr || !meshInstance.IsRenderable()) {
+                return;
+            }
+
+            frameInfo.commandList->BindPipeline(*m_pipeline);
+            BindMaterialResources(frameInfo);
+            SubmitRenderMeshDraw(*frameInfo.commandList, meshInstance.renderMesh);
+        }
+
     private:
         void createPipelineLayout() override {
             RenderCore::MaterialBindingsView materialBindings{*m_material};
@@ -33,21 +43,6 @@ namespace FeatherVK {
                     "SkyBox/Pipeline/" + std::to_string(m_material->getMaterialId()),
                     pipelineConfigureInfo,
                     m_material);
-        };
-
-        void render(FrameInfo &frameInfo, id_t entityId, ECS::SceneRegistry &sceneRegistry) override {
-            if (frameInfo.commandList == nullptr) {
-                return;
-            }
-            frameInfo.commandList->BindPipeline(*m_pipeline);
-            BindMaterialResources(frameInfo);
-
-            MeshRendererComponent *meshRendererComponent = nullptr;
-            if (!sceneRegistry.TryGetComponent(entityId, meshRendererComponent) || meshRendererComponent == nullptr ||
-                meshRendererComponent->GetModelPtr() == nullptr) {
-                return;
-            }
-            SubmitRenderMeshDraw(*frameInfo.commandList, meshRendererComponent->GetModelPtr()->GetRenderMesh());
         };
 
     };

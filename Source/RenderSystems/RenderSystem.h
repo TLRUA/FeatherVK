@@ -10,8 +10,6 @@
 #include "../Device.hpp"
 #include "../Model.hpp"
 #include "../StructureInfos.h"
-#include "../ECS/SceneRegistry.hpp"
-#include "../Components/MeshRendererComponent.hpp"
 
 namespace FeatherVK {
     struct SimplePushConstantData {
@@ -46,11 +44,7 @@ namespace FeatherVK {
 
         virtual void render(FrameInfo &frameInfo) {}
 
-        virtual void render(FrameInfo &frameInfo, id_t entityId, ECS::SceneRegistry &sceneRegistry);
-
-        virtual void render(FrameInfo &frameInfo,
-                            const RenderMeshInstance &meshInstance,
-                            ECS::SceneRegistry *sceneRegistry = nullptr);
+        virtual void render(FrameInfo &frameInfo, const RenderMeshInstance &meshInstance);
 
 
         template<class T>

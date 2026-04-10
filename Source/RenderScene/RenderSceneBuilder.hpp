@@ -7,10 +7,10 @@
 #include "../Components/CameraComponent.hpp"
 #include "../Components/LightComponent.hpp"
 #include "../Components/MeshRendererComponent.hpp"
-#include "../Components/RayTracingInstanceComponent.hpp"
 #include "../Components/TransformComponent.hpp"
 #include "../ECS/SceneRegistry.hpp"
 #include "../Managers/EntityLifecycleUtils.hpp"
+#include "../Pipeline.hpp"
 #include "../Renderer.h"
 #include "../StructureInfos.h"
 #include "RenderScene.hpp"
@@ -96,7 +96,9 @@ namespace FeatherVK {
             }
 
             auto &sceneRegistry = *frameInfo.sceneRegistry;
-            for (const auto entityId: sceneRegistry.View<MeshRendererComponent, TransformComponent>()) {
+            const auto meshEntities = sceneRegistry.View<MeshRendererComponent, TransformComponent>();
+            renderScene.ReserveMeshInstances(meshEntities.size());
+            for (const auto entityId: meshEntities) {
                 if (EntityLifecycle::IsPendingDestroy(frameInfo, entityId)) {
                     continue;
                 }
@@ -126,15 +128,39 @@ namespace FeatherVK {
                 if (const auto model = meshRenderer->GetModelPtr(); model != nullptr) {
                     meshInstance.renderMesh = model->GetRenderMesh();
                 }
-
-#ifdef RAY_TRACING
-                RayTracingInstanceComponent *rayTracingInstance = nullptr;
-                if (sceneRegistry.TryGetComponent(entityId, rayTracingInstance) &&
-                    rayTracingInstance != nullptr &&
-                    rayTracingInstance->IsValid()) {
-                    meshInstance.rayTracingInstanceId = rayTracingInstance->instanceId;
+                const auto materialIt = frameInfo.materials.find(meshInstance.materialId);
+                if (materialIt != frameInfo.materials.end() && materialIt->second != nullptr) {
+                    meshInstance.pipelineCategory = materialIt->second->getPipelineCategory();
+                    const auto renderQueueIt = PipelineRenderQueue.find(meshInstance.pipelineCategory);
+                    if (renderQueueIt != PipelineRenderQueue.end()) {
+                        meshInstance.renderQueue = renderQueueIt->second;
+                    }
+                    meshInstance.skyboxLike = meshInstance.pipelineCategory == PipelineCategory.SkyBox;
+                    meshInstance.overlayLike = meshInstance.pipelineCategory == PipelineCategory.Overlay;
+                    meshInstance.lightPassLike = meshInstance.pipelineCategory == PipelineCategory.Light;
+                    meshInstance.specialPipeline =
+                        meshInstance.skyboxLike ||
+                        meshInstance.overlayLike ||
+                        meshInstance.lightPassLike ||
+                        meshInstance.pipelineCategory == PipelineCategory.TessellationGeometry;
                 }
-#endif
+
+                LightComponent *lightComponent = nullptr;
+                if (sceneRegistry.TryGetComponent(entityId, lightComponent) && lightComponent != nullptr) {
+                    RenderLightProxy lightProxy{};
+                    lightProxy.lightCategory = lightComponent->GetLightCategory();
+                    lightProxy.color = lightComponent->GetColor();
+                    lightProxy.intensity = lightComponent->GetLightIntensity();
+                    lightProxy.radius = transform->GetScale().x;
+                    meshInstance.lightProxy = lightProxy;
+                }
+
+                if (frameInfo.rayTracingInstanceIds != nullptr) {
+                    const auto rayTracingInstanceIt = frameInfo.rayTracingInstanceIds->find(entityId);
+                    if (rayTracingInstanceIt != frameInfo.rayTracingInstanceIds->end()) {
+                        meshInstance.rayTracingInstanceId = rayTracingInstanceIt->second;
+                    }
+                }
 
                 renderScene.AddMeshInstance(std::move(meshInstance));
             }
@@ -146,7 +172,9 @@ namespace FeatherVK {
             }
 
             auto &sceneRegistry = *frameInfo.sceneRegistry;
-            for (const auto entityId: sceneRegistry.View<LightComponent, TransformComponent>()) {
+            const auto lightEntities = sceneRegistry.View<LightComponent, TransformComponent>();
+            renderScene.ReserveLightInstances(lightEntities.size());
+            for (const auto entityId: lightEntities) {
                 if (EntityLifecycle::IsPendingDestroy(frameInfo, entityId)) {
                     continue;
                 }
@@ -170,6 +198,7 @@ namespace FeatherVK {
                 lightInstance.direction = glm::vec3(rotationMatrix * glm::vec4(0, 0, 1, 0));
                 lightInstance.color = light->GetColor();
                 lightInstance.intensity = light->GetLightIntensity();
+                lightInstance.radius = transform->GetScale().x;
                 lightInstance.active = EntityLifecycle::IsActive(frameInfo, entityId);
                 renderScene.AddLightInstance(std::move(lightInstance));
             }

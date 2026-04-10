@@ -142,7 +142,8 @@ vec3 sampleShadowDirection(vec3 worldPos, Light light, vec3 baseDirection, float
 const int FirstBounceReflectionSamples = 1;
 const float ReflectionRayFadeStart = 0.28;
 const float ReflectionRayFadeEnd = 0.42;
-const float MirrorRoughnessThreshold = 0.002;
+const float MirrorRoughnessThreshold = 0.025;
+const float MirrorBounceLocalLightingRoughness = 0.035;
 const float MaxReflectionContributionLuminance = 16.0;
 
 vec3 safeNormalize(vec3 value, vec3 fallback) {
@@ -295,7 +296,7 @@ void main()
     mat3 TBN = buildObjectTBN(deltaPos1, deltaPos2, deltaUV1, deltaUV2, normal);
 
     PBR pbr = reloadPBR(entityDesc.pbr, entityDesc.textureEntry, uv, normal, TBN);
-    pbr.roughness = clamp(pbr.roughness, 0.02, 1.0);
+    pbr.roughness = clamp(pbr.roughness, 0.0, 1.0);
     pbr.opacity = clamp(pbr.opacity, 0.0, 1.0);
     mat3 worldNormalMatrix = transpose(mat3(gl_WorldToObjectEXT));
     vec3 objectShadingNormal = safeNormalize(pbr.normal, normal);
@@ -309,6 +310,11 @@ void main()
     vec3 pixelToView = normalize(-gl_WorldRayDirectionEXT);
     const bool receivesShadow = (entityDesc.renderOptions & ENTITY_RENDER_OPTION_RECEIVE_SHADOW) != 0;
     const bool isPrimarySurface = payLoad.recursionDepth == 1 && !payLoad.isBouncing;
+    const bool isNearPerfectMirror =
+        pbr.metallic >= 0.98 &&
+        pbr.roughness <= MirrorBounceLocalLightingRoughness &&
+        pbr.opacity >= 0.99;
+    const bool skipLocalLightingForMirrorBounce = payLoad.isBouncing && isNearPerfectMirror;
     const float primaryContributionWeight = payLoad.isBouncing ? pbr.opacity : (1.0 - payLoad.opacity) * pbr.opacity;
 
     if (payLoad.recursionDepth == 1) {
@@ -321,7 +327,8 @@ void main()
     float shadowVisibilityNumerator = 0.0;
     float shadowVisibilityDenominator = 0.0;
 
-    for (int i = 0; i < ubo.lightNum; i++) {
+    if (!skipLocalLightingForMirrorBounce) {
+        for (int i = 0; i < ubo.lightNum; i++) {
         Light light = ubo.lights[i];
         vec3 pixelToLight;
         float attenuation = 1.0;
@@ -369,7 +376,8 @@ void main()
         }
     }
 
-    lo += evaluateEnvironmentDiffuse(worldNormal, pixelToView, pbr);
+        lo += evaluateEnvironmentDiffuse(worldNormal, pixelToView, pbr);
+    }
 
     if (isPrimarySurface) {
         payLoad.primaryDirectLighting = primaryDirectLighting;

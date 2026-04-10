@@ -8,6 +8,7 @@
 #include "../Components/TransformComponent.hpp"
 #include "../Core/InputState.hpp"
 #include "../ECS/SceneRegistry.hpp"
+#include "../Managers/EditorSceneUtils.hpp"
 #include "../Managers/TransformService.hpp"
 #include "../StructureInfos.h"
 
@@ -32,19 +33,25 @@ namespace FeatherVK {
                     continue;
                 }
 
-                UpdateFreeLook(sceneRegistry, entityId, *cameraMovement, *cameraTransform, frameInfo.frameTime);
-                UpdateFocus(sceneRegistry, entityId, *cameraMovement, *cameraTransform, frameInfo, rendererInfo);
+                const bool freeLookChanged =
+                    UpdateFreeLook(sceneRegistry, entityId, *cameraMovement, *cameraTransform, frameInfo.frameTime);
+                const bool focusChanged =
+                    UpdateFocus(sceneRegistry, entityId, *cameraMovement, *cameraTransform, frameInfo, rendererInfo);
+                if (freeLookChanged || focusChanged) {
+                    EditorSceneUtils::MarkRenderSceneDirty(frameInfo);
+                }
             }
         }
 
     private:
         static constexpr float FocusReachThreshold = 0.01f;
 
-        void UpdateFreeLook(ECS::SceneRegistry &sceneRegistry,
+        bool UpdateFreeLook(ECS::SceneRegistry &sceneRegistry,
                             id_t entityId,
                             CameraMovementComponent &cameraMovement,
                             TransformComponent &cameraTransform,
                             float frameTime) const {
+            bool changed = false;
             glm::vec3 rotation{0.0f};
 
             if (m_inputState.IsMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)) {
@@ -54,7 +61,10 @@ namespace FeatherVK {
             }
 
             if (glm::dot(rotation, rotation) > std::numeric_limits<float>::epsilon()) {
-                m_transformService.SetRotation(sceneRegistry, entityId, rotation * cameraMovement.lookSpeed + cameraTransform.GetRotation());
+                changed |= m_transformService.SetRotation(
+                    sceneRegistry,
+                    entityId,
+                    rotation * cameraMovement.lookSpeed + cameraTransform.GetRotation());
             }
 
             const auto transformRotation = cameraTransform.GetRotation();
@@ -75,14 +85,15 @@ namespace FeatherVK {
             if (m_inputState.IsKeyDown(cameraMovement.keyMappings.moveBack)) moveDir -= forwardDir;
 
             if (glm::dot(moveDir, moveDir) > std::numeric_limits<float>::epsilon()) {
-                m_transformService.SetTranslation(
+                changed |= m_transformService.SetTranslation(
                     sceneRegistry,
                     entityId,
                     glm::normalize(moveDir) * cameraMovement.moveSpeed * frameTime + cameraTransform.GetTranslation());
             }
+            return changed;
         }
 
-        void UpdateFocus(ECS::SceneRegistry &sceneRegistry,
+        bool UpdateFocus(ECS::SceneRegistry &sceneRegistry,
                          id_t entityId,
                          CameraMovementComponent &cameraMovement,
                          TransformComponent &cameraTransform,
@@ -93,18 +104,18 @@ namespace FeatherVK {
             if (m_inputState.IsKeyDown(cameraMovement.keyMappings.focusSelected) && !focus.active) {
                 const id_t selectedEntityId = frameInfo.selectedEntityId;
                 if (!sceneRegistry.IsAlive(selectedEntityId) || !sceneRegistry.IsEntityActive(selectedEntityId)) {
-                    return;
+                    return false;
                 }
 
                 TransformComponent *selectedTransform = nullptr;
                 if (!sceneRegistry.TryGetComponent(selectedEntityId, selectedTransform) || selectedTransform == nullptr) {
-                    return;
+                    return false;
                 }
 
                 focus.objectPosition = selectedTransform->GetTranslation();
                 const glm::vec3 moveTarget = focus.objectPosition - cameraTransform.GetTranslation();
                 if (glm::length(moveTarget) < std::numeric_limits<float>::epsilon()) {
-                    return;
+                    return false;
                 }
 
                 const float distance = glm::length(moveTarget);
@@ -127,25 +138,27 @@ namespace FeatherVK {
             }
 
             if (!focus.active) {
-                return;
+                return false;
             }
 
+            bool changed = false;
             const float duration = std::max(cameraMovement.focusMoveTime, std::numeric_limits<float>::epsilon());
             focus.progress = std::min(focus.progress + frameInfo.frameTime / duration, 1.0f);
 
             const glm::vec3 nextPosition =
                 (1.0f - focus.progress) * cameraTransform.GetTranslation() + focus.progress * focus.targetPosition;
-            m_transformService.SetTranslation(sceneRegistry, entityId, nextPosition);
+            changed |= m_transformService.SetTranslation(sceneRegistry, entityId, nextPosition);
 
             const glm::vec3 focusDirection = focus.objectPosition - cameraTransform.GetTranslation();
             if (glm::length(focusDirection) > std::numeric_limits<float>::epsilon()) {
-                m_transformService.SetRotation(sceneRegistry, entityId, Utils::VectorToRotation(glm::normalize(focusDirection)));
+                changed |= m_transformService.SetRotation(sceneRegistry, entityId, Utils::VectorToRotation(glm::normalize(focusDirection)));
             }
 
             if (glm::length(nextPosition - focus.targetPosition) < FocusReachThreshold) {
                 focus.active = false;
                 focus.progress = 0.0f;
             }
+            return changed;
         }
 
         InputState &m_inputState;

@@ -9,10 +9,6 @@
 #include "../RenderCore/MaterialBindings.hpp"
 #include "../RenderCore/PipelineLibrary.hpp"
 #include "../RenderScene/RenderScene.hpp"
-#include "../ECS/SceneRegistry.hpp"
-#include "../Components/TransformComponent.hpp"
-#include "../Components/MeshRendererComponent.hpp"
-
 namespace FeatherVK {
     class ShadowSystem {
     public:
@@ -32,7 +28,7 @@ namespace FeatherVK {
         ShadowSystem &operator=(const ShadowSystem &) = delete;
 
         void renderShadow(FrameInfo &frameInfo) {
-            if (frameInfo.commandList == nullptr) {
+            if (frameInfo.commandList == nullptr || frameInfo.renderScene == nullptr) {
                 return;
             }
 
@@ -40,60 +36,16 @@ namespace FeatherVK {
             RenderCore::MaterialBindingsView materialBindings{*material};
             frameInfo.commandList->BindResources(*pipeline, 0, materialBindings.GetBindSets());
 
-            if (frameInfo.renderScene != nullptr) {
-                for (const auto &meshInstance: frameInfo.renderScene->GetMeshInstances()) {
-                    if (!meshInstance.IsRenderable() ||
-                        !meshInstance.defaultRenderLayer ||
-                        !meshInstance.castShadow) {
-                        continue;
-                    }
-
-                    const auto materialEntry = frameInfo.materials.find(meshInstance.materialId);
-                    if (materialEntry != frameInfo.materials.end() &&
-                        materialEntry->second->getPipelineCategory() == PipelineCategory.SkyBox) {
-                        continue;
-                    }
-
-                    ShadowPushConstant push{};
-                    push.modelMatrix = meshInstance.worldTransform;
-                    frameInfo.commandList->PushConstants(*pipeline, RHI::ShaderStage::Vertex | RHI::ShaderStage::Fragment,
-                                                         0, sizeof(ShadowPushConstant), &push);
-                    SubmitRenderMeshDraw(*frameInfo.commandList, meshInstance.renderMesh);
-                }
-                return;
-            }
-
-            if (frameInfo.sceneRegistry == nullptr) {
-                return;
-            }
-
-            auto &sceneRegistry = *frameInfo.sceneRegistry;
-            for (const id_t entityId: sceneRegistry.View<MeshRendererComponent, TransformComponent>()) {
-                if (!sceneRegistry.IsEntityActive(entityId)) {
-                    continue;
-                }
-
-                TransformComponent *transformComponent = nullptr;
-                MeshRendererComponent *meshRendererComponent = nullptr;
-                if (!sceneRegistry.TryGetComponent(entityId, transformComponent) || transformComponent == nullptr ||
-                    !sceneRegistry.TryGetComponent(entityId, meshRendererComponent) || meshRendererComponent == nullptr ||
-                    !meshRendererComponent->IsVisible() ||
-                    !meshRendererComponent->IsOnDefaultRenderLayer() ||
-                    !meshRendererComponent->CastsShadow() ||
-                    meshRendererComponent->GetModelPtr() == nullptr) {
-                    continue;
-                }
-
-                auto material = frameInfo.materials.at(meshRendererComponent->GetMaterialID());
-                if (material->getPipelineCategory() == PipelineCategory.SkyBox) {
+            for (const auto &meshInstance: frameInfo.renderScene->GetMeshInstances()) {
+                if (!meshInstance.IsShadowCaster()) {
                     continue;
                 }
 
                 ShadowPushConstant push{};
-                push.modelMatrix = transformComponent->mat4();
+                push.modelMatrix = meshInstance.worldTransform;
                 frameInfo.commandList->PushConstants(*pipeline, RHI::ShaderStage::Vertex | RHI::ShaderStage::Fragment,
                                                      0, sizeof(ShadowPushConstant), &push);
-                SubmitRenderMeshDraw(*frameInfo.commandList, meshRendererComponent->GetModelPtr()->GetRenderMesh());
+                SubmitRenderMeshDraw(*frameInfo.commandList, meshInstance.renderMesh);
             }
         }
 

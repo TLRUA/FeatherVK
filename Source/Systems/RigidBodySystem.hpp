@@ -41,7 +41,8 @@ namespace FeatherVK {
             }
         }
 
-        void FixedUpdate(ECS::SceneRegistry &sceneRegistry) const {
+        bool FixedUpdate(ECS::SceneRegistry &sceneRegistry) const {
+            bool moved = false;
             for (const auto entityId: sceneRegistry.View<RigidBodyComponent, TransformComponent>()) {
                 if (!sceneRegistry.IsEntityActive(entityId)) {
                     continue;
@@ -79,9 +80,10 @@ namespace FeatherVK {
                     rigidBody->omega = glm::vec3(0.0f);
                 }
 
-                m_transformService.Translate(sceneRegistry, entityId, rigidBody->velocity * FIXED_UPDATE_INTERVAL);
-                m_transformService.Rotate(sceneRegistry, entityId, rigidBody->omega * FIXED_UPDATE_INTERVAL);
+                moved |= m_transformService.Translate(sceneRegistry, entityId, rigidBody->velocity * FIXED_UPDATE_INTERVAL);
+                moved |= m_transformService.Rotate(sceneRegistry, entityId, rigidBody->omega * FIXED_UPDATE_INTERVAL);
             }
+            return moved;
         }
 
         void LateFixedUpdate(ECS::SceneRegistry &sceneRegistry) const {

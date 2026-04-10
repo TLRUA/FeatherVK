@@ -60,6 +60,15 @@ namespace FeatherVK {
         [[nodiscard]] virtual bool ConsumeSceneSaveRequest() = 0;
     };
 
+    class IRenderInvalidationSink {
+    public:
+        virtual ~IRenderInvalidationSink() = default;
+
+        virtual void MarkRenderSceneDirty() = 0;
+        virtual void MarkMeshRendererRenderResourcesDirty(id_t entityId) = 0;
+        virtual void MarkAllMeshRendererRenderResourcesDirty() = 0;
+    };
+
 #ifdef RAY_TRACING
     inline constexpr int32_t EntityRenderOptionCastShadow = 1 << 0;
     inline constexpr int32_t EntityRenderOptionReceiveShadow = 1 << 1;
@@ -118,6 +127,8 @@ namespace FeatherVK {
         id_t selectedEntityId;
         bool sceneUpdated;
         const RenderScene *renderScene;
+        const std::unordered_map<id_t, id_t> *rayTracingInstanceIds{nullptr};
+        IRenderInvalidationSink *renderInvalidationSink{nullptr};
 #ifdef RAY_TRACING
         std::shared_ptr<Buffer> pEntityDescBuffer;
         std::vector<EntityDesc> pEntityDescs;

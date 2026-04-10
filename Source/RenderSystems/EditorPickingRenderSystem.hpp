@@ -1,8 +1,6 @@
 ﻿#pragma once
 
 #include "RenderSystem.h"
-#include "../ECS/SceneRegistry.hpp"
-#include "../Managers/EntityLifecycleUtils.hpp"
 
 namespace FeatherVK {
     struct PickingPushConstantData {
@@ -20,50 +18,8 @@ namespace FeatherVK {
             Init();
         }
 
-        void render(FrameInfo &frameInfo, id_t entityId, ECS::SceneRegistry &sceneRegistry) override {
-            if (!EntityLifecycle::IsActive(frameInfo, entityId)) {
-                return;
-            }
-
-            TransformComponent *transformComponent = nullptr;
-            MeshRendererComponent *meshRendererComponent = nullptr;
-            if (!sceneRegistry.TryGetComponent(entityId, transformComponent) || transformComponent == nullptr ||
-                !sceneRegistry.TryGetComponent(entityId, meshRendererComponent) || meshRendererComponent == nullptr ||
-                !meshRendererComponent->IsVisible() ||
-                !meshRendererComponent->IsOnDefaultRenderLayer() ||
-                meshRendererComponent->GetModelPtr() == nullptr) {
-                return;
-            }
-
-            if (ShouldSkipPipeline(frameInfo, meshRendererComponent->GetMaterialID())) {
-                return;
-            }
-
-            BindCommonDescriptors(frameInfo);
-
-            PickingPushConstantData push{};
-            push.modelMatrix = transformComponent->mat4();
-            push.idCarrier = transformComponent->normalMatrix();
-            push.idCarrier[3][3] = static_cast<float>(entityId);
-
-            frameInfo.commandList->PushConstants(*m_pipeline, RHI::ShaderStage::Vertex | RHI::ShaderStage::Fragment,
-                                                 0, sizeof(PickingPushConstantData), &push);
-
-            if (frameInfo.commandList != nullptr) {
-                SubmitRenderMeshDraw(*frameInfo.commandList, meshRendererComponent->GetModelPtr()->GetRenderMesh());
-            }
-        }
-
         void render(FrameInfo &frameInfo, const RenderMeshInstance &meshInstance) {
-            if (!meshInstance.IsRenderable() || !meshInstance.defaultRenderLayer) {
-                return;
-            }
-
-            if (!EntityLifecycle::IsActive(frameInfo, meshInstance.entityId)) {
-                return;
-            }
-
-            if (ShouldSkipPipeline(frameInfo, meshInstance.materialId)) {
+            if (!meshInstance.IsPickable()) {
                 return;
             }
 

@@ -1,7 +1,5 @@
 ﻿#pragma  once
 
-#include <limits>
-
 #include "RenderSystem.h"
 
 namespace FeatherVK {
@@ -13,10 +11,25 @@ namespace FeatherVK {
                     RenderCore::PipelineLibrary &pipelineLibrary) : RenderSystem(device, renderPass, material, pipelineLibrary) {
         }
 
+        void render(FrameInfo &frameInfo, const RenderMeshInstance &meshInstance) override {
+            if (frameInfo.commandList == nullptr || !meshInstance.IsRenderable()) {
+                return;
+            }
+
+            frameInfo.commandList->BindPipeline(*m_pipeline);
+            BindMaterialResources(frameInfo);
+
+            GrassPushConstant push{};
+            push.modelMatrix = meshInstance.worldTransform;
+
+            frameInfo.commandList->PushConstants(*m_pipeline, RHI::ShaderStage::AllGraphics,
+                                                 0, sizeof(GrassPushConstant), &push);
+            SubmitRenderMeshDraw(*frameInfo.commandList, meshInstance.renderMesh);
+        }
+
     private:
         struct GrassPushConstant {
-            glm::mat4 modelMatrix;
-            glm::mat4 vaseModelMatrix;
+            glm::mat4 modelMatrix{1.0f};
         };
 
         void createPipelineLayout() override {
@@ -55,39 +68,6 @@ namespace FeatherVK {
                     m_material);
         }
 
-        void render(FrameInfo &frameInfo, id_t entityId, ECS::SceneRegistry &sceneRegistry) override {
-            if (frameInfo.commandList == nullptr) {
-                return;
-            }
-            frameInfo.commandList->BindPipeline(*m_pipeline);
-            BindMaterialResources(frameInfo);
-
-            TransformComponent *transformComponent = nullptr;
-            MeshRendererComponent *meshRendererComponent = nullptr;
-            if (!sceneRegistry.TryGetComponent(entityId, transformComponent) || transformComponent == nullptr ||
-                !sceneRegistry.TryGetComponent(entityId, meshRendererComponent) || meshRendererComponent == nullptr ||
-                meshRendererComponent->GetModelPtr() == nullptr) {
-                return;
-            }
-
-            GrassPushConstant push{};
-            if (m_moveEntityId == InvalidEntityId && sceneRegistry.GetEntityName(entityId) == "Vase") {
-                m_moveEntityId = entityId;
-            }
-            if (m_moveEntityId != InvalidEntityId && sceneRegistry.IsAlive(m_moveEntityId)) {
-                TransformComponent *moveTransform = nullptr;
-                if (sceneRegistry.TryGetComponent(m_moveEntityId, moveTransform) && moveTransform != nullptr) {
-                    push.vaseModelMatrix = moveTransform->mat4();
-                }
-            }
-            push.modelMatrix = transformComponent->mat4();
-            frameInfo.commandList->PushConstants(*m_pipeline, RHI::ShaderStage::AllGraphics,
-                                                 0, sizeof(GrassPushConstant), &push);
-            SubmitRenderMeshDraw(*frameInfo.commandList, meshRendererComponent->GetModelPtr()->GetRenderMesh());
-        }
-
-        static constexpr id_t InvalidEntityId = std::numeric_limits<id_t>::max();
-        id_t m_moveEntityId = InvalidEntityId;
     };
 }
 

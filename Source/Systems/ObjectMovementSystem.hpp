@@ -6,7 +6,9 @@
 #include "../Components/TransformComponent.hpp"
 #include "../Core/InputState.hpp"
 #include "../ECS/SceneRegistry.hpp"
+#include "../Managers/EditorSceneUtils.hpp"
 #include "../Managers/TransformService.hpp"
+#include "../StructureInfos.h"
 
 namespace FeatherVK {
     class ObjectMovementSystem {
@@ -14,7 +16,8 @@ namespace FeatherVK {
         ObjectMovementSystem(InputState &inputState, TransformService &transformService)
             : m_inputState(inputState), m_transformService(transformService) {}
 
-        void Update(ECS::SceneRegistry &sceneRegistry) const {
+        void Update(ECS::SceneRegistry &sceneRegistry, FrameInfo &frameInfo) const {
+            bool moved = false;
             for (const auto entityId: sceneRegistry.View<ObjectMovementComponent, TransformComponent>()) {
                 if (!sceneRegistry.IsEntityActive(entityId)) {
                     continue;
@@ -44,8 +47,11 @@ namespace FeatherVK {
                 }
 
                 if (glm::dot(delta, delta) > std::numeric_limits<float>::epsilon()) {
-                    m_transformService.Translate(sceneRegistry, entityId, delta);
+                    moved |= m_transformService.Translate(sceneRegistry, entityId, delta);
                 }
+            }
+            if (moved) {
+                EditorSceneUtils::MarkRenderSceneDirty(frameInfo);
             }
         }
 

@@ -13,6 +13,7 @@
 #include "../Systems/TransformHierarchySystem.hpp"
 #include "TransformService.hpp"
 #include "EditorInteractionSystem.hpp"
+#include "EditorSceneUtils.hpp"
 #include "ResourceManager.hpp"
 
 namespace FeatherVK {
@@ -55,7 +56,7 @@ namespace FeatherVK {
 
             m_transformHierarchySystem->Update(sceneRegistry, m_resourceManager->GetHierarchyService(), m_resourceManager->GetTransformService());
             m_rigidBodySystem->Initialize(sceneRegistry);
-            m_objectMovementSystem->Update(sceneRegistry);
+            m_objectMovementSystem->Update(sceneRegistry, frameInfo);
             m_cameraMovementSystem->Update(sceneRegistry, frameInfo, rendererInfo);
             m_transformHierarchySystem->Update(sceneRegistry, m_resourceManager->GetHierarchyService(), m_resourceManager->GetTransformService());
             m_cameraSystem->Update(sceneRegistry, frameInfo, rendererInfo);
@@ -76,7 +77,9 @@ namespace FeatherVK {
             while (frameTime >= FIXED_UPDATE_INTERVAL) {
                 frameTime -= FIXED_UPDATE_INTERVAL;
 
-                m_rigidBodySystem->FixedUpdate(sceneRegistry);
+                if (m_rigidBodySystem->FixedUpdate(sceneRegistry)) {
+                    EditorSceneUtils::MarkRenderSceneDirty(frameInfo);
+                }
                 m_rigidBodySystem->LateFixedUpdate(sceneRegistry);
                 m_transformHierarchySystem->Update(sceneRegistry, m_resourceManager->GetHierarchyService(), m_resourceManager->GetTransformService());
             }

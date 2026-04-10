@@ -16,7 +16,6 @@ layout (location = 3) out vec2 outUv;
 
 layout (push_constant) uniform PushConstantData {
     mat4 modelMatrix;
-    mat4 vaseModelMatrix;
 } push;
 
 float rand(vec2 co) {
@@ -25,7 +24,6 @@ float rand(vec2 co) {
 
 float _Width = 0.014, _Height = 0.3, _BendDegree = 12, _BendSpeed = 3;
 const float PI = 3.1415926535;
-float _CollisionRadius = 0.45;
 
 mat3 rotateMatrix(vec3 axis, float angle) {
     float c = cos(angle);
@@ -58,28 +56,9 @@ void main() {
     float curHeight = 0;
     float layerHeight = _Height * 0.2;
     float bendRadian = (_BendDegree + sin(ubo.curTime * _BendSpeed + random * 180) * 6 + random) * PI / 180;
-    vec3 obstacleWorldPos = push.vaseModelMatrix[3].xyz;
-    float obstacleRootDistance = distance(vec4(push.modelMatrix * rootWorldPos).xyz, obstacleWorldPos);
-    bool isBend = false;
-    if (obstacleRootDistance < _CollisionRadius)
-    {
-        isBend = true;
-    }
 
     for (int i = 0; i < 12; i++)
     {
-        if (isBend)
-        {
-            float maxBendRadian = radians(90);
-            bendRadian = mix(maxBendRadian, 0, clamp(0, 1, obstacleRootDistance / _CollisionRadius));
-            vec3 forward = (push.modelMatrix * vec4(0, 0, 1, 1)).xyz;
-            vec3 dir = normalize(rootWorldPos.xyz - obstacleWorldPos);
-            if (dot(forward, dir) < 0)
-            {
-                bendRadian *= -1;
-            }
-            isBend = true;
-        }
         int level = i / 2;
         float widthWeight = 0.8 - 0.03 * level * level;
         vec3 axis;

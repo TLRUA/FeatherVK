@@ -18,7 +18,6 @@
 #include "../Components/Input/ObjectMovementComponent.hpp"
 #include "../Components/LightComponent.hpp"
 #include "../Components/MeshRendererComponent.hpp"
-#include "../Components/RayTracingInstanceComponent.hpp"
 #include "../Components/RigidBodyComponent.hpp"
 #include "../Components/TransformComponent.hpp"
 #include "../Components/UIComponent.hpp"
@@ -66,9 +65,6 @@ namespace FeatherVK {
             LightComponent,
             RigidBodyComponent,
             UIComponent,
-#ifdef RAY_TRACING
-            RayTracingInstanceComponent,
-#endif
         };
 
         struct ComponentAvailability {
@@ -122,9 +118,6 @@ namespace FeatherVK {
             AppendComponentOption(options, sceneRegistry, entityId, ComponentPreset::CameraMovementComponent);
             AppendComponentOption(options, sceneRegistry, entityId, ComponentPreset::ObjectMovementComponent);
             AppendComponentOption(options, sceneRegistry, entityId, ComponentPreset::UIComponent);
-#ifdef RAY_TRACING
-            AppendComponentOption(options, sceneRegistry, entityId, ComponentPreset::RayTracingInstanceComponent);
-#endif
             return options;
         }
 
@@ -145,6 +138,12 @@ namespace FeatherVK {
                 return false;
             }
 
+            if (preset == ComponentPreset::MeshRendererComponent ||
+                preset == ComponentPreset::LightComponent) {
+                EditorSceneUtils::MarkMeshRendererRenderResourcesDirty(frameInfo, entityId);
+            } else {
+                EditorSceneUtils::MarkRenderSceneDirty(frameInfo);
+            }
             EditorSceneUtils::MarkSceneDirty(frameInfo, true);
             return true;
         }
@@ -213,17 +212,6 @@ namespace FeatherVK {
                         availability.disabledReason = "Requires MeshRendererComponent";
                     }
                     break;
-#ifdef RAY_TRACING
-                case ComponentPreset::RayTracingInstanceComponent:
-                    if (!sceneRegistry.HasComponent<MeshRendererComponent>(entityId)) {
-                        availability.enabled = false;
-                        availability.disabledReason = "Requires MeshRendererComponent";
-                    } else if (m_rayTracingSceneContext == nullptr) {
-                        availability.enabled = false;
-                        availability.disabledReason = "Ray tracing is unavailable";
-                    }
-                    break;
-#endif
                 default:
                     break;
             }
@@ -259,10 +247,6 @@ namespace FeatherVK {
                     return sceneRegistry.HasComponent<RigidBodyComponent>(entityId);
                 case ComponentPreset::UIComponent:
                     return sceneRegistry.HasComponent<UIComponent>(entityId);
-#ifdef RAY_TRACING
-                case ComponentPreset::RayTracingInstanceComponent:
-                    return sceneRegistry.HasComponent<RayTracingInstanceComponent>(entityId);
-#endif
                 default:
                     return false;
             }
@@ -300,13 +284,6 @@ namespace FeatherVK {
                     sceneRegistry.EmplaceComponent<UIComponent>(entityId, elementType);
                     return true;
                 }
-#ifdef RAY_TRACING
-                case ComponentPreset::RayTracingInstanceComponent:
-                    sceneRegistry.EmplaceComponent<RayTracingInstanceComponent>(
-                        entityId,
-                        m_rayTracingSceneContext != nullptr ? m_rayTracingSceneContext->AllocateInstanceId() : RayTracingInstanceComponent::InvalidInstanceId);
-                    return true;
-#endif
                 default:
                     return false;
             }
@@ -396,6 +373,11 @@ namespace FeatherVK {
             }
 
             EditorSceneUtils::MarkSceneDirty(frameInfo, true);
+            if (sceneRegistry.HasComponent<MeshRendererComponent>(entityId)) {
+                EditorSceneUtils::MarkMeshRendererRenderResourcesDirty(frameInfo, entityId);
+            } else {
+                EditorSceneUtils::MarkRenderSceneDirty(frameInfo);
+            }
             return entityId;
         }
 
@@ -440,11 +422,6 @@ namespace FeatherVK {
                     ApplyLightEmitterDefaults(sceneRegistry, entityId, *lightComponent);
                 }
             }
-#ifdef RAY_TRACING
-            if (m_rayTracingSceneContext != nullptr && !sceneRegistry.HasComponent<RayTracingInstanceComponent>(entityId)) {
-                sceneRegistry.EmplaceComponent<RayTracingInstanceComponent>(entityId, m_rayTracingSceneContext->AllocateInstanceId());
-            }
-#endif
             std::cerr << "[Editor] Created " << spec.displayName << " entity " << entityId
                       << " model='" << model->GetName() << "'"
                       << " materialId=" << materialId << "\n";
@@ -545,6 +522,7 @@ namespace FeatherVK {
 
             hierarchyService.RemoveEntity(entityId);
             m_deferredDestroyRequests.emplace_back(std::move(destroyRequest));
+            EditorSceneUtils::MarkAllMeshRendererRenderResourcesDirty(frameInfo);
             EditorSceneUtils::MarkSceneDirty(frameInfo, true);
         }
 
@@ -562,6 +540,7 @@ namespace FeatherVK {
                     selectionService.ClearIfSelected(entityId);
                     sceneRegistry.DestroyEntity(entityId);
                 }
+                EditorSceneUtils::MarkAllMeshRendererRenderResourcesDirty(frameInfo);
                 EditorSceneUtils::MarkSceneDirty(frameInfo, true);
                 requestIt = m_deferredDestroyRequests.erase(requestIt);
             }
@@ -992,10 +971,6 @@ namespace FeatherVK {
                     return "RigidBodyComponent";
                 case ComponentPreset::UIComponent:
                     return "UIComponent";
-#ifdef RAY_TRACING
-                case ComponentPreset::RayTracingInstanceComponent:
-                    return "RayTracingInstanceComponent";
-#endif
                 default:
                     return "Component";
             }

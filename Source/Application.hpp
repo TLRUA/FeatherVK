@@ -90,6 +90,7 @@ namespace FeatherVK {
                             m_resourceManager->GetEditorSelectionService().GetSelectedId(),
                             false,
                             nullptr};
+                    frameInfo.renderInvalidationSink = m_resourceManager.get();
 
                     GUI::BeginFrame(ImVec2(static_cast<float>(windowExtent.width), static_cast<float>(windowExtent.height)));
                     UpdateComponents(frameInfo);

@@ -4,6 +4,7 @@
 #include <limits>
 #include <numeric>
 #include <optional>
+#include <unordered_set>
 #include <rapidjson/prettywriter.h>
 #include <rapidjson/stringbuffer.h>
 #include "../Core/InputState.hpp"
@@ -25,7 +26,6 @@
 #include "../Components/Input/ObjectMovementComponent.hpp"
 #include "../Components/LightComponent.hpp"
 #include "../Components/MeshRendererComponent.hpp"
-#include "../Components/RayTracingInstanceComponent.hpp"
 #include "../Components/RigidBodyComponent.hpp"
 #include "../Components/TransformComponent.hpp"
 #include "../ECS/SceneRegistry.hpp"
@@ -63,7 +63,7 @@ namespace FeatherVK {
     constexpr uint32_t RuntimeEntityDescCapacity = 1024;
 #endif
 
-    class ResourceManager final : public IEditorScenePersistence {
+    class ResourceManager final : public IEditorScenePersistence, public IRenderInvalidationSink {
     public:
         ResourceManager()
             : m_modelRepository(m_device),
@@ -140,6 +140,33 @@ namespace FeatherVK {
 
         void ClearSceneDirty() override { m_sceneDirty = false; }
 
+        void MarkRenderSceneDirty() override {
+            m_renderSceneDirty = true;
+        }
+
+        [[nodiscard]] bool IsRenderSceneDirty() const {
+            return m_renderSceneDirty;
+        }
+
+        bool ConsumeRenderSceneDirty() {
+            const bool dirty = m_renderSceneDirty;
+            m_renderSceneDirty = false;
+            return dirty;
+        }
+
+        void MarkMeshRendererRenderResourcesDirty(id_t entityId) override {
+            if (entityId != std::numeric_limits<id_t>::max()) {
+                m_dirtyMeshRendererRenderResourceEntities.insert(entityId);
+            }
+            m_renderSceneDirty = true;
+        }
+
+        void MarkAllMeshRendererRenderResourcesDirty() override {
+            m_meshRendererRenderResourcesFullRebuildDirty = true;
+            m_dirtyMeshRendererRenderResourceEntities.clear();
+            m_renderSceneDirty = true;
+        }
+
         void RequestSceneSave() override {
             m_sceneSaveRequested = true;
             m_sceneDirty = true;
@@ -153,13 +180,10 @@ namespace FeatherVK {
 
         bool SyncSceneViewportLayout(const ViewportRect &scenePanelRect, const ViewportRect &sceneViewportRect) {
             const bool sceneExtentChanged = m_renderer.UpdateSceneViewportLayout(scenePanelRect, sceneViewportRect);
-#ifdef RAY_TRACING
-            if (sceneExtentChanged) {
-                RefreshSceneSizedDescriptors();
-            }
-#endif
             if (sceneExtentChanged) {
                 m_renderCoreRenderTargetsDirty = true;
+                MarkSceneSizedImageDescriptorsDirty();
+                MarkRenderSceneDirty();
             }
             return sceneExtentChanged;
         }
@@ -175,6 +199,7 @@ namespace FeatherVK {
                 m_renderCoreRenderTargetsDirty = false;
             }
             SyncMeshRendererRenderCoreResources();
+            FlushPendingDescriptorRefreshes();
         }
 
 #ifdef RAY_TRACING
@@ -200,10 +225,35 @@ namespace FeatherVK {
             return m_rayTracingSceneContext.HasValidTlas();
         }
 
-        bool RefreshRayTracingTlasDescriptor() {
-            return RefreshRayTracingRayGenDescriptorSet();
+        void MarkRayTracingTlasDescriptorDirty() {
+            MarkRayTracingRayGenDescriptorsDirty();
         }
 #endif
+
+        bool FlushPendingDescriptorRefreshes() {
+            bool refreshed = false;
+            if (m_postDescriptorDirty) {
+                if (RefreshPostDescriptorSet()) {
+                    m_postDescriptorDirty = false;
+                    refreshed = true;
+                }
+            }
+#ifdef RAY_TRACING
+            if (m_rayTracingRayGenDescriptorDirty) {
+                if (RefreshRayTracingRayGenDescriptorSet()) {
+                    m_rayTracingRayGenDescriptorDirty = false;
+                    refreshed = true;
+                }
+            }
+            if (m_computeDescriptorDirty) {
+                if (RefreshComputeDescriptorSet()) {
+                    m_computeDescriptorDirty = false;
+                    refreshed = true;
+                }
+            }
+#endif
+            return refreshed;
+        }
 
         void SaveScene() {
             rapidjson::Document entitiesDocument;
@@ -446,14 +496,6 @@ namespace FeatherVK {
 #ifdef RAY_TRACING
             for (const auto entityId: m_sceneRegistry.View<MeshRendererComponent>()) {
                 auto *meshRendererComponent = TryGetSceneComponent<MeshRendererComponent>(entityId);
-                if (meshRendererComponent == nullptr || m_sceneRegistry.HasComponent<RayTracingInstanceComponent>(entityId)) {
-                    continue;
-                }
-                m_sceneRegistry.EmplaceComponent<RayTracingInstanceComponent>(entityId, m_rayTracingSceneContext.AllocateInstanceId());
-            }
-
-            for (const auto entityId: m_sceneRegistry.View<MeshRendererComponent>()) {
-                auto *meshRendererComponent = TryGetSceneComponent<MeshRendererComponent>(entityId);
                 if (meshRendererComponent != nullptr && meshRendererComponent->GetModelPtr() != nullptr) {
                     m_rayTracingSceneContext.QueueBlasBuild(meshRendererComponent->GetModelPtr());
                 }
@@ -565,30 +607,6 @@ namespace FeatherVK {
                 m_rayTracingMaterialDescs.emplace(entry.first, materialDesc);
             }
 
-            for (const auto entityId: m_sceneRegistry.View<MeshRendererComponent, TransformComponent, RayTracingInstanceComponent>()) {
-                auto *meshRendererComponent = TryGetSceneComponent<MeshRendererComponent>(entityId);
-                auto *transformComponent = TryGetSceneComponent<TransformComponent>(entityId);
-                auto *rayTracingInstance = TryGetSceneComponent<RayTracingInstanceComponent>(entityId);
-                if (meshRendererComponent == nullptr || transformComponent == nullptr || rayTracingInstance == nullptr) {
-                    continue;
-                }
-
-                auto model = meshRendererComponent->GetModelPtr();
-                if (model == nullptr) {
-                    continue;
-                }
-
-                m_rayTracingSceneContext.CreateInstance(
-                    *model,
-                    rayTracingInstance->instanceId,
-                    static_cast<id_t>(idShaderOffsetMap[meshRendererComponent->GetMaterialID()]),
-                    transformComponent->mat4(),
-                    m_sceneRegistry.IsEntityActive(entityId) && meshRendererComponent->IsVisible()
-                        ? meshRendererComponent->GetRayTracingVisibilityMask()
-                        : 0x00);
-            }
-            m_rayTracingSceneContext.BuildTopLevel();
-
             //TLAS, offscreen, GBuffer
             auto rayGenDescriptorSetLayoutPtr = DescriptorSetLayout::Builder(m_device).
                     addBinding(0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_ANY_HIT_BIT_KHR).
@@ -650,51 +668,7 @@ namespace FeatherVK {
                     build(rayGenDescriptorSet);
 
             //ObjectDesc
-            const auto meshRendererEntities = m_sceneRegistry.View<MeshRendererComponent>();
-            size_t maxTlasId = 0;
-            for (const auto entityId: meshRendererEntities) {
-                auto *meshRendererComponent = TryGetSceneComponent<MeshRendererComponent>(entityId);
-                auto *rayTracingInstance = TryGetSceneComponent<RayTracingInstanceComponent>(entityId);
-                if (meshRendererComponent == nullptr || rayTracingInstance == nullptr) {
-                    continue;
-                }
-                maxTlasId = std::max(maxTlasId, static_cast<size_t>(rayTracingInstance->instanceId));
-            }
-
             m_pEntityDescs.clear();
-            m_pEntityDescs.resize(maxTlasId + 1);
-            for (const auto entityId: meshRendererEntities) {
-                EntityDesc modelDesc{};
-                auto *meshRendererComponent = TryGetSceneComponent<MeshRendererComponent>(entityId);
-                auto *rayTracingInstance = TryGetSceneComponent<RayTracingInstanceComponent>(entityId);
-                if (meshRendererComponent == nullptr || rayTracingInstance == nullptr || meshRendererComponent->GetModelPtr() == nullptr) {
-                    continue;
-                }
-
-                modelDesc.vertexBufferAddress = meshRendererComponent->GetModelPtr()->getVertexBuffer()->getDeviceAddress();
-                modelDesc.indexBufferAddress = meshRendererComponent->GetModelPtr()->getIndexBuffer()->getDeviceAddress();
-                auto entry = textureEntries.find(meshRendererComponent->GetMaterialID());
-                if (entry != textureEntries.end()) {
-                    modelDesc.textureEntry = entry->second;
-                }
-                auto pbrEntry = pbrMaterials.find(meshRendererComponent->GetMaterialID());
-                if (pbrEntry != pbrMaterials.end()) {
-                    modelDesc.pbr = pbrEntry->second;
-                } else {
-                    auto baseDescEntry = m_rayTracingMaterialDescs.find(meshRendererComponent->GetMaterialID());
-                    if (baseDescEntry != m_rayTracingMaterialDescs.end()) {
-                        modelDesc.pbr = baseDescEntry->second.pbr;
-                    }
-                }
-                if (meshRendererComponent->HasPbrOverride()) {
-                    modelDesc.pbr = *meshRendererComponent->GetPbrOverride();
-                }
-                modelDesc.renderOptions =
-                    (meshRendererComponent->CastsShadow() ? EntityRenderOptionCastShadow : 0) |
-                    (meshRendererComponent->ReceivesShadow() ? EntityRenderOptionReceiveShadow : 0);
-                modelDesc.renderLayer = static_cast<int32_t>(std::min(meshRendererComponent->GetRenderLayer(), 7u));
-                m_pEntityDescs[rayTracingInstance->instanceId] = modelDesc;
-            }
 
             const uint32_t entityDescBufferCount = static_cast<uint32_t>(std::max(
                     m_pEntityDescs.size(),
@@ -1111,12 +1085,35 @@ namespace FeatherVK {
             m_modelRepository.SetRenderResourceRegistry(&m_renderCore.GetResourceRegistry());
             m_renderCoreStaticResourcesRegistered = false;
             m_renderCoreRenderTargetsDirty = true;
+            MarkSceneSizedImageDescriptorsDirty();
             m_materialResourceHandles.clear();
             for (auto &[textureKey, textureEntry]: m_textureCache) {
                 (void) textureKey;
                 textureEntry.textureHandle = {};
             }
         }
+
+        void MarkPostDescriptorsDirty() {
+            m_postDescriptorDirty = true;
+        }
+
+        void MarkSceneSizedImageDescriptorsDirty() {
+            MarkPostDescriptorsDirty();
+#ifdef RAY_TRACING
+            MarkComputeDescriptorsDirty();
+            MarkRayTracingRayGenDescriptorsDirty();
+#endif
+        }
+
+#ifdef RAY_TRACING
+        void MarkComputeDescriptorsDirty() {
+            m_computeDescriptorDirty = true;
+        }
+
+        void MarkRayTracingRayGenDescriptorsDirty() {
+            m_rayTracingRayGenDescriptorDirty = true;
+        }
+#endif
 
         static RHI::Extent2D ToRhiExtent(const VkExtent2D extent) {
             return {extent.width, extent.height};
@@ -1302,8 +1299,27 @@ namespace FeatherVK {
         }
 
         void SyncMeshRendererRenderCoreResources() {
+            if (!m_meshRendererRenderResourcesFullRebuildDirty &&
+                m_dirtyMeshRendererRenderResourceEntities.empty()) {
+                return;
+            }
+
             auto &registry = m_renderCore.GetResourceRegistry();
-            for (const auto entityId: m_sceneRegistry.View<MeshRendererComponent>()) {
+            std::vector<id_t> entitiesToSync{};
+            if (m_meshRendererRenderResourcesFullRebuildDirty) {
+                const auto meshEntities = m_sceneRegistry.View<MeshRendererComponent>();
+                entitiesToSync.reserve(meshEntities.size());
+                for (const auto entityId: meshEntities) {
+                    entitiesToSync.push_back(entityId);
+                }
+            } else {
+                entitiesToSync.reserve(m_dirtyMeshRendererRenderResourceEntities.size());
+                for (const auto entityId: m_dirtyMeshRendererRenderResourceEntities) {
+                    entitiesToSync.push_back(entityId);
+                }
+            }
+
+            for (const auto entityId: entitiesToSync) {
                 auto *meshRenderer = TryGetSceneComponent<MeshRendererComponent>(entityId);
                 if (meshRenderer == nullptr) {
                     continue;
@@ -1362,6 +1378,9 @@ namespace FeatherVK {
                     meshRenderer->SetMaterialInstanceHandle({});
                 }
             }
+
+            m_dirtyMeshRendererRenderResourceEntities.clear();
+            m_meshRendererRenderResourcesFullRebuildDirty = false;
         }
 
         bool RefreshPostDescriptorSet() {
@@ -1543,11 +1562,6 @@ namespace FeatherVK {
             return true;
         }
 
-        void RefreshSceneSizedDescriptors() {
-            RefreshRayTracingRayGenDescriptorSet();
-            RefreshPostDescriptorSet();
-            RefreshComputeDescriptorSet();
-        }
 #endif
 
         template<typename T>
@@ -1574,8 +1588,16 @@ namespace FeatherVK {
         std::unordered_map<Material::id_t, RenderCore::RenderResourceHandle> m_materialResourceHandles;
         bool m_sceneDirty = false;
         bool m_sceneSaveRequested = false;
+        bool m_renderSceneDirty = true;
         bool m_renderCoreStaticResourcesRegistered = false;
         bool m_renderCoreRenderTargetsDirty = true;
+        bool m_meshRendererRenderResourcesFullRebuildDirty = true;
+        std::unordered_set<id_t> m_dirtyMeshRendererRenderResourceEntities{};
+        bool m_postDescriptorDirty = false;
+#ifdef RAY_TRACING
+        bool m_computeDescriptorDirty = false;
+        bool m_rayTracingRayGenDescriptorDirty = false;
+#endif
 
 #ifdef RAY_TRACING
         RayTracingSceneContext m_rayTracingSceneContext;

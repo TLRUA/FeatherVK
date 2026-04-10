@@ -2,6 +2,8 @@
 
 #include <limits>
 #include <optional>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -14,6 +16,13 @@
 #include "../Utils/Utils.hpp"
 
 namespace FeatherVK {
+    struct RenderLightProxy {
+        LightCategory lightCategory{LightCategory::NONE};
+        glm::vec3 color{1.0f};
+        float intensity{1.0f};
+        float radius{1.0f};
+    };
+
     struct RenderView {
         ViewportRect panelRect{};
         ViewportRect viewportRect{};
@@ -49,12 +58,19 @@ namespace FeatherVK {
         Material::id_t materialId{0};
         RenderMesh renderMesh{};
         std::optional<PBR> pbrOverride{};
+        std::optional<RenderLightProxy> lightProxy{};
+        std::string pipelineCategory{};
+        unsigned int renderQueue{0};
         uint32_t renderLayer{0};
         bool active{false};
         bool visible{false};
         bool castShadow{false};
         bool receiveShadow{false};
         bool defaultRenderLayer{true};
+        bool skyboxLike{false};
+        bool overlayLike{false};
+        bool lightPassLike{false};
+        bool specialPipeline{false};
         id_t rayTracingInstanceId{std::numeric_limits<id_t>::max()};
 
         [[nodiscard]] bool IsRenderable() const {
@@ -69,8 +85,28 @@ namespace FeatherVK {
             return IsDefaultLayerRenderable() && castShadow;
         }
 
+        [[nodiscard]] bool IsShadowCaster() const {
+            return CastsShadowInDefaultLayer() && !skyboxLike && !overlayLike;
+        }
+
         [[nodiscard]] bool IsRayTracingRenderable() const {
-            return active && visible && meshResource.IsValid();
+            return active && visible && meshResource.IsValid() && !skyboxLike && !overlayLike;
+        }
+
+        [[nodiscard]] bool IsPickable() const {
+            return IsDefaultLayerRenderable() && !skyboxLike && !overlayLike;
+        }
+
+        [[nodiscard]] bool IsSkyboxLike() const {
+            return skyboxLike;
+        }
+
+        [[nodiscard]] bool UsesSpecialPipeline() const {
+            return specialPipeline;
+        }
+
+        [[nodiscard]] bool HasLightProxy() const {
+            return lightProxy.has_value();
         }
     };
 
@@ -83,6 +119,7 @@ namespace FeatherVK {
         glm::vec3 direction{0.0f, 0.0f, 1.0f};
         glm::vec3 color{1.0f};
         float intensity{1.0f};
+        float radius{1.0f};
         bool active{false};
     };
 
@@ -100,6 +137,8 @@ namespace FeatherVK {
             m_camera = {};
             m_meshInstances.clear();
             m_lightInstances.clear();
+            m_meshEntityToIndex.clear();
+            m_lightEntityToIndex.clear();
             m_stats = {};
         }
 
@@ -111,11 +150,22 @@ namespace FeatherVK {
             m_camera = camera;
         }
 
+        void ReserveMeshInstances(size_t count) {
+            m_meshInstances.reserve(count);
+        }
+
+        void ReserveLightInstances(size_t count) {
+            m_lightInstances.reserve(count);
+        }
+
         void AddMeshInstance(RenderMeshInstance meshInstance) {
             if (meshInstance.visible) {
                 ++m_stats.visibleMeshInstanceCount;
             }
             ++m_stats.meshInstanceCount;
+            if (meshInstance.entityId != RenderMeshInstance::InvalidEntityId) {
+                m_meshEntityToIndex[meshInstance.entityId] = m_meshInstances.size();
+            }
             m_meshInstances.push_back(std::move(meshInstance));
         }
 
@@ -124,6 +174,9 @@ namespace FeatherVK {
                 ++m_stats.activeLightCount;
             }
             ++m_stats.lightCount;
+            if (lightInstance.entityId != RenderLightInstance::InvalidEntityId) {
+                m_lightEntityToIndex[lightInstance.entityId] = m_lightInstances.size();
+            }
             m_lightInstances.push_back(std::move(lightInstance));
         }
 
@@ -134,21 +187,19 @@ namespace FeatherVK {
         [[nodiscard]] const RenderSceneStats &GetStats() const { return m_stats; }
 
         [[nodiscard]] const RenderMeshInstance *FindMeshInstance(id_t entityId) const {
-            for (const auto &meshInstance: m_meshInstances) {
-                if (meshInstance.entityId == entityId) {
-                    return &meshInstance;
-                }
+            const auto indexIt = m_meshEntityToIndex.find(entityId);
+            if (indexIt == m_meshEntityToIndex.end() || indexIt->second >= m_meshInstances.size()) {
+                return nullptr;
             }
-            return nullptr;
+            return &m_meshInstances[indexIt->second];
         }
 
         [[nodiscard]] const RenderLightInstance *FindLightInstance(id_t entityId) const {
-            for (const auto &lightInstance: m_lightInstances) {
-                if (lightInstance.entityId == entityId) {
-                    return &lightInstance;
-                }
+            const auto indexIt = m_lightEntityToIndex.find(entityId);
+            if (indexIt == m_lightEntityToIndex.end() || indexIt->second >= m_lightInstances.size()) {
+                return nullptr;
             }
-            return nullptr;
+            return &m_lightInstances[indexIt->second];
         }
 
     private:
@@ -156,6 +207,8 @@ namespace FeatherVK {
         RenderCamera m_camera{};
         std::vector<RenderMeshInstance> m_meshInstances{};
         std::vector<RenderLightInstance> m_lightInstances{};
+        std::unordered_map<id_t, size_t> m_meshEntityToIndex{};
+        std::unordered_map<id_t, size_t> m_lightEntityToIndex{};
         RenderSceneStats m_stats{};
     };
 }

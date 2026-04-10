@@ -49,6 +49,9 @@ namespace FeatherVK {
                 EmplaceRigidBody(sceneRegistry, entityId, componentObject);
                 return;
             }
+            if (typeName == "RayTracingInstanceComponent") {
+                return;
+            }
             if (typeName == "UIComponent") {
                 EmplaceUi(sceneRegistry, entityId, componentObject);
                 return;
