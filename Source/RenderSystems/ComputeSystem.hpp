@@ -14,15 +14,15 @@ namespace FeatherVK {
         };
 
         ComputeSystem(Device &device,
-                      const VkRenderPass &renderPass,
                       std::shared_ptr<Material> material,
                       RenderCore::PipelineLibrary &pipelineLibrary) :
-                RenderSystem(device, renderPass, material, pipelineLibrary) {};
+                RenderSystem(device, std::nullopt, material, pipelineLibrary) {};
 
         ComputeSystem(const RenderSystem &) = delete;
 
 
-        void render(FrameInfo &frameInfo) override {
+        void Record(RenderGraph::RenderGraphPassContext &context) override {
+            auto &frameInfo = context.frameInfo;
             if (frameInfo.commandList == nullptr) {
                 return;
             }
@@ -56,7 +56,7 @@ namespace FeatherVK {
                     {pushConstantRange});
         }
 
-        void createPipeline(VkRenderPass renderPass) override {
+        void createPipeline() override {
             PipelineConfigureInfo pipelineConfigureInfo{};
             Pipeline::setDefaultPipelineConfigureInfo(pipelineConfigureInfo);
             pipelineConfigureInfo.pipelineLayout = m_pipelineLayout;

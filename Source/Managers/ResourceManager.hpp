@@ -16,6 +16,7 @@
 #include "../MyWindow.hpp"
 #include "../Pipeline.hpp"
 #include "../RenderCore/RenderCore.hpp"
+#include "../RenderGraph/RenderGraphResourceCache.hpp"
 #include "../Renderer.h"
 #include "../Sampler.h"
 #include "../Utils/JsonUtils.hpp"
@@ -65,9 +66,37 @@ namespace FeatherVK {
 
     class ResourceManager final : public IEditorScenePersistence, public IRenderInvalidationSink {
     public:
+        struct RenderSceneInvalidation {
+            enum class EventType : uint8_t {
+                FullRebuild,
+                CameraChanged,
+                MeshChanged,
+                LightChanged,
+                TransformChanged,
+                EntityCreated,
+                EntityDeleted,
+                ComponentAdded,
+                ComponentRemoved
+            };
+
+            struct Event {
+                EventType type{EventType::FullRebuild};
+                id_t entityId{std::numeric_limits<id_t>::max()};
+            };
+
+            bool fullRebuild{false};
+            bool cameraDirty{false};
+            std::vector<Event> events{};
+
+            [[nodiscard]] bool HasIncrementalWork() const {
+                return cameraDirty || !events.empty();
+            }
+        };
+
         ResourceManager()
             : m_modelRepository(m_device),
-              m_sceneComponentLoader(m_modelRepository)
+              m_sceneComponentLoader(m_modelRepository),
+              m_renderGraphResourceCache(m_device)
 #ifdef RAY_TRACING
               , m_rayTracingSceneContext(m_device)
 #endif
@@ -81,11 +110,16 @@ namespace FeatherVK {
                     addPoolSize(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, SwapChain::MAX_FRAMES_IN_FLIGHT * MATERIAL_NUMBER).
                     addPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, SwapChain::MAX_FRAMES_IN_FLIGHT * MATERIAL_NUMBER).build();
             m_modelRepository.SetRenderResourceRegistry(&m_renderCore.GetResourceRegistry());
+            m_renderer.SetRenderGraphResourceCache(&m_renderGraphResourceCache);
             m_entityCommandService.SetDependencies(m_modelRepository
 #ifdef RAY_TRACING
                 , &m_rayTracingSceneContext
 #endif
             );
+            m_renderGraphResourceCache.SyncSceneResources(m_renderer.getSceneRenderExtent());
+#ifndef RAY_TRACING
+            m_renderGraphResourceCache.EnsureShadowResources();
+#endif
             loadEntities();
             loadMaterials();
             GUI::Init(m_renderer, m_window, m_device);
@@ -133,6 +167,8 @@ namespace FeatherVK {
 
         RenderCore::CoreServices &GetRenderCore() { return m_renderCore; }
         const RenderCore::CoreServices &GetRenderCore() const { return m_renderCore; }
+        RenderGraph::RenderGraphResourceCache &GetRenderGraphResourceCache() { return m_renderGraphResourceCache; }
+        const RenderGraph::RenderGraphResourceCache &GetRenderGraphResourceCache() const { return m_renderGraphResourceCache; }
 
         [[nodiscard]] bool IsSceneDirty() const override { return m_sceneDirty; }
 
@@ -142,6 +178,8 @@ namespace FeatherVK {
 
         void MarkRenderSceneDirty() override {
             m_renderSceneDirty = true;
+            m_renderCameraDirty = true;
+            QueueRenderSceneEvent(RenderSceneInvalidation::EventType::FullRebuild, std::numeric_limits<id_t>::max());
         }
 
         [[nodiscard]] bool IsRenderSceneDirty() const {
@@ -154,17 +192,44 @@ namespace FeatherVK {
             return dirty;
         }
 
+        void MarkRenderCameraDirty(id_t entityId) override {
+            (void) entityId;
+            m_renderCameraDirty = true;
+            QueueRenderSceneEvent(RenderSceneInvalidation::EventType::CameraChanged, entityId);
+        }
+
+        void MarkRenderMeshDirty(id_t entityId) override {
+            QueueRenderSceneEvent(RenderSceneInvalidation::EventType::MeshChanged, entityId);
+        }
+
+        void MarkRenderLightDirty(id_t entityId) override {
+            QueueRenderSceneEvent(RenderSceneInvalidation::EventType::LightChanged, entityId);
+        }
+
+        RenderSceneInvalidation ConsumeRenderSceneInvalidation() {
+            RenderSceneInvalidation invalidation{};
+            invalidation.fullRebuild = m_renderSceneDirty;
+            invalidation.cameraDirty = m_renderCameraDirty || m_renderSceneDirty;
+            invalidation.events = std::move(m_renderSceneEvents);
+
+            m_renderSceneDirty = false;
+            m_renderCameraDirty = false;
+            m_renderSceneEvents.clear();
+            m_queuedRenderSceneEventKeys.clear();
+            return invalidation;
+        }
+
         void MarkMeshRendererRenderResourcesDirty(id_t entityId) override {
+            MarkRenderMeshDirty(entityId);
             if (entityId != std::numeric_limits<id_t>::max()) {
                 m_dirtyMeshRendererRenderResourceEntities.insert(entityId);
             }
-            m_renderSceneDirty = true;
         }
 
         void MarkAllMeshRendererRenderResourcesDirty() override {
             m_meshRendererRenderResourcesFullRebuildDirty = true;
             m_dirtyMeshRendererRenderResourceEntities.clear();
-            m_renderSceneDirty = true;
+            MarkRenderSceneDirty();
         }
 
         void RequestSceneSave() override {
@@ -181,6 +246,10 @@ namespace FeatherVK {
         bool SyncSceneViewportLayout(const ViewportRect &scenePanelRect, const ViewportRect &sceneViewportRect) {
             const bool sceneExtentChanged = m_renderer.UpdateSceneViewportLayout(scenePanelRect, sceneViewportRect);
             if (sceneExtentChanged) {
+                m_renderGraphResourceCache.SyncSceneResources(m_renderer.getSceneRenderExtent());
+#ifndef RAY_TRACING
+                m_renderGraphResourceCache.EnsureShadowResources();
+#endif
                 m_renderCoreRenderTargetsDirty = true;
                 MarkSceneSizedImageDescriptorsDirty();
                 MarkRenderSceneDirty();
@@ -525,7 +594,9 @@ namespace FeatherVK {
             uint32_t minStorageBufferOffsetAlignment = m_device.properties2.properties.limits.minStorageBufferOffsetAlignment;
         {
             std::vector<std::shared_ptr<ShaderModule>> shaderModulePointers{};
-            std::vector<std::shared_ptr<Image>> imagePointers{m_renderer.getOffscreenImageColor(0), m_renderer.getOffscreenImageColor(1)};
+            std::vector<std::shared_ptr<Image>> imagePointers{
+                m_renderGraphResourceCache.GetRayTracingOutputImage(0),
+                m_renderGraphResourceCache.GetRayTracingOutputImage(1)};
             std::vector<std::shared_ptr<Sampler>> samplerPointers{};
             std::vector<std::shared_ptr<VkDescriptorSet>> descriptorSetPointers{};
             std::vector<std::shared_ptr<DescriptorSetLayout>> descriptorSetLayoutPointers{};
@@ -627,32 +698,32 @@ namespace FeatherVK {
             std::vector<VkDescriptorImageInfo> offscreenImageInfos;
             auto offScreenImageInfo = std::make_shared<VkDescriptorImageInfo>();
             offScreenImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            offScreenImageInfo->imageView = m_renderer.getOffscreenImageColor(0)->imageView;
+            offScreenImageInfo->imageView = m_renderGraphResourceCache.GetRayTracingOutputImage(0)->imageView;
             offscreenImageInfos.emplace_back(*offScreenImageInfo);
-            offScreenImageInfo->imageView = m_renderer.getOffscreenImageColor(1)->imageView;
+            offScreenImageInfo->imageView = m_renderGraphResourceCache.GetRayTracingOutputImage(1)->imageView;
             offscreenImageInfos.emplace_back(*offScreenImageInfo);
 
             std::vector<VkDescriptorImageInfo> worldPosImageInfos{};
-            auto worldPosImageInfo = m_renderer.getWorldPosImageColor(0)->descriptorInfo();
+            auto worldPosImageInfo = m_renderGraphResourceCache.GetWorldPositionImage(0)->descriptorInfo();
             worldPosImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             worldPosImageInfos.emplace_back(*worldPosImageInfo);
-            worldPosImageInfo = m_renderer.getWorldPosImageColor(1)->descriptorInfo();
+            worldPosImageInfo = m_renderGraphResourceCache.GetWorldPositionImage(1)->descriptorInfo();
             worldPosImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             worldPosImageInfos.emplace_back(*worldPosImageInfo);
 
             std::vector<VkDescriptorImageInfo> shadowTermImageInfos{};
-            auto shadowTermImageInfo = m_renderer.getShadowTermImageColor(0)->descriptorInfo();
+            auto shadowTermImageInfo = m_renderGraphResourceCache.GetShadowTermImage(0)->descriptorInfo();
             shadowTermImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             shadowTermImageInfos.emplace_back(*shadowTermImageInfo);
-            shadowTermImageInfo = m_renderer.getShadowTermImageColor(1)->descriptorInfo();
+            shadowTermImageInfo = m_renderGraphResourceCache.GetShadowTermImage(1)->descriptorInfo();
             shadowTermImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             shadowTermImageInfos.emplace_back(*shadowTermImageInfo);
 
             std::vector<VkDescriptorImageInfo> rayTracingGuideImageInfos{};
-            auto rayTracingGuideImageInfo = m_renderer.getRayTracingGuideImageColor(0)->descriptorInfo();
+            auto rayTracingGuideImageInfo = m_renderGraphResourceCache.GetRayTracingGuideImage(0)->descriptorInfo();
             rayTracingGuideImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             rayTracingGuideImageInfos.emplace_back(*rayTracingGuideImageInfo);
-            rayTracingGuideImageInfo = m_renderer.getRayTracingGuideImageColor(1)->descriptorInfo();
+            rayTracingGuideImageInfo = m_renderGraphResourceCache.GetRayTracingGuideImage(1)->descriptorInfo();
             rayTracingGuideImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             rayTracingGuideImageInfos.emplace_back(*rayTracingGuideImageInfo);
 
@@ -763,26 +834,26 @@ namespace FeatherVK {
 
 
             std::vector<VkDescriptorImageInfo> offscreenImageInfos{};
-            auto offScreenPostImageInfo = m_renderer.getOffscreenImageColor(0)->descriptorInfo();
+            auto offScreenPostImageInfo = m_renderGraphResourceCache.GetRayTracingOutputImage(0)->descriptorInfo();
             offScreenPostImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             offscreenImageInfos.emplace_back(*offScreenPostImageInfo);
-            offScreenPostImageInfo = m_renderer.getOffscreenImageColor(1)->descriptorInfo();
+            offScreenPostImageInfo = m_renderGraphResourceCache.GetRayTracingOutputImage(1)->descriptorInfo();
             offScreenPostImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             offscreenImageInfos.emplace_back(*offScreenPostImageInfo);
 
             std::vector<VkDescriptorImageInfo> sceneColorImageInfos{};
-            auto sceneColorImageInfo = m_renderer.getSceneColorImageColor(0)->descriptorInfo();
+            auto sceneColorImageInfo = m_renderGraphResourceCache.GetSceneColorImage(0)->descriptorInfo();
             sceneColorImageInfo->imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             sceneColorImageInfos.emplace_back(*sceneColorImageInfo);
-            sceneColorImageInfo = m_renderer.getSceneColorImageColor(1)->descriptorInfo();
+            sceneColorImageInfo = m_renderGraphResourceCache.GetSceneColorImage(1)->descriptorInfo();
             sceneColorImageInfo->imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             sceneColorImageInfos.emplace_back(*sceneColorImageInfo);
 
             std::vector<VkDescriptorImageInfo> shadowTermImageInfos{};
-            auto shadowTermImageInfo = m_renderer.getShadowTermImageColor(0)->descriptorInfo();
+            auto shadowTermImageInfo = m_renderGraphResourceCache.GetShadowTermImage(0)->descriptorInfo();
             shadowTermImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             shadowTermImageInfos.emplace_back(*shadowTermImageInfo);
-            shadowTermImageInfo = m_renderer.getShadowTermImageColor(1)->descriptorInfo();
+            shadowTermImageInfo = m_renderGraphResourceCache.GetShadowTermImage(1)->descriptorInfo();
             shadowTermImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             shadowTermImageInfos.emplace_back(*shadowTermImageInfo);
 
@@ -825,45 +896,45 @@ namespace FeatherVK {
                             build();
 
             std::vector<VkDescriptorImageInfo> offscreenImageInfos{};
-            auto offScreenPostImageInfo = m_renderer.getOffscreenImageColor(0)->descriptorInfo();
+            auto offScreenPostImageInfo = m_renderGraphResourceCache.GetRayTracingOutputImage(0)->descriptorInfo();
             offScreenPostImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             offscreenImageInfos.emplace_back(*offScreenPostImageInfo);
-            offScreenPostImageInfo = m_renderer.getOffscreenImageColor(1)->descriptorInfo();
+            offScreenPostImageInfo = m_renderGraphResourceCache.GetRayTracingOutputImage(1)->descriptorInfo();
             offScreenPostImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             offscreenImageInfos.emplace_back(*offScreenPostImageInfo);
 
             std::vector<VkDescriptorImageInfo> worldPosImageInfos{};
-            auto worldPosImageInfo = m_renderer.getWorldPosImageColor(0)->descriptorInfo();
+            auto worldPosImageInfo = m_renderGraphResourceCache.GetWorldPositionImage(0)->descriptorInfo();
             worldPosImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             worldPosImageInfos.emplace_back(*worldPosImageInfo);
-            worldPosImageInfo = m_renderer.getWorldPosImageColor(1)->descriptorInfo();
+            worldPosImageInfo = m_renderGraphResourceCache.GetWorldPositionImage(1)->descriptorInfo();
             worldPosImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             worldPosImageInfos.emplace_back(*worldPosImageInfo);
 
-            auto denoisingImageInfo = m_renderer.getDenoisingAccumulationImageColor()->descriptorInfo();
+            auto denoisingImageInfo = m_renderGraphResourceCache.GetDenoiseAccumulationImage()->descriptorInfo();
             denoisingImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
             std::vector<VkDescriptorImageInfo> shadowTermImageInfos{};
-            auto shadowTermImageInfo = m_renderer.getShadowTermImageColor(0)->descriptorInfo();
+            auto shadowTermImageInfo = m_renderGraphResourceCache.GetShadowTermImage(0)->descriptorInfo();
             shadowTermImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             shadowTermImageInfos.emplace_back(*shadowTermImageInfo);
-            shadowTermImageInfo = m_renderer.getShadowTermImageColor(1)->descriptorInfo();
+            shadowTermImageInfo = m_renderGraphResourceCache.GetShadowTermImage(1)->descriptorInfo();
             shadowTermImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             shadowTermImageInfos.emplace_back(*shadowTermImageInfo);
 
             std::vector<VkDescriptorImageInfo> shadowMomentsImageInfos{};
-            auto shadowMomentsImageInfo = m_renderer.getShadowMomentsImageColor(0)->descriptorInfo();
+            auto shadowMomentsImageInfo = m_renderGraphResourceCache.GetShadowMomentsImage(0)->descriptorInfo();
             shadowMomentsImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             shadowMomentsImageInfos.emplace_back(*shadowMomentsImageInfo);
-            shadowMomentsImageInfo = m_renderer.getShadowMomentsImageColor(1)->descriptorInfo();
+            shadowMomentsImageInfo = m_renderGraphResourceCache.GetShadowMomentsImage(1)->descriptorInfo();
             shadowMomentsImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             shadowMomentsImageInfos.emplace_back(*shadowMomentsImageInfo);
 
             std::vector<VkDescriptorImageInfo> rayTracingGuideImageInfos{};
-            auto rayTracingGuideImageInfo = m_renderer.getRayTracingGuideImageColor(0)->descriptorInfo();
+            auto rayTracingGuideImageInfo = m_renderGraphResourceCache.GetRayTracingGuideImage(0)->descriptorInfo();
             rayTracingGuideImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             rayTracingGuideImageInfos.emplace_back(*rayTracingGuideImageInfo);
-            rayTracingGuideImageInfo = m_renderer.getRayTracingGuideImageColor(1)->descriptorInfo();
+            rayTracingGuideImageInfo = m_renderGraphResourceCache.GetRayTracingGuideImage(1)->descriptorInfo();
             rayTracingGuideImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             rayTracingGuideImageInfos.emplace_back(*rayTracingGuideImageInfo);
 
@@ -903,7 +974,7 @@ namespace FeatherVK {
             std::shared_ptr<VkDescriptorSet> globalDescriptorSetPointer = std::make_shared<VkDescriptorSet>();
             DescriptorWriter(globalDescriptorSetLayoutPointer, *m_globalPool).
                     writeBuffer(0, bufferInfo).
-                    writeImage(1, m_renderer.getShadowImageInfo()).
+                    writeImage(1, m_renderGraphResourceCache.GetShadowImageInfo()).
                     build(globalDescriptorSetPointer);
 
             if (materialsDocument.IsArray()) {
@@ -1001,9 +1072,9 @@ namespace FeatherVK {
                                pipelineCategoryString == PipelineCategory.Opaque ||
                                pipelineCategoryString == PipelineCategory.TessellationGeometry ||
                                pipelineCategoryString == PipelineCategory.SkyBox) {
-                        imagePointers.push_back(m_renderer.getShadowImage());
-                        samplerPointers.push_back(m_renderer.getShadowSampler());
-                        auto imageInfo = m_renderer.getShadowImageInfo();
+                        imagePointers.push_back(m_renderGraphResourceCache.GetShadowImage());
+                        samplerPointers.push_back(m_renderGraphResourceCache.GetShadowSampler());
+                        auto imageInfo = m_renderGraphResourceCache.GetShadowImageInfo();
                         imageInfos.emplace_back(imageInfo);
                         descriptorWriter.writeImage(writerBindingPoint++, imageInfo);
                     }
@@ -1080,6 +1151,25 @@ namespace FeatherVK {
             return cacheEntry;
         }
     private:
+        using RenderSceneEventType = RenderSceneInvalidation::EventType;
+
+        static uint64_t MakeRenderSceneEventKey(RenderSceneEventType type, id_t entityId) {
+            return (static_cast<uint64_t>(type) << 32u) ^ static_cast<uint64_t>(entityId);
+        }
+
+        void QueueRenderSceneEvent(RenderSceneEventType type, id_t entityId) {
+            if (m_renderSceneDirty && type != RenderSceneEventType::FullRebuild) {
+                return;
+            }
+
+            const uint64_t key = MakeRenderSceneEventKey(type, entityId);
+            if (!m_queuedRenderSceneEventKeys.insert(key).second) {
+                return;
+            }
+
+            m_renderSceneEvents.push_back({type, entityId});
+        }
+
         void InvalidateRenderCoreRegistry() {
             m_renderCore.GetResourceRegistry().Clear();
             m_modelRepository.SetRenderResourceRegistry(&m_renderCore.GetResourceRegistry());
@@ -1253,8 +1343,8 @@ namespace FeatherVK {
                 std::vector<RenderCore::RenderResourceHandle> sceneColorAttachments{
                     registry.ImportTexture(
                         "Renderer/SceneColor/" + std::to_string(index),
-                        m_renderer.getSceneColorImageColor(index),
-                        m_renderer.getSceneColorImageColor(index))};
+                        m_renderGraphResourceCache.GetSceneColorImage(index),
+                        m_renderGraphResourceCache.GetSceneColorImage(index))};
                 registry.ImportRenderTarget(
                     "Renderer/RenderTarget/SceneColor/" + std::to_string(index),
                     extent,
@@ -1263,38 +1353,38 @@ namespace FeatherVK {
 #ifdef RAY_TRACING
                 registry.ImportTexture(
                     "Renderer/RayTracingOutput/" + std::to_string(index),
-                    m_renderer.getOffscreenImageColor(index),
-                    m_renderer.getOffscreenImageColor(index));
+                    m_renderGraphResourceCache.GetRayTracingOutputImage(index),
+                    m_renderGraphResourceCache.GetRayTracingOutputImage(index));
                 registry.ImportTexture(
                     "Renderer/WorldPosition/" + std::to_string(index),
-                    m_renderer.getWorldPosImageColor(index),
-                    m_renderer.getWorldPosImageColor(index));
+                    m_renderGraphResourceCache.GetWorldPositionImage(index),
+                    m_renderGraphResourceCache.GetWorldPositionImage(index));
                 registry.ImportTexture(
                     "Renderer/ShadowTerm/" + std::to_string(index),
-                    m_renderer.getShadowTermImageColor(index),
-                    m_renderer.getShadowTermImageColor(index));
+                    m_renderGraphResourceCache.GetShadowTermImage(index),
+                    m_renderGraphResourceCache.GetShadowTermImage(index));
                 registry.ImportTexture(
                     "Renderer/ShadowMoments/" + std::to_string(index),
-                    m_renderer.getShadowMomentsImageColor(index),
-                    m_renderer.getShadowMomentsImageColor(index));
+                    m_renderGraphResourceCache.GetShadowMomentsImage(index),
+                    m_renderGraphResourceCache.GetShadowMomentsImage(index));
                 registry.ImportTexture(
                     "Renderer/RayTracingGuide/" + std::to_string(index),
-                    m_renderer.getRayTracingGuideImageColor(index),
-                    m_renderer.getRayTracingGuideImageColor(index));
+                    m_renderGraphResourceCache.GetRayTracingGuideImage(index),
+                    m_renderGraphResourceCache.GetRayTracingGuideImage(index));
 #endif
             }
 
 #ifdef RAY_TRACING
             registry.ImportTexture(
                 "Renderer/DenoisingAccumulation",
-                m_renderer.getDenoisingAccumulationImageColor(),
-                m_renderer.getDenoisingAccumulationImageColor());
+                m_renderGraphResourceCache.GetDenoiseAccumulationImage(),
+                m_renderGraphResourceCache.GetDenoiseAccumulationImage());
 #else
             registry.ImportTexture(
                 "Renderer/ShadowMap",
-                m_renderer.getShadowImage(),
-                m_renderer.getShadowImage(),
-                m_renderer.getShadowSampler());
+                m_renderGraphResourceCache.GetShadowImage(),
+                m_renderGraphResourceCache.GetShadowImage(),
+                m_renderGraphResourceCache.GetShadowSampler());
 #endif
         }
 
@@ -1307,11 +1397,10 @@ namespace FeatherVK {
             auto &registry = m_renderCore.GetResourceRegistry();
             std::vector<id_t> entitiesToSync{};
             if (m_meshRendererRenderResourcesFullRebuildDirty) {
-                const auto meshEntities = m_sceneRegistry.View<MeshRendererComponent>();
-                entitiesToSync.reserve(meshEntities.size());
-                for (const auto entityId: meshEntities) {
+                entitiesToSync.reserve(m_sceneRegistry.ViewSizeHint<MeshRendererComponent>());
+                m_sceneRegistry.ForEachView<MeshRendererComponent>([&](const id_t entityId) {
                     entitiesToSync.push_back(entityId);
-                }
+                });
             } else {
                 entitiesToSync.reserve(m_dirtyMeshRendererRenderResourceEntities.size());
                 for (const auto entityId: m_dirtyMeshRendererRenderResourceEntities) {
@@ -1383,6 +1472,93 @@ namespace FeatherVK {
             m_meshRendererRenderResourcesFullRebuildDirty = false;
         }
 
+        static std::vector<VkDescriptorImageInfo> MakeDoubleBufferedImageInfos(
+            const std::shared_ptr<Image> &first,
+            const std::shared_ptr<Image> &second,
+            VkImageLayout layout) {
+            std::vector<VkDescriptorImageInfo> imageInfos{};
+            imageInfos.reserve(2);
+
+            auto firstInfo = first->descriptorInfo();
+            firstInfo->imageLayout = layout;
+            imageInfos.emplace_back(*firstInfo);
+
+            auto secondInfo = second->descriptorInfo();
+            secondInfo->imageLayout = layout;
+            imageInfos.emplace_back(*secondInfo);
+            return imageInfos;
+        }
+
+        static VkDescriptorBufferInfo MakeDescriptorBufferInfo(const std::shared_ptr<Buffer> &buffer) {
+            if (buffer == nullptr) {
+                return {};
+            }
+            const auto descriptorInfo = buffer->descriptorInfo();
+            return descriptorInfo == nullptr ? VkDescriptorBufferInfo{} : *descriptorInfo;
+        }
+
+        struct CachedDescriptorWriteTemplate {
+            VkDescriptorSet descriptorSet{VK_NULL_HANDLE};
+            uint64_t topologyVersion{0};
+            VkBuffer bufferHandle{VK_NULL_HANDLE};
+            std::vector<VkWriteDescriptorSet> writes{};
+            bool valid{false};
+        };
+
+#ifdef RAY_TRACING
+        struct CachedRayTracingDescriptorWriteTemplate {
+            VkDescriptorSet descriptorSet{VK_NULL_HANDLE};
+            uint64_t topologyVersion{0};
+            VkAccelerationStructureKHR tlasHandle{VK_NULL_HANDLE};
+            VkWriteDescriptorSetAccelerationStructureKHR accelerationStructureInfo{
+                VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
+            std::vector<VkWriteDescriptorSet> writes{};
+            bool valid{false};
+        };
+#endif
+
+        void RefreshCachedSceneDescriptorInfos() {
+            const uint64_t topologyVersion = m_renderGraphResourceCache.GetTopologyVersion();
+            if (m_cachedSceneDescriptorInfosVersion == topologyVersion) {
+                return;
+            }
+
+            m_cachedPostOffscreenImageInfos = MakeDoubleBufferedImageInfos(
+                m_renderGraphResourceCache.GetRayTracingOutputImage(0),
+                m_renderGraphResourceCache.GetRayTracingOutputImage(1),
+                VK_IMAGE_LAYOUT_GENERAL);
+            m_cachedSceneColorImageInfos = MakeDoubleBufferedImageInfos(
+                m_renderGraphResourceCache.GetSceneColorImage(0),
+                m_renderGraphResourceCache.GetSceneColorImage(1),
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            m_cachedShadowTermImageInfos = MakeDoubleBufferedImageInfos(
+                m_renderGraphResourceCache.GetShadowTermImage(0),
+                m_renderGraphResourceCache.GetShadowTermImage(1),
+                VK_IMAGE_LAYOUT_GENERAL);
+#ifdef RAY_TRACING
+            m_cachedWorldPositionImageInfos = MakeDoubleBufferedImageInfos(
+                m_renderGraphResourceCache.GetWorldPositionImage(0),
+                m_renderGraphResourceCache.GetWorldPositionImage(1),
+                VK_IMAGE_LAYOUT_GENERAL);
+            m_cachedShadowMomentsImageInfos = MakeDoubleBufferedImageInfos(
+                m_renderGraphResourceCache.GetShadowMomentsImage(0),
+                m_renderGraphResourceCache.GetShadowMomentsImage(1),
+                VK_IMAGE_LAYOUT_GENERAL);
+            m_cachedRayTracingGuideImageInfos = MakeDoubleBufferedImageInfos(
+                m_renderGraphResourceCache.GetRayTracingGuideImage(0),
+                m_renderGraphResourceCache.GetRayTracingGuideImage(1),
+                VK_IMAGE_LAYOUT_GENERAL);
+            if (const auto denoisingImageInfo = m_renderGraphResourceCache.GetDenoiseAccumulationImage()->descriptorInfo();
+                denoisingImageInfo != nullptr) {
+                m_cachedDenoiseAccumulationImageInfo = *denoisingImageInfo;
+                m_cachedDenoiseAccumulationImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            } else {
+                m_cachedDenoiseAccumulationImageInfo = {};
+            }
+#endif
+            m_cachedSceneDescriptorInfosVersion = topologyVersion;
+        }
+
         bool RefreshPostDescriptorSet() {
             auto materialIt = m_materials.find(Material::MaterialId::post);
             if (materialIt == m_materials.end() || materialIt->second == nullptr) {
@@ -1398,36 +1574,54 @@ namespace FeatherVK {
                 return false;
             }
 
-            std::vector<VkDescriptorImageInfo> offscreenImageInfos{};
-            auto imageInfo = m_renderer.getOffscreenImageColor(0)->descriptorInfo();
-            imageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            offscreenImageInfos.emplace_back(*imageInfo);
-            imageInfo = m_renderer.getOffscreenImageColor(1)->descriptorInfo();
-            imageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            offscreenImageInfos.emplace_back(*imageInfo);
+            RefreshCachedSceneDescriptorInfos();
+            const VkDescriptorSet descriptorSet = *descriptorSets[0];
+            m_cachedPostGlobalUboInfo = MakeDescriptorBufferInfo(bufferPointers[0]);
 
-            std::vector<VkDescriptorImageInfo> sceneColorImageInfos{};
-            auto sceneColorImageInfo = m_renderer.getSceneColorImageColor(0)->descriptorInfo();
-            sceneColorImageInfo->imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            sceneColorImageInfos.emplace_back(*sceneColorImageInfo);
-            sceneColorImageInfo = m_renderer.getSceneColorImageColor(1)->descriptorInfo();
-            sceneColorImageInfo->imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            sceneColorImageInfos.emplace_back(*sceneColorImageInfo);
+            const bool templateDirty =
+                !m_postDescriptorWriteTemplate.valid ||
+                m_postDescriptorWriteTemplate.descriptorSet != descriptorSet ||
+                m_postDescriptorWriteTemplate.topologyVersion != m_cachedSceneDescriptorInfosVersion ||
+                m_postDescriptorWriteTemplate.bufferHandle != m_cachedPostGlobalUboInfo.buffer;
 
-            std::vector<VkDescriptorImageInfo> shadowTermImageInfos{};
-            auto shadowTermImageInfo = m_renderer.getShadowTermImageColor(0)->descriptorInfo();
-            shadowTermImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            shadowTermImageInfos.emplace_back(*shadowTermImageInfo);
-            shadowTermImageInfo = m_renderer.getShadowTermImageColor(1)->descriptorInfo();
-            shadowTermImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            shadowTermImageInfos.emplace_back(*shadowTermImageInfo);
+            if (templateDirty) {
+                m_postDescriptorWriteTemplate.descriptorSet = descriptorSet;
+                m_postDescriptorWriteTemplate.topologyVersion = m_cachedSceneDescriptorInfosVersion;
+                m_postDescriptorWriteTemplate.bufferHandle = m_cachedPostGlobalUboInfo.buffer;
+                auto &writes = m_postDescriptorWriteTemplate.writes;
+                writes.resize(4);
+                writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                writes[0].dstBinding = 0;
+                writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                writes[0].descriptorCount = 1;
+                writes[0].pBufferInfo = &m_cachedPostGlobalUboInfo;
+                writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                writes[1].dstBinding = 1;
+                writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                writes[1].descriptorCount = static_cast<uint32_t>(m_cachedPostOffscreenImageInfos.size());
+                writes[1].pImageInfo = m_cachedPostOffscreenImageInfos.data();
+                writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                writes[2].dstBinding = 2;
+                writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                writes[2].descriptorCount = static_cast<uint32_t>(m_cachedSceneColorImageInfos.size());
+                writes[2].pImageInfo = m_cachedSceneColorImageInfos.data();
+                writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                writes[3].dstBinding = 3;
+                writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                writes[3].descriptorCount = static_cast<uint32_t>(m_cachedShadowTermImageInfos.size());
+                writes[3].pImageInfo = m_cachedShadowTermImageInfos.data();
+                m_postDescriptorWriteTemplate.valid = true;
+            }
 
-            DescriptorWriter(descriptorSetLayouts[0], *m_globalPool).
-                    writeBuffer(0, bufferPointers[0]->descriptorInfo()).
-                    writeImages(1, offscreenImageInfos).
-                    writeImages(2, sceneColorImageInfos).
-                    writeImages(3, shadowTermImageInfos).
-                    overwrite(*descriptorSets[0]);
+            for (auto &write: m_postDescriptorWriteTemplate.writes) {
+                write.dstSet = descriptorSet;
+            }
+            vkUpdateDescriptorSets(
+                m_device.device(),
+                static_cast<uint32_t>(m_postDescriptorWriteTemplate.writes.size()),
+                m_postDescriptorWriteTemplate.writes.data(),
+                0,
+                nullptr);
             return true;
         }
 
@@ -1445,50 +1639,64 @@ namespace FeatherVK {
                 return false;
             }
 
-            auto accelerationStructureInfo = std::make_shared<VkWriteDescriptorSetAccelerationStructureKHR>();
-            accelerationStructureInfo->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
-            accelerationStructureInfo->accelerationStructureCount = 1;
-            accelerationStructureInfo->pAccelerationStructures = &m_rayTracingSceneContext.GetTlasHandle();
+            RefreshCachedSceneDescriptorInfos();
+            const VkDescriptorSet descriptorSet = *descriptorSets[0];
+            m_cachedRayTracingTlasHandle = m_rayTracingSceneContext.GetTlasHandle();
 
-            std::vector<VkDescriptorImageInfo> offscreenImageInfos{};
-            auto offscreenImageInfo = m_renderer.getOffscreenImageColor(0)->descriptorInfo();
-            offscreenImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            offscreenImageInfos.emplace_back(*offscreenImageInfo);
-            offscreenImageInfo = m_renderer.getOffscreenImageColor(1)->descriptorInfo();
-            offscreenImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            offscreenImageInfos.emplace_back(*offscreenImageInfo);
+            const bool templateDirty =
+                !m_rayTracingRayGenDescriptorWriteTemplate.valid ||
+                m_rayTracingRayGenDescriptorWriteTemplate.descriptorSet != descriptorSet ||
+                m_rayTracingRayGenDescriptorWriteTemplate.topologyVersion != m_cachedSceneDescriptorInfosVersion;
 
-            std::vector<VkDescriptorImageInfo> worldPosImageInfos{};
-            auto worldPosImageInfo = m_renderer.getWorldPosImageColor(0)->descriptorInfo();
-            worldPosImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            worldPosImageInfos.emplace_back(*worldPosImageInfo);
-            worldPosImageInfo = m_renderer.getWorldPosImageColor(1)->descriptorInfo();
-            worldPosImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            worldPosImageInfos.emplace_back(*worldPosImageInfo);
+            if (templateDirty) {
+                m_rayTracingRayGenDescriptorWriteTemplate.descriptorSet = descriptorSet;
+                m_rayTracingRayGenDescriptorWriteTemplate.topologyVersion = m_cachedSceneDescriptorInfosVersion;
+                m_rayTracingRayGenDescriptorWriteTemplate.accelerationStructureInfo = {
+                    VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
+                m_rayTracingRayGenDescriptorWriteTemplate.accelerationStructureInfo.accelerationStructureCount = 1;
+                m_rayTracingRayGenDescriptorWriteTemplate.accelerationStructureInfo.pAccelerationStructures = &m_cachedRayTracingTlasHandle;
 
-            std::vector<VkDescriptorImageInfo> shadowTermImageInfos{};
-            auto shadowTermImageInfo = m_renderer.getShadowTermImageColor(0)->descriptorInfo();
-            shadowTermImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            shadowTermImageInfos.emplace_back(*shadowTermImageInfo);
-            shadowTermImageInfo = m_renderer.getShadowTermImageColor(1)->descriptorInfo();
-            shadowTermImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            shadowTermImageInfos.emplace_back(*shadowTermImageInfo);
+                auto &writes = m_rayTracingRayGenDescriptorWriteTemplate.writes;
+                writes.resize(5);
+                writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                writes[0].dstBinding = 0;
+                writes[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+                writes[0].descriptorCount = 1;
+                writes[0].pNext = &m_rayTracingRayGenDescriptorWriteTemplate.accelerationStructureInfo;
+                writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                writes[1].dstBinding = 1;
+                writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                writes[1].descriptorCount = static_cast<uint32_t>(m_cachedPostOffscreenImageInfos.size());
+                writes[1].pImageInfo = m_cachedPostOffscreenImageInfos.data();
+                writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                writes[2].dstBinding = 2;
+                writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                writes[2].descriptorCount = static_cast<uint32_t>(m_cachedWorldPositionImageInfos.size());
+                writes[2].pImageInfo = m_cachedWorldPositionImageInfos.data();
+                writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                writes[3].dstBinding = 3;
+                writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                writes[3].descriptorCount = static_cast<uint32_t>(m_cachedShadowTermImageInfos.size());
+                writes[3].pImageInfo = m_cachedShadowTermImageInfos.data();
+                writes[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                writes[4].dstBinding = 4;
+                writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                writes[4].descriptorCount = static_cast<uint32_t>(m_cachedRayTracingGuideImageInfos.size());
+                writes[4].pImageInfo = m_cachedRayTracingGuideImageInfos.data();
+                m_rayTracingRayGenDescriptorWriteTemplate.valid = true;
+            }
 
-            std::vector<VkDescriptorImageInfo> rayTracingGuideImageInfos{};
-            auto rayTracingGuideImageInfo = m_renderer.getRayTracingGuideImageColor(0)->descriptorInfo();
-            rayTracingGuideImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            rayTracingGuideImageInfos.emplace_back(*rayTracingGuideImageInfo);
-            rayTracingGuideImageInfo = m_renderer.getRayTracingGuideImageColor(1)->descriptorInfo();
-            rayTracingGuideImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            rayTracingGuideImageInfos.emplace_back(*rayTracingGuideImageInfo);
-
-            DescriptorWriter(descriptorSetLayouts[0], *m_globalPool).
-                    writeTLAS(0, accelerationStructureInfo).
-                    writeImages(1, offscreenImageInfos).
-                    writeImages(2, worldPosImageInfos).
-                    writeImages(3, shadowTermImageInfos).
-                    writeImages(4, rayTracingGuideImageInfos).
-                    overwrite(*descriptorSets[0]);
+            m_rayTracingRayGenDescriptorWriteTemplate.tlasHandle = m_cachedRayTracingTlasHandle;
+            m_rayTracingRayGenDescriptorWriteTemplate.accelerationStructureInfo.pAccelerationStructures = &m_cachedRayTracingTlasHandle;
+            for (auto &write: m_rayTracingRayGenDescriptorWriteTemplate.writes) {
+                write.dstSet = descriptorSet;
+            }
+            vkUpdateDescriptorSets(
+                m_device.device(),
+                static_cast<uint32_t>(m_rayTracingRayGenDescriptorWriteTemplate.writes.size()),
+                m_rayTracingRayGenDescriptorWriteTemplate.writes.data(),
+                0,
+                nullptr);
             return true;
         }
 
@@ -1507,58 +1715,69 @@ namespace FeatherVK {
                 return false;
             }
 
-            std::vector<VkDescriptorImageInfo> offscreenImageInfos{};
-            auto offscreenImageInfo = m_renderer.getOffscreenImageColor(0)->descriptorInfo();
-            offscreenImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            offscreenImageInfos.emplace_back(*offscreenImageInfo);
-            offscreenImageInfo = m_renderer.getOffscreenImageColor(1)->descriptorInfo();
-            offscreenImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            offscreenImageInfos.emplace_back(*offscreenImageInfo);
+            RefreshCachedSceneDescriptorInfos();
+            const VkDescriptorSet descriptorSet = *descriptorSets[0];
+            m_cachedComputeGlobalUboInfo = MakeDescriptorBufferInfo(bufferPointers[0]);
 
-            std::vector<VkDescriptorImageInfo> worldPosImageInfos{};
-            auto worldPosImageInfo = m_renderer.getWorldPosImageColor(0)->descriptorInfo();
-            worldPosImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            worldPosImageInfos.emplace_back(*worldPosImageInfo);
-            worldPosImageInfo = m_renderer.getWorldPosImageColor(1)->descriptorInfo();
-            worldPosImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            worldPosImageInfos.emplace_back(*worldPosImageInfo);
+            const bool templateDirty =
+                !m_computeDescriptorWriteTemplate.valid ||
+                m_computeDescriptorWriteTemplate.descriptorSet != descriptorSet ||
+                m_computeDescriptorWriteTemplate.topologyVersion != m_cachedSceneDescriptorInfosVersion ||
+                m_computeDescriptorWriteTemplate.bufferHandle != m_cachedComputeGlobalUboInfo.buffer;
 
-            auto denoisingImageInfo = m_renderer.getDenoisingAccumulationImageColor()->descriptorInfo();
-            denoisingImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            if (templateDirty) {
+                m_computeDescriptorWriteTemplate.descriptorSet = descriptorSet;
+                m_computeDescriptorWriteTemplate.topologyVersion = m_cachedSceneDescriptorInfosVersion;
+                m_computeDescriptorWriteTemplate.bufferHandle = m_cachedComputeGlobalUboInfo.buffer;
+                auto &writes = m_computeDescriptorWriteTemplate.writes;
+                writes.resize(7);
+                writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                writes[0].dstBinding = 0;
+                writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                writes[0].descriptorCount = 1;
+                writes[0].pBufferInfo = &m_cachedComputeGlobalUboInfo;
+                writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                writes[1].dstBinding = 1;
+                writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                writes[1].descriptorCount = static_cast<uint32_t>(m_cachedPostOffscreenImageInfos.size());
+                writes[1].pImageInfo = m_cachedPostOffscreenImageInfos.data();
+                writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                writes[2].dstBinding = 2;
+                writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                writes[2].descriptorCount = static_cast<uint32_t>(m_cachedWorldPositionImageInfos.size());
+                writes[2].pImageInfo = m_cachedWorldPositionImageInfos.data();
+                writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                writes[3].dstBinding = 3;
+                writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                writes[3].descriptorCount = 1;
+                writes[3].pImageInfo = &m_cachedDenoiseAccumulationImageInfo;
+                writes[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                writes[4].dstBinding = 4;
+                writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                writes[4].descriptorCount = static_cast<uint32_t>(m_cachedShadowTermImageInfos.size());
+                writes[4].pImageInfo = m_cachedShadowTermImageInfos.data();
+                writes[5] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                writes[5].dstBinding = 5;
+                writes[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                writes[5].descriptorCount = static_cast<uint32_t>(m_cachedShadowMomentsImageInfos.size());
+                writes[5].pImageInfo = m_cachedShadowMomentsImageInfos.data();
+                writes[6] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                writes[6].dstBinding = 6;
+                writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                writes[6].descriptorCount = static_cast<uint32_t>(m_cachedRayTracingGuideImageInfos.size());
+                writes[6].pImageInfo = m_cachedRayTracingGuideImageInfos.data();
+                m_computeDescriptorWriteTemplate.valid = true;
+            }
 
-            std::vector<VkDescriptorImageInfo> shadowTermImageInfos{};
-            auto shadowTermImageInfo = m_renderer.getShadowTermImageColor(0)->descriptorInfo();
-            shadowTermImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            shadowTermImageInfos.emplace_back(*shadowTermImageInfo);
-            shadowTermImageInfo = m_renderer.getShadowTermImageColor(1)->descriptorInfo();
-            shadowTermImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            shadowTermImageInfos.emplace_back(*shadowTermImageInfo);
-
-            std::vector<VkDescriptorImageInfo> shadowMomentsImageInfos{};
-            auto shadowMomentsImageInfo = m_renderer.getShadowMomentsImageColor(0)->descriptorInfo();
-            shadowMomentsImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            shadowMomentsImageInfos.emplace_back(*shadowMomentsImageInfo);
-            shadowMomentsImageInfo = m_renderer.getShadowMomentsImageColor(1)->descriptorInfo();
-            shadowMomentsImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            shadowMomentsImageInfos.emplace_back(*shadowMomentsImageInfo);
-
-            std::vector<VkDescriptorImageInfo> rayTracingGuideImageInfos{};
-            auto rayTracingGuideImageInfo = m_renderer.getRayTracingGuideImageColor(0)->descriptorInfo();
-            rayTracingGuideImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            rayTracingGuideImageInfos.emplace_back(*rayTracingGuideImageInfo);
-            rayTracingGuideImageInfo = m_renderer.getRayTracingGuideImageColor(1)->descriptorInfo();
-            rayTracingGuideImageInfo->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            rayTracingGuideImageInfos.emplace_back(*rayTracingGuideImageInfo);
-
-            DescriptorWriter(descriptorSetLayouts[0], *m_globalPool).
-                    writeBuffer(0, bufferPointers[0]->descriptorInfo()).
-                    writeImages(1, offscreenImageInfos).
-                    writeImages(2, worldPosImageInfos).
-                    writeImage(3, denoisingImageInfo).
-                    writeImages(4, shadowTermImageInfos).
-                    writeImages(5, shadowMomentsImageInfos).
-                    writeImages(6, rayTracingGuideImageInfos).
-                    overwrite(*descriptorSets[0]);
+            for (auto &write: m_computeDescriptorWriteTemplate.writes) {
+                write.dstSet = descriptorSet;
+            }
+            vkUpdateDescriptorSets(
+                m_device.device(),
+                static_cast<uint32_t>(m_computeDescriptorWriteTemplate.writes.size()),
+                m_computeDescriptorWriteTemplate.writes.data(),
+                0,
+                nullptr);
             return true;
         }
 
@@ -1575,6 +1794,7 @@ namespace FeatherVK {
         Device m_device{m_window};
         Renderer m_renderer{m_window, m_device};
         RenderCore::CoreServices m_renderCore{m_device};
+        RenderGraph::RenderGraphResourceCache m_renderGraphResourceCache;
         std::shared_ptr<DescriptorPool> m_globalPool;
         ModelRepository m_modelRepository;
         SceneComponentLoader m_sceneComponentLoader;
@@ -1594,9 +1814,26 @@ namespace FeatherVK {
         bool m_meshRendererRenderResourcesFullRebuildDirty = true;
         std::unordered_set<id_t> m_dirtyMeshRendererRenderResourceEntities{};
         bool m_postDescriptorDirty = false;
+        bool m_renderCameraDirty = true;
+        std::vector<RenderSceneInvalidation::Event> m_renderSceneEvents{};
+        std::unordered_set<uint64_t> m_queuedRenderSceneEventKeys{};
+        uint64_t m_cachedSceneDescriptorInfosVersion = 0;
+        std::vector<VkDescriptorImageInfo> m_cachedPostOffscreenImageInfos{};
+        std::vector<VkDescriptorImageInfo> m_cachedSceneColorImageInfos{};
+        std::vector<VkDescriptorImageInfo> m_cachedShadowTermImageInfos{};
+        VkDescriptorBufferInfo m_cachedPostGlobalUboInfo{};
+        CachedDescriptorWriteTemplate m_postDescriptorWriteTemplate{};
 #ifdef RAY_TRACING
         bool m_computeDescriptorDirty = false;
         bool m_rayTracingRayGenDescriptorDirty = false;
+        std::vector<VkDescriptorImageInfo> m_cachedWorldPositionImageInfos{};
+        std::vector<VkDescriptorImageInfo> m_cachedShadowMomentsImageInfos{};
+        std::vector<VkDescriptorImageInfo> m_cachedRayTracingGuideImageInfos{};
+        VkDescriptorImageInfo m_cachedDenoiseAccumulationImageInfo{};
+        VkDescriptorBufferInfo m_cachedComputeGlobalUboInfo{};
+        VkAccelerationStructureKHR m_cachedRayTracingTlasHandle{VK_NULL_HANDLE};
+        CachedRayTracingDescriptorWriteTemplate m_rayTracingRayGenDescriptorWriteTemplate{};
+        CachedDescriptorWriteTemplate m_computeDescriptorWriteTemplate{};
 #endif
 
 #ifdef RAY_TRACING

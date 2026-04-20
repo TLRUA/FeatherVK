@@ -6,6 +6,7 @@
 #include "../Pipeline.hpp"
 #include "../RenderCore/MaterialBindings.hpp"
 #include "../RenderCore/PipelineLibrary.hpp"
+#include "../RenderGraph/RenderGraph.hpp"
 #include "../RenderScene/RenderScene.hpp"
 #include "../Device.hpp"
 #include "../Model.hpp"
@@ -30,7 +31,7 @@ namespace FeatherVK {
 
     public:
         RenderSystem(Device &device,
-                     const VkRenderPass &renderPass,
+                     std::optional<RenderGraph::RenderGraphGraphicsPipelineTarget> graphicsPipelineTarget,
                      const std::shared_ptr<Material> material,
                      RenderCore::PipelineLibrary &pipelineLibrary);
 
@@ -42,9 +43,9 @@ namespace FeatherVK {
 
         RenderSystem &operator=(const RenderSystem &) = delete;
 
-        virtual void render(FrameInfo &frameInfo) {}
+        virtual void Record(RenderGraph::RenderGraphPassContext &context) {}
 
-        virtual void render(FrameInfo &frameInfo, const RenderMeshInstance &meshInstance);
+        virtual void Record(RenderGraph::RenderGraphPassContext &context, const RenderMeshInstance &meshInstance);
 
 
         template<class T>
@@ -63,9 +64,13 @@ namespace FeatherVK {
         }
 
     protected:
-        virtual void createPipeline(VkRenderPass renderPass);
+        virtual void createPipeline();
 
         virtual void createPipelineLayout();
+
+        [[nodiscard]] const RenderGraph::RenderGraphGraphicsPipelineTarget *GetGraphicsPipelineTarget() const {
+            return m_graphicsPipelineTarget ? &(*m_graphicsPipelineTarget) : nullptr;
+        }
 
         void BindMaterialResources(FrameInfo &frameInfo);
 
@@ -75,7 +80,7 @@ namespace FeatherVK {
         std::shared_ptr<Pipeline> m_pipeline;
         VkPipelineLayout m_pipelineLayout;
         std::shared_ptr<Material> m_material;
-        VkRenderPass m_renderPass;
+        std::optional<RenderGraph::RenderGraphGraphicsPipelineTarget> m_graphicsPipelineTarget;
         RenderCore::PipelineLibrary &m_pipelineLibrary;
 
     };

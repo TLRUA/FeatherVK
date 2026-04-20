@@ -142,7 +142,8 @@ namespace FeatherVK {
             glm::vec3 tempPosition = transform->GetRelativeTranslation();
             if (ImGui::InputFloat3("##Position", &tempPosition.x)) {
                 transformService.SetTranslation(*sceneRegistry, entityId, tempPosition);
-                EditorSceneUtils::MarkSceneDirty(frameInfo);
+                EditorSceneUtils::MarkTransformDirty(frameInfo);
+                EditorSceneUtils::MarkSceneDirty(frameInfo, false);
             }
 
             ImGui::Text("Rotation:");
@@ -150,7 +151,8 @@ namespace FeatherVK {
             glm::vec3 rotationByDegrees = glm::degrees(transform->GetRelativeRotation());
             if (ImGui::InputFloat3("##Rotation", &rotationByDegrees.x)) {
                 transformService.SetRotation(*sceneRegistry, entityId, glm::radians(rotationByDegrees));
-                EditorSceneUtils::MarkSceneDirty(frameInfo);
+                EditorSceneUtils::MarkTransformDirty(frameInfo);
+                EditorSceneUtils::MarkSceneDirty(frameInfo, false);
             }
 
             ImGui::Text("Scale:");
@@ -158,7 +160,8 @@ namespace FeatherVK {
             glm::vec3 tempScale = transform->GetRelativeScale();
             if (ImGui::InputFloat3("##Scale", &tempScale.x)) {
                 transformService.SetScale(*sceneRegistry, entityId, tempScale);
-                EditorSceneUtils::MarkSceneDirty(frameInfo);
+                EditorSceneUtils::MarkTransformDirty(frameInfo);
+                EditorSceneUtils::MarkSceneDirty(frameInfo, false);
             }
 
             ImGui::TreePop();
@@ -171,13 +174,13 @@ namespace FeatherVK {
             }
 
             if (ImGui::InputFloat("Move Speed", &component->moveSpeed)) {
-                EditorSceneUtils::MarkSceneDirty(frameInfo);
+                EditorSceneUtils::MarkSceneDirty(frameInfo, false);
             }
             if (ImGui::InputFloat("Look Speed", &component->lookSpeed)) {
-                EditorSceneUtils::MarkSceneDirty(frameInfo);
+                EditorSceneUtils::MarkSceneDirty(frameInfo, false);
             }
             if (ImGui::InputFloat("Focus Move Time", &component->focusMoveTime)) {
-                EditorSceneUtils::MarkSceneDirty(frameInfo);
+                EditorSceneUtils::MarkSceneDirty(frameInfo, false);
             }
 
             ImGui::TreePop();
@@ -190,7 +193,7 @@ namespace FeatherVK {
             }
 
             if (ImGui::InputFloat("Move Speed", &component->moveSpeed)) {
-                EditorSceneUtils::MarkSceneDirty(frameInfo);
+                EditorSceneUtils::MarkSceneDirty(frameInfo, false);
             }
 
             ImGui::TreePop();
@@ -208,7 +211,7 @@ namespace FeatherVK {
             const bool isLightEmitterMesh = IsLightEmitterMesh(sceneRegistry, entityId);
             if (isLightEmitterMesh && ApplyLightEmitterMeshConstraints(sceneRegistry, entityId)) {
                 EditorSceneUtils::MarkMeshRendererRenderResourcesDirty(frameInfo, entityId);
-                EditorSceneUtils::MarkSceneDirty(frameInfo);
+                EditorSceneUtils::MarkSceneDirty(frameInfo, false);
             }
 
             if (component->GetModelPtr() != nullptr) {
@@ -223,7 +226,8 @@ namespace FeatherVK {
             bool visible = component->IsVisible();
             if (ImGui::Checkbox("Visible", &visible)) {
                 component->SetVisible(visible);
-                EditorSceneUtils::MarkSceneDirty(frameInfo);
+                EditorSceneUtils::MarkRenderMeshDirty(frameInfo, entityId);
+                EditorSceneUtils::MarkSceneDirty(frameInfo, false);
             }
             bool castShadow = component->CastsShadow();
             if (isLightEmitterMesh) {
@@ -232,7 +236,8 @@ namespace FeatherVK {
             }
             if (ImGui::Checkbox("Cast Shadow", &castShadow)) {
                 component->SetCastShadow(castShadow);
-                EditorSceneUtils::MarkSceneDirty(frameInfo);
+                EditorSceneUtils::MarkRenderMeshDirty(frameInfo, entityId);
+                EditorSceneUtils::MarkSceneDirty(frameInfo, false);
             }
             if (isLightEmitterMesh) {
                 ImGui::EndDisabled();
@@ -244,7 +249,8 @@ namespace FeatherVK {
             }
             if (ImGui::Checkbox("Receive Shadow", &receiveShadow)) {
                 component->SetReceiveShadow(receiveShadow);
-                EditorSceneUtils::MarkSceneDirty(frameInfo);
+                EditorSceneUtils::MarkRenderMeshDirty(frameInfo, entityId);
+                EditorSceneUtils::MarkSceneDirty(frameInfo, false);
             }
             if (isLightEmitterMesh) {
                 ImGui::EndDisabled();
@@ -252,7 +258,8 @@ namespace FeatherVK {
             uint32_t renderLayer = component->GetRenderLayer();
             if (ImGui::InputScalar("Render Layer", ImGuiDataType_U32, &renderLayer)) {
                 component->SetRenderLayer(std::min(renderLayer, 7u));
-                EditorSceneUtils::MarkSceneDirty(frameInfo);
+                EditorSceneUtils::MarkRenderMeshDirty(frameInfo, entityId);
+                EditorSceneUtils::MarkSceneDirty(frameInfo, false);
             }
 
 #ifdef RAY_TRACING
@@ -348,7 +355,7 @@ namespace FeatherVK {
                     component->SetPbrOverride(editablePbr);
                     gameObjectDescs->at(runtimeRayTracingInstanceId).pbr = editablePbr;
                     EditorSceneUtils::MarkMeshRendererRenderResourcesDirty(frameInfo, entityId);
-                    EditorSceneUtils::MarkSceneDirty(frameInfo);
+                    EditorSceneUtils::MarkSceneDirty(frameInfo, false);
                 }
                 ImGui::TreePop();
             }
@@ -398,10 +405,11 @@ namespace FeatherVK {
 
             if (lightChanged) {
                 SyncLightEmitterEmissive(sceneRegistry, entityId, *component);
+                EditorSceneUtils::MarkRenderLightDirty(frameInfo, entityId);
                 if (sceneRegistry != nullptr && sceneRegistry->HasComponent<MeshRendererComponent>(entityId)) {
                     EditorSceneUtils::MarkMeshRendererRenderResourcesDirty(frameInfo, entityId);
                 }
-                EditorSceneUtils::MarkSceneDirty(frameInfo);
+                EditorSceneUtils::MarkSceneDirty(frameInfo, false);
             }
 
             ImGui::Text("Type:");
@@ -419,27 +427,27 @@ namespace FeatherVK {
             ImGui::Text("Velocity:");
             ImGui::SameLine(90);
             if (ImGui::InputFloat3("##Velocity", &component->velocity.x)) {
-                EditorSceneUtils::MarkSceneDirty(frameInfo);
+                EditorSceneUtils::MarkSceneDirty(frameInfo, false);
             }
 
             ImGui::Text("Omega:");
             ImGui::SameLine(90);
             if (ImGui::InputFloat3("##Omega", &component->omega.x)) {
-                EditorSceneUtils::MarkSceneDirty(frameInfo);
+                EditorSceneUtils::MarkSceneDirty(frameInfo, false);
             }
 
             ImGui::Text("Mass:");
             ImGui::SameLine(90);
             if (ImGui::InputFloat("##Mass", &component->totalMass)) {
                 component->inverseMass = component->totalMass > RigidBodyComponent::EPSILON ? 1.0f / component->totalMass : 0.0f;
-                EditorSceneUtils::MarkSceneDirty(frameInfo);
+                EditorSceneUtils::MarkSceneDirty(frameInfo, false);
             }
 
             if (ImGui::Checkbox("Use Gravity", &component->useGravity)) {
-                EditorSceneUtils::MarkSceneDirty(frameInfo);
+                EditorSceneUtils::MarkSceneDirty(frameInfo, false);
             }
             if (ImGui::Checkbox("Is Kinematic", &component->isKinematic)) {
-                EditorSceneUtils::MarkSceneDirty(frameInfo);
+                EditorSceneUtils::MarkSceneDirty(frameInfo, false);
             }
 
             ImGui::TreePop();

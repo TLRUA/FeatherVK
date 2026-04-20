@@ -1,75 +1,105 @@
 # FeatherVK
 
-FeatherVK is a C++17 + Vulkan renderer project with an ECS-based scene runtime, editor picking, gizmos, and configurable rasterization / ray tracing pipelines.
+FeatherVK is a C++17 Vulkan renderer/editor project with an EnTT-based ECS, ImGui editor, rasterization, ray tracing, hybrid rendering, and a staged render architecture.
 
 ![Preview](./README.assets/preview.png)
 
-## Current Features
+## Features
 
-- C++17 project, CMake build, Vulkan backend
-- ECS runtime (`SceneRegistry`) with component lifecycle (`Awake/Start/Update/LateUpdate/FixedUpdate`)
-- Scene/material/component data loaded from JSON in `Configurations/`
-- Editor-style interaction:
-  - object ID picking (left click)
-  - hierarchy + inspector (ImGui)
-  - selected object outline + gizmos axis
-- Camera and object controls (keyboard/mouse)
-- Two rendering data sets:
-  - `Configurations/RayTracing`
-  - `Configurations/Rasterization`
+- Vulkan renderer with optional ray tracing.
+- Render architecture: `RHI -> RenderCore -> RenderScene -> RenderGraph`.
+- ImGui editor with hierarchy, inspector, picking, gizmos, outline, dirty-state Save button, and Add Component workflow.
+- Entity presets: Empty, Cube, Sphere, Cylinder, Plane, Torus, Lights, Camera, and basic UI objects.
+- Editable components: Transform, MeshRenderer, Light, Camera, RigidBody, UI, and movement/input components.
+- JSON-backed scene, component, and material data.
+- Ray traced reflections, shadows, environment sampling, denoise, and hybrid raster + RT effects.
+- Render-side RT instance lifecycle, TLAS reason tracking, deferred resource release, and descriptor update caching.
 
-## Build Requirements
+## Architecture
 
-- Windows
-- CMake >= 3.25
-- C++17 compiler (Visual Studio 2022 recommended)
-- Vulkan SDK installed and available in environment
-- Git (for `FetchContent` dependencies)
+```text
+Application / Editor
+  -> LogicManager / ResourceManager / RenderManager
+  -> RenderScene
+  -> RenderGraph
+  -> RenderCore
+  -> RHI / Vulkan
+```
+
+Key folders:
+
+- `Source/RHI/` - low-level rendering abstraction.
+- `Source/RenderCore/` - shader, pipeline, material, and render resource infrastructure.
+- `Source/RenderScene/` - extracted render-side scene data.
+- `Source/RenderGraph/` - pass graph, graph-owned resources, barriers, and execution.
+- `Source/RenderSystems/` - raster, shadow, skybox, grass, picking, gizmo, post, compute, and RT systems.
+- `Configurations/` - JSON scene/material/component data.
+- `Shaders/` - GLSL and SPIR-V shaders.
 
 ## Build
 
+Requirements:
+
+- Windows
+- CMake 3.25+
+- Visual Studio 2022 or another C++17 compiler
+- Vulkan SDK
+- Git
+
 ```powershell
 cmake -S . -B build
-cmake --build build --config Debug
+cmake --build build --config Debug --target FeatherVK
 ```
 
-Dependencies fetched by CMake:
-
-- `glfw` (3.4)
-- `glm` (1.0.1)
-
-## Run
-
-Run from the `build` directory so shader relative paths resolve correctly:
+Run:
 
 ```powershell
-cd build
-.\Debug\FeatherVK.exe
+.\build\Debug\FeatherVK.exe
 ```
 
-If you launch from IDE, set working directory to `.../FeatherVK/build`.
+## Rendering Mode
+
+Rendering mode is selected in `Source/Device.hpp`:
+
+- `#define RAY_TRACING` enabled: ray tracing / hybrid path.
+- `RAY_TRACING` disabled: rasterization path.
+
+Rebuild after changing the macro.
+
+## Shaders
+
+Compiled `.spv` files are checked in. Recompile after changing shader source:
+
+```powershell
+cd Shaders
+.\compileAllShaders.bat
+```
+
+Update the `glslc.exe` path in the batch file if needed.
 
 ## Controls
 
-- Right mouse + drag: rotate camera
-- `W/A/S/D/Q/E`: move camera
-- Left mouse click in scene viewport: pick/select entity
-- `F`: focus camera on current selected entity
-- Arrow keys: move selected entity on X/Z plane (when scene input is not captured by UI)
+- Right mouse + drag: rotate camera.
+- `W/A/S/D/Q/E`: move camera.
+- Left click in Scene viewport: pick entity.
+- `F`: focus selected entity.
+- Drag gizmo axis: translate selected entity.
+- Hierarchy right click: create entities.
+- Inspector `Add Component`: add supported components.
+- Top `Save`: write dirty scene changes to JSON.
 
-## Configuration Notes
+## Scene Data
 
-- Runtime scene data:
-  - `Configurations/RayTracing/*.json`
-  - `Configurations/Rasterization/*.json`
-- Cubemap textures are loaded from `Textures/Cubemap/` using fixed file names:
-  - `posx.jpg`, `negx.jpg`, `posy.jpg`, `negy.jpg`, `posz.jpg`, `negz.jpg`
+```text
+Configurations/
+  Rasterization/
+  RayTracing/
+```
 
-## Rendering Mode Switch
+Each mode has its own `Entities.json`, `Components.json`, and `Materials.json`.
 
-Rendering path is currently selected by macro in `Source/Device.hpp`:
+## Notes
 
-- `#define RAY_TRACING` enabled: use ray tracing configuration path
-- comment out `RAY_TRACING`: use rasterization path
-
-Rebuild after changing this macro.
+- Assets are loaded from `Models/`, `Textures/`, and `Textures/Cubemap/`.
+- Current path uses graph-owned Vulkan render pass/framebuffer objects, not dynamic rendering.
+- Set `FEATHERVK_RT_DIAGNOSTICS=1` to log TLAS build/update diagnostics.

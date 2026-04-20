@@ -201,62 +201,140 @@ namespace FeatherVK {
         vkResetDescriptorPool(Device.device(), descriptorPool, 0);
     }
 
+// *************** Descriptor Update Plan *********************
+
+    DescriptorUpdatePlan::DescriptorUpdatePlan(std::shared_ptr<DescriptorSetLayout> setLayout)
+        : m_setLayout(std::move(setLayout)) {}
+
+    void DescriptorUpdatePlan::Reset(std::shared_ptr<DescriptorSetLayout> setLayout) {
+        m_setLayout = std::move(setLayout);
+        m_bufferInfoStorage.clear();
+        m_bufferArrayStorage.clear();
+        m_imageInfoStorage.clear();
+        m_imageArrayStorage.clear();
+#ifdef RAY_TRACING
+        m_tlasInfoStorage.clear();
+#endif
+        m_writes.clear();
+    }
+
+    const VkDescriptorSetLayoutBinding &DescriptorUpdatePlan::GetBinding(uint32_t binding) const {
+        if (m_setLayout == nullptr || binding >= m_setLayout->bindings.size()) {
+            throw std::runtime_error("Descriptor write binding is not present in the descriptor set layout");
+        }
+        return m_setLayout->bindings[binding];
+    }
+
+    void DescriptorUpdatePlan::WriteBuffer(uint32_t binding, const VkDescriptorBufferInfo &bufferInfo) {
+        const auto &bindingDescription = GetBinding(binding);
+        m_bufferInfoStorage.push_back(bufferInfo);
+
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.descriptorType = bindingDescription.descriptorType;
+        write.dstBinding = binding;
+        write.pBufferInfo = &m_bufferInfoStorage.back();
+        write.descriptorCount = 1;
+        m_writes.push_back(write);
+    }
+
+    void DescriptorUpdatePlan::WriteBuffers(uint32_t binding, const std::vector<VkDescriptorBufferInfo> &bufferInfos) {
+        const auto &bindingDescription = GetBinding(binding);
+        m_bufferArrayStorage.push_back(bufferInfos);
+
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.descriptorType = bindingDescription.descriptorType;
+        write.dstBinding = binding;
+        write.pBufferInfo = m_bufferArrayStorage.back().data();
+        write.descriptorCount = static_cast<uint32_t>(m_bufferArrayStorage.back().size());
+        m_writes.push_back(write);
+    }
+
+    void DescriptorUpdatePlan::WriteImage(uint32_t binding, const VkDescriptorImageInfo &imageInfo) {
+        const auto &bindingDescription = GetBinding(binding);
+        m_imageInfoStorage.push_back(imageInfo);
+
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.descriptorType = bindingDescription.descriptorType;
+        write.dstBinding = binding;
+        write.pImageInfo = &m_imageInfoStorage.back();
+        write.descriptorCount = 1;
+        m_writes.push_back(write);
+    }
+
+    void DescriptorUpdatePlan::WriteImages(uint32_t binding, const std::vector<VkDescriptorImageInfo> &imageInfos) {
+        const auto &bindingDescription = GetBinding(binding);
+        m_imageArrayStorage.push_back(imageInfos);
+
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.descriptorType = bindingDescription.descriptorType;
+        write.dstBinding = binding;
+        write.pImageInfo = m_imageArrayStorage.back().data();
+        write.descriptorCount = static_cast<uint32_t>(m_imageArrayStorage.back().size());
+        m_writes.push_back(write);
+    }
+
+#ifdef RAY_TRACING
+
+    void DescriptorUpdatePlan::WriteTLAS(
+        uint32_t binding,
+        const VkWriteDescriptorSetAccelerationStructureKHR &accelerationStructureInfo) {
+        const auto &bindingDescription = GetBinding(binding);
+        m_tlasInfoStorage.push_back(accelerationStructureInfo);
+
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.descriptorType = bindingDescription.descriptorType;
+        write.dstBinding = binding;
+        write.descriptorCount = 1;
+        write.pNext = &m_tlasInfoStorage.back();
+        m_writes.push_back(write);
+    }
+
+#endif
+
+    void DescriptorUpdatePlan::Update(Device &device, VkDescriptorSet set) {
+        if (m_writes.empty()) {
+            return;
+        }
+
+        for (auto &write: m_writes) {
+            write.dstSet = set;
+        }
+        vkUpdateDescriptorSets(
+            device.device(),
+            static_cast<uint32_t>(m_writes.size()),
+            m_writes.data(),
+            0,
+            nullptr);
+    }
+
 // *************** Descriptor Writer *********************
 
     DescriptorWriter::DescriptorWriter(std::shared_ptr<DescriptorSetLayout> setLayout, DescriptorPool &pool)
-            : setLayout{setLayout}, pool{pool} {}
+            : setLayout{std::move(setLayout)}, pool{pool}, m_updatePlan{this->setLayout} {}
 
     DescriptorWriter &DescriptorWriter::writeBuffer(
             uint32_t binding, std::shared_ptr<VkDescriptorBufferInfo> bufferInfo) {
-        auto &bindingDescription = setLayout->bindings[binding];
-        auto write = std::make_shared<VkWriteDescriptorSet>();
-        write->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write->descriptorType = bindingDescription.descriptorType;
-        write->dstBinding = binding;
-        m_bufferInfos.push_back(bufferInfo);
-        write->pBufferInfo = m_bufferInfos.back().get();
-        write->descriptorCount = 1;
-        writes.push_back(write);
+        if (bufferInfo != nullptr) {
+            m_updatePlan.WriteBuffer(binding, *bufferInfo);
+        }
         return *this;
     }
 
     DescriptorWriter &DescriptorWriter::writeBuffers(uint32_t binding, std::vector<VkDescriptorBufferInfo> &bufferInfos) {
-        auto &bindingDescription = setLayout->bindings[binding];
-        auto write = std::make_shared<VkWriteDescriptorSet>();
-        write->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write->descriptorType = bindingDescription.descriptorType;
-        write->dstBinding = binding;
-        write->pBufferInfo = bufferInfos.data();
-        write->descriptorCount = bufferInfos.size();
-
-        writes.push_back(write);
+        m_updatePlan.WriteBuffers(binding, bufferInfos);
         return *this;
     }
 
     DescriptorWriter &DescriptorWriter::writeImage(
             uint32_t binding, const std::shared_ptr<VkDescriptorImageInfo> &imageInfo) {
-
-        auto &bindingDescription = setLayout->bindings[binding];
-        auto write = std::make_shared<VkWriteDescriptorSet>();
-        write->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write->descriptorType = bindingDescription.descriptorType;
-        write->dstBinding = binding;
-        m_imageInfos.push_back(imageInfo);
-        write->pImageInfo = m_imageInfos.back().get();
-        write->descriptorCount = 1;
-        writes.push_back(write);
+        if (imageInfo != nullptr) {
+            m_updatePlan.WriteImage(binding, *imageInfo);
+        }
         return *this;
     }
 
     DescriptorWriter &DescriptorWriter::writeImages(uint32_t binding, std::vector<VkDescriptorImageInfo> &imageInfos) {
-        auto &bindingDescription = setLayout->bindings[binding];
-        auto write = std::make_shared<VkWriteDescriptorSet>();
-        write->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write->descriptorType = bindingDescription.descriptorType;
-        write->dstBinding = binding;
-        write->pImageInfo = imageInfos.data();
-        write->descriptorCount = imageInfos.size();
-        writes.push_back(write);
+        m_updatePlan.WriteImages(binding, imageInfos);
         return *this;
     }
 
@@ -264,15 +342,9 @@ namespace FeatherVK {
 
     DescriptorWriter &DescriptorWriter::writeTLAS(uint32_t binding,
                                                   std::shared_ptr<VkWriteDescriptorSetAccelerationStructureKHR> accelerationStructureInfo) {
-        auto &bindingDescription = setLayout->bindings[binding];
-        auto write = std::make_shared<VkWriteDescriptorSet>();
-        write->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write->descriptorType = bindingDescription.descriptorType;
-        write->dstBinding = binding;
-        write->descriptorCount = 1;
-        m_tlasInfos.push_back(accelerationStructureInfo);
-        write->pNext = m_tlasInfos.back().get();
-        writes.push_back(write);
+        if (accelerationStructureInfo != nullptr) {
+            m_updatePlan.WriteTLAS(binding, *accelerationStructureInfo);
+        }
         return *this;
     }
 
@@ -297,12 +369,7 @@ namespace FeatherVK {
     }
 
     void DescriptorWriter::overwrite(VkDescriptorSet &set) {
-        std::vector<VkWriteDescriptorSet> writeVector;
-        for (auto &write: writes) {
-            write->dstSet = set;
-            writeVector.push_back(*write);
-        }
-        vkUpdateDescriptorSets(pool.Device.device(), writes.size(), writeVector.data(), 0, nullptr);
+        m_updatePlan.Update(pool.Device, set);
     }
 
     void DescriptorWriter::overwrite(DescriptorSetHandle &set) {

@@ -13,12 +13,12 @@ namespace FeatherVK {
     class ShadowSystem {
     public:
         ShadowSystem(Device &device,
-                     const VkRenderPass &renderPass,
+                     const RenderGraph::RenderGraphGraphicsPipelineTarget &graphicsPipelineTarget,
                      const std::shared_ptr<Material> &material,
                      RenderCore::PipelineLibrary &pipelineLibrary) :
-                     device{device}, material{material}, m_pipelineLibrary{pipelineLibrary} {
+                     device{device}, material{material}, m_graphicsPipelineTarget{graphicsPipelineTarget}, m_pipelineLibrary{pipelineLibrary} {
             createPipelineLayout();
-            createPipeline(renderPass);
+            createPipeline();
         }
 
         ~ShadowSystem() = default;
@@ -27,7 +27,8 @@ namespace FeatherVK {
 
         ShadowSystem &operator=(const ShadowSystem &) = delete;
 
-        void renderShadow(FrameInfo &frameInfo) {
+        void Record(RenderGraph::RenderGraphPassContext &context) {
+            auto &frameInfo = context.frameInfo;
             if (frameInfo.commandList == nullptr || frameInfo.renderScene == nullptr) {
                 return;
             }
@@ -92,9 +93,11 @@ namespace FeatherVK {
 
         }
 
-        void createPipeline(VkRenderPass renderPass) {
+        void createPipeline() {
             PipelineConfigureInfo pipelineConfigureInfo{};
             Pipeline::setDefaultPipelineConfigureInfo(pipelineConfigureInfo);
+            assert(m_graphicsPipelineTarget.compatibleRenderPass != VK_NULL_HANDLE &&
+                   "ShadowSystem requires a graphics pipeline target");
 
             VkVertexInputBindingDescription bindingDescription[1];
             VkVertexInputAttributeDescription attributeDescription[1];
@@ -111,10 +114,10 @@ namespace FeatherVK {
 //        pipelineConfigureInfo.attributeDescriptions.push_back(attributeDescription[0]);
 //        pipelineConfigureInfo.vertexBindingDescriptions.clear();
 //        pipelineConfigureInfo.vertexBindingDescriptions.push_back(bindingDescription[0]);
-            pipelineConfigureInfo.renderPass = renderPass;
+            pipelineConfigureInfo.renderPass = m_graphicsPipelineTarget.compatibleRenderPass;
             pipelineConfigureInfo.pipelineLayout = pipelineLayout;
             pipeline = m_pipelineLibrary.GetOrCreatePipeline(
-                    "Shadow/Pipeline/" + std::to_string(material->getMaterialId()),
+                    "Shadow/Pipeline/" + std::to_string(material->getMaterialId()) + "/" + m_graphicsPipelineTarget.signature.key,
                     pipelineConfigureInfo,
                     material);
         }
@@ -125,6 +128,7 @@ namespace FeatherVK {
         std::shared_ptr<Pipeline> pipeline;
         VkPipelineLayout pipelineLayout;
         std::shared_ptr<Material> material;
+        RenderGraph::RenderGraphGraphicsPipelineTarget m_graphicsPipelineTarget;
         RenderCore::PipelineLibrary &m_pipelineLibrary;
     };
 

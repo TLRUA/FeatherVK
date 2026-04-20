@@ -171,6 +171,19 @@ namespace FeatherVK::ECS {
             return entities;
         }
 
+        template<typename... Ts>
+        size_t ViewSizeHint() const {
+            return m_entityOrder.size();
+        }
+
+        template<typename... Ts, typename Func>
+        void ForEachView(Func &&func) const {
+            auto view = m_registry.view<const EntityIdComponent, std::add_const_t<std::remove_reference_t<Ts>>...>();
+            for (const auto entity: view) {
+                func(view.template get<const EntityIdComponent>(entity).id);
+            }
+        }
+
     private:
         struct EntityIdComponent {
             EntityId id = 0;

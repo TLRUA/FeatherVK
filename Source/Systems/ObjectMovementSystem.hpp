@@ -51,7 +51,7 @@ namespace FeatherVK {
                 }
             }
             if (moved) {
-                EditorSceneUtils::MarkRenderSceneDirty(frameInfo);
+                EditorSceneUtils::MarkTransformDirty(frameInfo);
             }
         }
 

@@ -11,14 +11,15 @@ namespace FeatherVK {
     class EditorPickingRenderSystem : public RenderSystem {
     public:
         EditorPickingRenderSystem(Device &device,
-                                  const VkRenderPass &renderPass,
+                                  const RenderGraph::RenderGraphGraphicsPipelineTarget &graphicsPipelineTarget,
                                   const std::shared_ptr<Material> &material,
                                   RenderCore::PipelineLibrary &pipelineLibrary)
-                : RenderSystem(device, renderPass, material, pipelineLibrary) {
+                : RenderSystem(device, graphicsPipelineTarget, material, pipelineLibrary) {
             Init();
         }
 
-        void render(FrameInfo &frameInfo, const RenderMeshInstance &meshInstance) {
+        void Record(RenderGraph::RenderGraphPassContext &context, const RenderMeshInstance &meshInstance) override {
+            auto &frameInfo = context.frameInfo;
             if (!meshInstance.IsPickable()) {
                 return;
             }
@@ -52,18 +53,20 @@ namespace FeatherVK {
                     {pushConstantRange});
         }
 
-        void createPipeline(VkRenderPass renderPass) override {
+        void createPipeline() override {
             PipelineConfigureInfo pipelineConfigureInfo{};
             Pipeline::setDefaultPipelineConfigureInfo(pipelineConfigureInfo);
+            const auto *graphicsPipelineTarget = GetGraphicsPipelineTarget();
+            assert(graphicsPipelineTarget != nullptr && "EditorPickingRenderSystem requires a graphics pipeline target");
             pipelineConfigureInfo.vertexBindingDescriptions = Model::Vertex::getBindingDescriptions();
             pipelineConfigureInfo.attributeDescriptions = {
                     {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Model::Vertex, position)}
             };
-            pipelineConfigureInfo.renderPass = renderPass;
+            pipelineConfigureInfo.renderPass = graphicsPipelineTarget->compatibleRenderPass;
             pipelineConfigureInfo.pipelineLayout = m_pipelineLayout;
 
             m_pipeline = m_pipelineLibrary.GetOrCreatePipeline(
-                    "EditorPicking/Pipeline/" + std::to_string(m_material->getMaterialId()),
+                    "EditorPicking/Pipeline/" + std::to_string(m_material->getMaterialId()) + "/" + graphicsPipelineTarget->signature.key,
                     pipelineConfigureInfo,
                     m_material);
         }

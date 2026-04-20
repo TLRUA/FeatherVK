@@ -12,15 +12,16 @@ namespace FeatherVK {
         };
 
         PostSystem(Device &device,
-                   const VkRenderPass &renderPass,
+                   const RenderGraph::RenderGraphGraphicsPipelineTarget &graphicsPipelineTarget,
                    std::shared_ptr<Material> material,
                    RenderCore::PipelineLibrary &pipelineLibrary) :
-                RenderSystem(device, renderPass, material, pipelineLibrary) {};
+                RenderSystem(device, graphicsPipelineTarget, material, pipelineLibrary) {};
 
         PostSystem(const RenderSystem &) = delete;
 
 
-        void RenderWithImageIndex(FrameInfo &frameInfo, int imageIndex) {
+        void RecordWithImageIndex(RenderGraph::RenderGraphPassContext &context, int imageIndex) {
+            auto &frameInfo = context.frameInfo;
             if (frameInfo.commandList == nullptr) {
                 return;
             }
@@ -35,8 +36,8 @@ namespace FeatherVK {
             m_pushConstant.firstFrame = false;
         }
 
-        void render(FrameInfo &frameInfo) override {
-            RenderWithImageIndex(frameInfo, frameInfo.frameIndex % 2);
+        void Record(RenderGraph::RenderGraphPassContext &context) override {
+            RecordWithImageIndex(context, context.frameInfo.frameIndex % 2);
         }
 
     private:
@@ -54,9 +55,11 @@ namespace FeatherVK {
                     {pushConstantRange});
         }
 
-        void createPipeline(VkRenderPass renderPass) override {
+        void createPipeline() override {
             PipelineConfigureInfo pipelineConfigureInfo{};
             Pipeline::setDefaultPipelineConfigureInfo(pipelineConfigureInfo);
+            const auto *graphicsPipelineTarget = GetGraphicsPipelineTarget();
+            assert(graphicsPipelineTarget != nullptr && "PostSystem requires a graphics pipeline target");
 
             //No input bindings
             pipelineConfigureInfo.vertexBindingDescriptions.clear();
@@ -66,10 +69,10 @@ namespace FeatherVK {
             pipelineConfigureInfo.depthStencilInfo.depthTestEnable = VK_FALSE;
             pipelineConfigureInfo.depthStencilInfo.depthWriteEnable = VK_FALSE;
             pipelineConfigureInfo.colorBlendAttachment.blendEnable = VK_FALSE;
-            pipelineConfigureInfo.renderPass = renderPass;
+            pipelineConfigureInfo.renderPass = graphicsPipelineTarget->compatibleRenderPass;
             pipelineConfigureInfo.pipelineLayout = m_pipelineLayout;
             m_pipeline = m_pipelineLibrary.GetOrCreatePipeline(
-                    "Post/Pipeline/" + std::to_string(m_material->getMaterialId()),
+                    "Post/Pipeline/" + std::to_string(m_material->getMaterialId()) + "/" + graphicsPipelineTarget->signature.key,
                     pipelineConfigureInfo,
                     m_material);
         }

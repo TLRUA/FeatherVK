@@ -15,11 +15,15 @@ namespace FeatherVK {
                     TransformService &transformService) const {
             const std::vector<id_t> dirtyEntities = transformService.ConsumeDirtyEntities();
             if (dirtyEntities.empty()) {
+                transformService.PublishResolvedDirtyEntities({});
                 return;
             }
 
             std::unordered_set<id_t> dirtySet{dirtyEntities.begin(), dirtyEntities.end()};
             std::unordered_set<id_t> dirtyRoots{};
+            std::unordered_set<id_t> updatedEntitySet{};
+            std::vector<id_t> updatedEntities{};
+            updatedEntities.reserve(dirtyEntities.size());
 
             for (const id_t entityId: dirtyEntities) {
                 if (!sceneRegistry.IsAlive(entityId)) {
@@ -64,8 +68,18 @@ namespace FeatherVK {
                 if (transform->HasParent()) {
                     parentTransform = sceneRegistry.TryGetComponent<TransformComponent>(transform->GetParentEntityId());
                 }
-                UpdateSubtree(sceneRegistry, hierarchyService, transformService, entityId, parentTransform, true);
+                UpdateSubtree(
+                    sceneRegistry,
+                    hierarchyService,
+                    transformService,
+                    entityId,
+                    parentTransform,
+                    true,
+                    updatedEntities,
+                    updatedEntitySet);
             }
+
+            transformService.PublishResolvedDirtyEntities(std::move(updatedEntities));
         }
 
     private:
@@ -74,7 +88,9 @@ namespace FeatherVK {
                                   TransformService &transformService,
                                   id_t entityId,
                                   TransformComponent *parentTransform,
-                                  bool parentDirty) {
+                                  bool parentDirty,
+                                  std::vector<id_t> &updatedEntities,
+                                  std::unordered_set<id_t> &updatedEntitySet) {
             TransformComponent *transform = sceneRegistry.TryGetComponent<TransformComponent>(entityId);
             if (transform == nullptr) {
                 return;
@@ -100,10 +116,21 @@ namespace FeatherVK {
             const bool shouldUpdate = parentDirty || transform->IsDirty() || !transform->HasValidWorldTransform();
             if (shouldUpdate) {
                 transform->SetWorldTransform(worldTranslation, worldScale, worldRotation);
+                if (updatedEntitySet.insert(entityId).second) {
+                    updatedEntities.push_back(entityId);
+                }
             }
 
             for (const id_t childId: hierarchyService.GetTree().GetChildren(entityId)) {
-                UpdateSubtree(sceneRegistry, hierarchyService, transformService, childId, transform, shouldUpdate);
+                UpdateSubtree(
+                    sceneRegistry,
+                    hierarchyService,
+                    transformService,
+                    childId,
+                    transform,
+                    shouldUpdate,
+                    updatedEntities,
+                    updatedEntitySet);
             }
         }
     };

@@ -6,12 +6,13 @@ namespace FeatherVK {
     class GrassSystem : public RenderSystem {
     public:
         GrassSystem(Device &device,
-                    const VkRenderPass &renderPass,
+                    const RenderGraph::RenderGraphGraphicsPipelineTarget &graphicsPipelineTarget,
                     std::shared_ptr<Material> &material,
-                    RenderCore::PipelineLibrary &pipelineLibrary) : RenderSystem(device, renderPass, material, pipelineLibrary) {
+                    RenderCore::PipelineLibrary &pipelineLibrary) : RenderSystem(device, graphicsPipelineTarget, material, pipelineLibrary) {
         }
 
-        void render(FrameInfo &frameInfo, const RenderMeshInstance &meshInstance) override {
+        void Record(RenderGraph::RenderGraphPassContext &context, const RenderMeshInstance &meshInstance) override {
+            auto &frameInfo = context.frameInfo;
             if (frameInfo.commandList == nullptr || !meshInstance.IsRenderable()) {
                 return;
             }
@@ -48,7 +49,7 @@ namespace FeatherVK {
                     {pushConstantRange});
         }
 
-        void createPipeline(VkRenderPass renderPass) override {
+        void createPipeline() override {
             PipelineConfigureInfo pipelineConfigureInfo{};
             Pipeline::setDefaultPipelineConfigureInfo(pipelineConfigureInfo);
 
@@ -60,10 +61,14 @@ namespace FeatherVK {
             tessellationStateCreateInfo.flags = 0;
             pipelineConfigureInfo.tessellationStateCreateInfo = tessellationStateCreateInfo;
 
-            pipelineConfigureInfo.renderPass = renderPass;
+            const auto *graphicsPipelineTarget = GetGraphicsPipelineTarget();
+            if (graphicsPipelineTarget == nullptr) {
+                throw std::runtime_error("GrassSystem requires a graphics pipeline target");
+            }
+            pipelineConfigureInfo.renderPass = graphicsPipelineTarget->compatibleRenderPass;
             pipelineConfigureInfo.pipelineLayout = m_pipelineLayout;
             m_pipeline = m_pipelineLibrary.GetOrCreatePipeline(
-                    "Grass/Pipeline/" + std::to_string(m_material->getMaterialId()),
+                    "Grass/Pipeline/" + std::to_string(m_material->getMaterialId()) + "/" + graphicsPipelineTarget->signature.key,
                     pipelineConfigureInfo,
                     m_material);
         }

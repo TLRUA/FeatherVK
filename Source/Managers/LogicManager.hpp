@@ -78,7 +78,7 @@ namespace FeatherVK {
                 frameTime -= FIXED_UPDATE_INTERVAL;
 
                 if (m_rigidBodySystem->FixedUpdate(sceneRegistry)) {
-                    EditorSceneUtils::MarkRenderSceneDirty(frameInfo);
+                    EditorSceneUtils::MarkTransformDirty(frameInfo);
                 }
                 m_rigidBodySystem->LateFixedUpdate(sceneRegistry);
                 m_transformHierarchySystem->Update(sceneRegistry, m_resourceManager->GetHierarchyService(), m_resourceManager->GetTransformService());

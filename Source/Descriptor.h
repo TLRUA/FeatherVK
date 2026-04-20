@@ -4,6 +4,7 @@
 #include "RHI/RHIBinding.hpp"
 
 // std
+#include <deque>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -49,6 +50,7 @@ namespace FeatherVK {
         std::vector<RHI::BindLayoutEntry> m_rhiEntries{};
 
         friend class DescriptorWriter;
+        friend class DescriptorUpdatePlan;
     };
 
     class DescriptorPool {
@@ -118,6 +120,42 @@ namespace FeatherVK {
         std::shared_ptr<VkDescriptorSet> m_descriptorSet;
     };
 
+    class DescriptorUpdatePlan {
+    public:
+        explicit DescriptorUpdatePlan(std::shared_ptr<DescriptorSetLayout> setLayout = {});
+
+        void Reset(std::shared_ptr<DescriptorSetLayout> setLayout);
+
+        void WriteBuffer(uint32_t binding, const VkDescriptorBufferInfo &bufferInfo);
+
+        void WriteBuffers(uint32_t binding, const std::vector<VkDescriptorBufferInfo> &bufferInfos);
+
+        void WriteImage(uint32_t binding, const VkDescriptorImageInfo &imageInfo);
+
+        void WriteImages(uint32_t binding, const std::vector<VkDescriptorImageInfo> &imageInfos);
+
+#ifdef RAY_TRACING
+        void WriteTLAS(uint32_t binding, const VkWriteDescriptorSetAccelerationStructureKHR &accelerationStructureInfo);
+#endif
+
+        void Update(Device &device, VkDescriptorSet set);
+
+        [[nodiscard]] bool Empty() const { return m_writes.empty(); }
+
+    private:
+        [[nodiscard]] const VkDescriptorSetLayoutBinding &GetBinding(uint32_t binding) const;
+
+        std::shared_ptr<DescriptorSetLayout> m_setLayout{};
+        std::deque<VkDescriptorBufferInfo> m_bufferInfoStorage{};
+        std::deque<std::vector<VkDescriptorBufferInfo>> m_bufferArrayStorage{};
+        std::deque<VkDescriptorImageInfo> m_imageInfoStorage{};
+        std::deque<std::vector<VkDescriptorImageInfo>> m_imageArrayStorage{};
+#ifdef RAY_TRACING
+        std::deque<VkWriteDescriptorSetAccelerationStructureKHR> m_tlasInfoStorage{};
+#endif
+        std::vector<VkWriteDescriptorSet> m_writes{};
+    };
+
     class DescriptorWriter {
     public:
         DescriptorWriter(std::shared_ptr<DescriptorSetLayout> setLayout, DescriptorPool &pool);
@@ -143,11 +181,8 @@ namespace FeatherVK {
 
     private:
         std::shared_ptr<DescriptorSetLayout> setLayout;
-        std::vector<std::shared_ptr<VkDescriptorBufferInfo>> m_bufferInfos{};
-        std::vector<std::shared_ptr<VkDescriptorImageInfo>> m_imageInfos{};
-        std::vector<std::shared_ptr<VkWriteDescriptorSetAccelerationStructureKHR>> m_tlasInfos{};
         DescriptorPool &pool;
-        std::vector<std::shared_ptr<VkWriteDescriptorSet>> writes;
+        DescriptorUpdatePlan m_updatePlan;
     };
 
     VkDescriptorSetLayout GetVkDescriptorSetLayout(const RHI::RHIBindLayout &layout);

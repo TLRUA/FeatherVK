@@ -152,10 +152,12 @@ namespace FeatherVK {
 
         void ReserveMeshInstances(size_t count) {
             m_meshInstances.reserve(count);
+            m_meshEntityToIndex.reserve(count);
         }
 
         void ReserveLightInstances(size_t count) {
             m_lightInstances.reserve(count);
+            m_lightEntityToIndex.reserve(count);
         }
 
         void AddMeshInstance(RenderMeshInstance meshInstance) {
@@ -169,6 +171,46 @@ namespace FeatherVK {
             m_meshInstances.push_back(std::move(meshInstance));
         }
 
+        void UpdateMeshInstance(RenderMeshInstance meshInstance) {
+            const auto indexIt = m_meshEntityToIndex.find(meshInstance.entityId);
+            if (indexIt == m_meshEntityToIndex.end() || indexIt->second >= m_meshInstances.size()) {
+                AddMeshInstance(std::move(meshInstance));
+                return;
+            }
+
+            auto &current = m_meshInstances[indexIt->second];
+            if (current.visible) {
+                --m_stats.visibleMeshInstanceCount;
+            }
+            if (meshInstance.visible) {
+                ++m_stats.visibleMeshInstanceCount;
+            }
+            current = std::move(meshInstance);
+        }
+
+        void RemoveMeshInstance(id_t entityId) {
+            const auto indexIt = m_meshEntityToIndex.find(entityId);
+            if (indexIt == m_meshEntityToIndex.end() || indexIt->second >= m_meshInstances.size()) {
+                return;
+            }
+
+            const size_t index = indexIt->second;
+            if (m_meshInstances[index].visible) {
+                --m_stats.visibleMeshInstanceCount;
+            }
+            --m_stats.meshInstanceCount;
+
+            const size_t lastIndex = m_meshInstances.size() - 1;
+            if (index != lastIndex) {
+                m_meshInstances[index] = std::move(m_meshInstances[lastIndex]);
+                if (m_meshInstances[index].entityId != RenderMeshInstance::InvalidEntityId) {
+                    m_meshEntityToIndex[m_meshInstances[index].entityId] = index;
+                }
+            }
+            m_meshInstances.pop_back();
+            m_meshEntityToIndex.erase(indexIt);
+        }
+
         void AddLightInstance(RenderLightInstance lightInstance) {
             if (lightInstance.active) {
                 ++m_stats.activeLightCount;
@@ -178,6 +220,46 @@ namespace FeatherVK {
                 m_lightEntityToIndex[lightInstance.entityId] = m_lightInstances.size();
             }
             m_lightInstances.push_back(std::move(lightInstance));
+        }
+
+        void UpdateLightInstance(RenderLightInstance lightInstance) {
+            const auto indexIt = m_lightEntityToIndex.find(lightInstance.entityId);
+            if (indexIt == m_lightEntityToIndex.end() || indexIt->second >= m_lightInstances.size()) {
+                AddLightInstance(std::move(lightInstance));
+                return;
+            }
+
+            auto &current = m_lightInstances[indexIt->second];
+            if (current.active) {
+                --m_stats.activeLightCount;
+            }
+            if (lightInstance.active) {
+                ++m_stats.activeLightCount;
+            }
+            current = std::move(lightInstance);
+        }
+
+        void RemoveLightInstance(id_t entityId) {
+            const auto indexIt = m_lightEntityToIndex.find(entityId);
+            if (indexIt == m_lightEntityToIndex.end() || indexIt->second >= m_lightInstances.size()) {
+                return;
+            }
+
+            const size_t index = indexIt->second;
+            if (m_lightInstances[index].active) {
+                --m_stats.activeLightCount;
+            }
+            --m_stats.lightCount;
+
+            const size_t lastIndex = m_lightInstances.size() - 1;
+            if (index != lastIndex) {
+                m_lightInstances[index] = std::move(m_lightInstances[lastIndex]);
+                if (m_lightInstances[index].entityId != RenderLightInstance::InvalidEntityId) {
+                    m_lightEntityToIndex[m_lightInstances[index].entityId] = index;
+                }
+            }
+            m_lightInstances.pop_back();
+            m_lightEntityToIndex.erase(indexIt);
         }
 
         [[nodiscard]] const RenderView &GetView() const { return m_view; }

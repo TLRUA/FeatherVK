@@ -24,12 +24,14 @@ namespace FeatherVK {
         ~GizmosRenderSystem() = default;
 
         GizmosRenderSystem(Device &device,
-                           const VkRenderPass& renderPass,
+                           const RenderGraph::RenderGraphGraphicsPipelineTarget &graphicsPipelineTarget,
                            std::shared_ptr<Material> material,
                            ModelRepository &modelRepository,
                            RenderCore::CoreServices &renderCore)
-                : RenderSystem(device, renderPass, material, renderCore.GetPipelineLibrary()),
+                : RenderSystem(device, graphicsPipelineTarget, material, renderCore.GetPipelineLibrary()),
                   m_renderCore(renderCore) {
+            assert(graphicsPipelineTarget.compatibleRenderPass != VK_NULL_HANDLE &&
+                   "GizmosRenderSystem requires a graphics pipeline target");
             auto &shaderLibrary = m_renderCore.GetShaderLibrary();
             m_pipelineLayout = VK_NULL_HANDLE;
             // Axis
@@ -47,7 +49,7 @@ namespace FeatherVK {
                 m_axisMaterial->getShaderModulePointers().push_back(shaderLibrary.LoadStage(vertexShaderPath, ShaderCategory::vertex));
                 m_axisMaterial->getShaderModulePointers().push_back(shaderLibrary.LoadStage(fragmentShaderPath, ShaderCategory::fragment));
                 createPipelineLayout(GizmosType::Axis);
-                createPipeline(renderPass, m_axisPipeline, m_axisMaterial, m_axisPipelineLayout, GizmosType::Axis);
+                createPipeline(graphicsPipelineTarget, m_axisPipeline, m_axisMaterial, m_axisPipelineLayout, GizmosType::Axis);
             }
 
             //Edge detection
@@ -71,8 +73,8 @@ namespace FeatherVK {
 
                 createPipelineLayout(GizmosType::EdgeDetection);
 
-                createPipeline(renderPass, m_edgeDetectionPipeline, m_edgeDetectionMaterial, m_edgeDetectionPipelineLayout, GizmosType::EdgeDetection);
-                createPipeline(renderPass, m_edgeDetectionStencilPipeline, m_edgeDetectionStencilMaterial, m_edgeDetectionPipelineLayout, GizmosType::EdgeDetectionStencil);
+                createPipeline(graphicsPipelineTarget, m_edgeDetectionPipeline, m_edgeDetectionMaterial, m_edgeDetectionPipelineLayout, GizmosType::EdgeDetection);
+                createPipeline(graphicsPipelineTarget, m_edgeDetectionStencilPipeline, m_edgeDetectionStencilMaterial, m_edgeDetectionPipelineLayout, GizmosType::EdgeDetectionStencil);
             }
         };
 
@@ -100,7 +102,7 @@ namespace FeatherVK {
             }
         }
 
-        void createPipeline(VkRenderPass renderPass, std::shared_ptr<Pipeline> &pipeline, std::shared_ptr<Material> material, VkPipelineLayout &pipelineLayout, GizmosType gizmosType) {
+        void createPipeline(const RenderGraph::RenderGraphGraphicsPipelineTarget &graphicsPipelineTarget, std::shared_ptr<Pipeline> &pipeline, std::shared_ptr<Material> material, VkPipelineLayout &pipelineLayout, GizmosType gizmosType) {
             PipelineConfigureInfo pipelineConfigureInfo{};
             Pipeline::setDefaultPipelineConfigureInfo(pipelineConfigureInfo);
             switch (gizmosType) {
@@ -139,20 +141,21 @@ namespace FeatherVK {
                     break;
                 }
             }
-            pipelineConfigureInfo.renderPass = renderPass;
+            pipelineConfigureInfo.renderPass = graphicsPipelineTarget.compatibleRenderPass;
             pipelineConfigureInfo.pipelineLayout = pipelineLayout;
             const std::string pipelineKey = gizmosType == GizmosType::Axis
-                                                ? "Gizmos/Axis/Pipeline"
+                                                ? "Gizmos/Axis/Pipeline/" + graphicsPipelineTarget.signature.key
                                                 : gizmosType == GizmosType::EdgeDetectionStencil
-                                                      ? "Gizmos/EdgeStencil/Pipeline"
-                                                      : "Gizmos/Edge/Pipeline";
+                                                      ? "Gizmos/EdgeStencil/Pipeline/" + graphicsPipelineTarget.signature.key
+                                                      : "Gizmos/Edge/Pipeline/" + graphicsPipelineTarget.signature.key;
             pipeline = m_pipelineLibrary.GetOrCreatePipeline(
                     pipelineKey,
                     pipelineConfigureInfo,
                     material);
         };
 
-        void render(FrameInfo &frameInfo, GizmosType gizmosType) {
+        void Record(RenderGraph::RenderGraphPassContext &context, GizmosType gizmosType) {
+            auto &frameInfo = context.frameInfo;
             if (frameInfo.commandList == nullptr) {
                 return;
             }

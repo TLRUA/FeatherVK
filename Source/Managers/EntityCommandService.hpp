@@ -138,13 +138,21 @@ namespace FeatherVK {
                 return false;
             }
 
-            if (preset == ComponentPreset::MeshRendererComponent ||
-                preset == ComponentPreset::LightComponent) {
+            if (preset == ComponentPreset::MeshRendererComponent) {
                 EditorSceneUtils::MarkMeshRendererRenderResourcesDirty(frameInfo, entityId);
+            } else if (preset == ComponentPreset::LightComponent) {
+                EditorSceneUtils::MarkRenderLightDirty(frameInfo, entityId);
+                if (sceneRegistry.HasComponent<MeshRendererComponent>(entityId)) {
+                    EditorSceneUtils::MarkMeshRendererRenderResourcesDirty(frameInfo, entityId);
+                }
+            } else if (preset == ComponentPreset::CameraComponent) {
+                EditorSceneUtils::MarkRenderCameraDirty(frameInfo, entityId);
             } else {
                 EditorSceneUtils::MarkRenderSceneDirty(frameInfo);
             }
-            EditorSceneUtils::MarkSceneDirty(frameInfo, true);
+            EditorSceneUtils::MarkSceneDirty(frameInfo, preset != ComponentPreset::MeshRendererComponent &&
+                                                        preset != ComponentPreset::LightComponent &&
+                                                        preset != ComponentPreset::CameraComponent);
             return true;
         }
 

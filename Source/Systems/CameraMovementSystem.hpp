@@ -38,7 +38,7 @@ namespace FeatherVK {
                 const bool focusChanged =
                     UpdateFocus(sceneRegistry, entityId, *cameraMovement, *cameraTransform, frameInfo, rendererInfo);
                 if (freeLookChanged || focusChanged) {
-                    EditorSceneUtils::MarkRenderSceneDirty(frameInfo);
+                    EditorSceneUtils::MarkTransformDirty(frameInfo);
                 }
             }
         }

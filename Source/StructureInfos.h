@@ -65,6 +65,9 @@ namespace FeatherVK {
         virtual ~IRenderInvalidationSink() = default;
 
         virtual void MarkRenderSceneDirty() = 0;
+        virtual void MarkRenderCameraDirty(id_t entityId) = 0;
+        virtual void MarkRenderMeshDirty(id_t entityId) = 0;
+        virtual void MarkRenderLightDirty(id_t entityId) = 0;
         virtual void MarkMeshRendererRenderResourcesDirty(id_t entityId) = 0;
         virtual void MarkAllMeshRendererRenderResourcesDirty() = 0;
     };

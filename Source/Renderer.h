@@ -13,6 +13,10 @@
 #include "StructureInfos.h"
 
 namespace FeatherVK {
+    namespace RenderGraph {
+        class RenderGraphResourceCache;
+    }
+
     class Renderer {
     public:
         const float FOV_Y = 50.f;
@@ -31,42 +35,8 @@ namespace FeatherVK {
 
         void endFrame();
 
-        void beginSwapChainRenderPass(VkCommandBuffer commandBuffer);
-
-        void beginSceneColorRenderPass(VkCommandBuffer commandBuffer, uint32_t imageIndex);
-
-        void beginGizmosRenderPass(VkCommandBuffer commandBuffer);
-
-        void beginPickingRenderPass(VkCommandBuffer commandBuffer);
-
-        void beginShadowRenderPass(VkCommandBuffer commandBuffer);
-
-        void endSwapChainRenderPass(VkCommandBuffer commandBuffer);
-
-        void endSceneColorRenderPass(VkCommandBuffer commandBuffer);
-
-        void endGizmosRenderPass(VkCommandBuffer commandBuffer);
-
-        void endPickingRenderPass(VkCommandBuffer commandBuffer);
-
-        void endShadowRenderPass(VkCommandBuffer commandBuffer);
-
-        void setShadowMapSynchronization(VkCommandBuffer commandBuffer);
-
-#ifdef RAY_TRACING
-        void setSceneColorToPostSynchronization(VkCommandBuffer commandBuffer, uint32_t imageIndex);
-#endif
-
-#ifdef RAY_TRACING
-
-        void setDenoiseComputeToPostSynchronization(VkCommandBuffer commandBuffer, uint32_t imageIndex);
-
-        void setDenoiseRtxToComputeSynchronization(VkCommandBuffer commandBuffer, uint32_t imageIndex);
-
-#endif
-
-        [[nodiscard]] std::shared_ptr<VkDescriptorImageInfo> getShadowImageInfo() const {
-            return shadowImage->descriptorInfo(*shadowSampler);
+        void SetRenderGraphResourceCache(RenderGraph::RenderGraphResourceCache *resourceCache) {
+            m_renderGraphResourceCache = resourceCache;
         }
 
         bool getIsFrameStarted() const { return isFrameStarted; }
@@ -89,18 +59,6 @@ namespace FeatherVK {
             return swapChain->getRenderPass();
         }
 
-        const VkRenderPass &getShadowRenderPass() const {
-            return shadowRenderPass;
-        }
-
-        const VkRenderPass &getSceneColorRenderPass() const {
-            return m_sceneColorRenderPass;
-        }
-
-        const VkRenderPass &getPickingRenderPass() const {
-            return m_pickingRenderPass;
-        }
-
         int getFrameIndex() const {
             assert(isFrameStarted && "Cannot get frame index when frame is not in progress");
             return currentFrameIndex;
@@ -121,6 +79,34 @@ namespace FeatherVK {
             return m_sceneViewportRect;
         }
 
+        [[nodiscard]] VkImage getSwapChainImage(uint32_t index) const {
+            return swapChain->getImage(static_cast<int>(index));
+        }
+
+        [[nodiscard]] VkFramebuffer getSwapChainFramebuffer(uint32_t index) const {
+            return swapChain->getFrameBuffer(static_cast<int>(index));
+        }
+
+        [[nodiscard]] VkRenderPass getGizmosRenderPass() const {
+            return swapChain->getGizmosRenderPass();
+        }
+
+        [[nodiscard]] VkFormat getSwapChainImageFormat() const {
+            return swapChain->getSwapChainImageFormat();
+        }
+
+        [[nodiscard]] VkExtent2D getSwapChainExtent() const {
+            return swapChain->getSwapChainExtent();
+        }
+
+        [[nodiscard]] VkFormat getSwapChainDepthFormat() const {
+            return swapChain->getSwapChainDepthFormat();
+        }
+
+        [[nodiscard]] uint32_t getCurrentImageIndex() const {
+            return currentImageIndex;
+        }
+
         [[nodiscard]] VkExtent2D getSceneRenderExtent() const {
             return m_sceneRenderExtent;
         }
@@ -133,45 +119,7 @@ namespace FeatherVK {
             return {m_scenePanelRect, m_sceneViewportRect, m_sceneRenderExtent, aspectRatio};
         }
 
-        const std::shared_ptr<Image> &getShadowImage() const;
-
-        const std::shared_ptr<Sampler> &getShadowSampler() const;
-
-        const std::shared_ptr<Image> &getOffscreenImageColor(int index) const {
-            return m_offscreenImageColors[index];
-        }
-
-        const std::shared_ptr<Image> &getSceneColorImageColor(int index) const {
-            return m_sceneColorImageColors[index];
-        }
-
-        [[nodiscard]] RenderCore::RenderTargetView GetSceneColorTarget(int index) const {
-            return RenderCore::MakeRenderTargetView(m_sceneColorImageColors[index], m_sceneRenderExtent, m_offscreenSampler);
-        }
-
-        const std::shared_ptr<Image> &getShadowTermImageColor(int index) const {
-            return m_shadowTermImageColors[index];
-        }
-
-        const std::shared_ptr<Image> &getShadowMomentsImageColor(int index) const {
-            return m_shadowMomentsImageColors[index];
-        }
-
-        const std::shared_ptr<Image> &getWorldPosImageColor(int index) const {
-            return m_worldPosImage[index];
-        };
-
-        const std::shared_ptr<Image> &getRayTracingGuideImageColor(int index) const {
-            return m_rayTracingGuideImage[index];
-        };
-
-        const std::shared_ptr<Image> &getDenoisingAccumulationImageColor() const {
-            return m_denoisingAccumulationImage;
-        };
-
-        VkExtent2D getPickingExtent() const {
-            return m_pickingExtent;
-        }
+        VkExtent2D getPickingExtent() const;
 
         int32_t readPickingObjectId(uint32_t pixelX, uint32_t pixelY);
 
@@ -182,20 +130,6 @@ namespace FeatherVK {
 
         void freeCommandBuffers();
 
-        void freeShadowResources();
-
-        void loadShadow();
-
-        void freeOffscreenResources();
-
-        void loadOffscreenResources();
-
-        void freePickingResources();
-
-        void loadPickingResources();
-
-        void loadGizmos();
-
         MyWindow &myWindow;
         Device &device;
         std::unique_ptr<SwapChain> swapChain;
@@ -205,43 +139,10 @@ namespace FeatherVK {
         uint32_t currentImageIndex;
         int currentFrameIndex = 0;
         bool isFrameStarted = false;
-
-        bool isCubeMap = true;
-        const int ShadowMapResolution = 1024;
-
-        std::shared_ptr<Image> shadowImage;
-        std::shared_ptr<Sampler> shadowSampler;
-        VkFramebuffer shadowFrameBuffer = VK_NULL_HANDLE;
-        VkRenderPass shadowRenderPass = VK_NULL_HANDLE;
-
-        std::vector<std::shared_ptr<Image>> m_offscreenImageColors;
-        std::vector<std::shared_ptr<Image>> m_sceneColorImageColors;
-        std::vector<std::shared_ptr<Image>> m_shadowTermImageColors;
-        std::vector<std::shared_ptr<Image>> m_shadowMomentsImageColors;
-        std::vector<std::shared_ptr<Image>> m_worldPosImage;
-        std::vector<std::shared_ptr<Image>> m_rayTracingGuideImage;
-        std::shared_ptr<Image> m_denoisingAccumulationImage;
-        std::shared_ptr<Sampler> m_offscreenSampler;
-        std::shared_ptr<Image> offscreenImageDepth;
-
-        std::shared_ptr<Image> m_pickingIdImage;
-        std::shared_ptr<Image> m_pickingDepthImage;
-        std::shared_ptr<Buffer> m_pickingReadbackBuffer;
-        VkRenderPass m_pickingRenderPass = VK_NULL_HANDLE;
-        VkRenderPass m_sceneColorRenderPass = VK_NULL_HANDLE;
-        std::vector<VkFramebuffer> m_sceneColorFramebuffers;
-        VkFramebuffer m_pickingFramebuffer = VK_NULL_HANDLE;
-        VkExtent2D m_pickingExtent{};
-        bool m_hasPickingData = false;
-
-        VkFormat offscreenColorFormat{VK_FORMAT_R32G32B32A32_SFLOAT};
-        VkFormat worldPosColorFormat{VK_FORMAT_R32G32B32A32_SFLOAT};
-        VkFormat offscreenDepthFormat{VK_FORMAT_D32_SFLOAT};
-        VkFormat pickingIdFormat{VK_FORMAT_R32_SINT};
-        VkFormat pickingDepthFormat{VK_FORMAT_D32_SFLOAT};
         ViewportRect m_scenePanelRect{};
         ViewportRect m_sceneViewportRect{};
         VkExtent2D m_sceneRenderExtent{static_cast<uint32_t>(SCENE_WIDTH), static_cast<uint32_t>(SCENE_HEIGHT)};
+        RenderGraph::RenderGraphResourceCache *m_renderGraphResourceCache{nullptr};
 
     };
 

@@ -46,12 +46,12 @@ namespace FeatherVK {
     }
 
     RenderSystem::RenderSystem(Device &device,
-                               const VkRenderPass &renderPass,
+                               std::optional<RenderGraph::RenderGraphGraphicsPipelineTarget> graphicsPipelineTarget,
                                const std::shared_ptr<Material> material,
                                RenderCore::PipelineLibrary &pipelineLibrary)
             : device{device},
               m_material{material},
-              m_renderPass{renderPass},
+              m_graphicsPipelineTarget{std::move(graphicsPipelineTarget)},
               m_pipelineLibrary{pipelineLibrary} {
 
     }
@@ -90,7 +90,7 @@ namespace FeatherVK {
         frameInfo.commandList->BindResources(*m_pipeline, 0, materialBindings.GetBindSets());
     }
 
-    void RenderSystem::createPipeline(VkRenderPass renderPass) {
+    void RenderSystem::createPipeline() {
         PipelineConfigureInfo pipelineConfigureInfo{};
         Pipeline::setDefaultPipelineConfigureInfo(pipelineConfigureInfo);
 
@@ -105,15 +105,21 @@ namespace FeatherVK {
             Pipeline::enableAlphaBlending(pipelineConfigureInfo);
         }
 
-        pipelineConfigureInfo.renderPass = renderPass;
+        const auto *graphicsPipelineTarget = GetGraphicsPipelineTarget();
+        if (graphicsPipelineTarget != nullptr) {
+            pipelineConfigureInfo.renderPass = graphicsPipelineTarget->compatibleRenderPass;
+        }
         pipelineConfigureInfo.pipelineLayout = m_pipelineLayout;
         m_pipeline = m_pipelineLibrary.GetOrCreatePipeline(
-                "RenderSystem/Pipeline/" + m_material->getPipelineCategory() + "/" + std::to_string(m_material->getMaterialId()),
+                "RenderSystem/Pipeline/" + m_material->getPipelineCategory() + "/" +
+                std::to_string(m_material->getMaterialId()) + "/" +
+                (graphicsPipelineTarget != nullptr ? graphicsPipelineTarget->signature.key : "NoGraphicsTarget"),
                 pipelineConfigureInfo,
                 m_material);
     }
 
-    void RenderSystem::render(FrameInfo &frameInfo, const RenderMeshInstance &meshInstance) {
+    void RenderSystem::Record(RenderGraph::RenderGraphPassContext &context, const RenderMeshInstance &meshInstance) {
+        auto &frameInfo = context.frameInfo;
         if (frameInfo.commandList == nullptr) {
             return;
         }
@@ -166,7 +172,7 @@ namespace FeatherVK {
 
     void RenderSystem::Init() {
         createPipelineLayout();
-        createPipeline(m_renderPass);
+        createPipeline();
     }
 
 

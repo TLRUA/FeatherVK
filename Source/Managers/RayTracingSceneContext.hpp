@@ -3,6 +3,7 @@
 #ifdef RAY_TRACING
 
 #include <algorithm>
+#include <cstring>
 #include <cstdlib>
 #include <deque>
 #include <iostream>
@@ -32,6 +33,25 @@ namespace FeatherVK {
         struct RetiredInstance {
             id_t instanceId{0};
             int framesRemaining{DeferredDestroyFrameCount};
+        };
+
+        enum TlasBuildReason : uint32_t {
+            TlasBuildReasonNone = 0,
+            TlasBuildReasonInstanceCreated = 1u << 0,
+            TlasBuildReasonInstanceRemoved = 1u << 1,
+            TlasBuildReasonMeshChanged = 1u << 2,
+            TlasBuildReasonTransformChanged = 1u << 3,
+            TlasBuildReasonMaskChanged = 1u << 4,
+            TlasBuildReasonBlasChanged = 1u << 5,
+            TlasBuildReasonForced = 1u << 6
+        };
+
+        struct TlasBuildStats {
+            uint64_t buildCount{0};
+            uint64_t updateCount{0};
+            uint32_t lastReasonMask{TlasBuildReasonNone};
+            uint32_t lastInstanceCount{0};
+            bool lastWasUpdate{false};
         };
 
         explicit RayTracingSceneContext(Device &device) : m_device(device) {}
@@ -74,6 +94,10 @@ namespace FeatherVK {
             }
 
             m_tlasBuffer.reset();
+            m_tlasInstanceUploadBuffer.reset();
+            m_tlasScratchBuffer.reset();
+            m_tlasInstanceUploadBufferCapacity = 0;
+            m_tlasScratchBufferCapacity = 0;
             m_blasBuffers.clear();
             m_blasBuildInfoMap.clear();
             m_pendingBlasInputs.clear();
@@ -86,6 +110,10 @@ namespace FeatherVK {
             m_shouldUpdate = false;
             m_lastBuildRecreatedHandle = false;
             m_requiresRebuild = false;
+            m_instanceStructureChanged = false;
+            m_transformOrMaskChanged = false;
+            m_pendingTlasReasonMask = TlasBuildReasonNone;
+            m_tlasBuildStats = {};
             m_nextInstanceId = 0;
         }
 
@@ -146,11 +174,17 @@ namespace FeatherVK {
             m_pendingBlasInputs.emplace_back(std::move(input));
         }
 
-        void EnsureBlasBuilt(const std::shared_ptr<Model> &model,
+        bool EnsureBlasBuilt(const std::shared_ptr<Model> &model,
                              VkBuildAccelerationStructureFlagsKHR flags = VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR |
                                                                          VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR) {
+            const bool hadBlas = HasBlas(model);
             QueueBlasBuild(model);
             BuildPendingBlas(flags);
+            const bool builtBlas = !hadBlas && HasBlas(model);
+            if (builtBlas) {
+                AddTlasBuildReason(TlasBuildReasonBlasChanged);
+            }
+            return builtBlas;
         }
 
         void BuildPendingBlas(VkBuildAccelerationStructureFlagsKHR flags) {
@@ -300,7 +334,50 @@ namespace FeatherVK {
             m_instances.emplace_back(instance);
             m_instanceIdToIndexMap[instanceId] = static_cast<id_t>(m_instances.size() - 1);
             m_retiringInstanceIds.erase(instanceId);
+            AddTlasBuildReason(TlasBuildReasonInstanceCreated);
+            m_instanceStructureChanged = true;
             m_requiresRebuild = true;
+        }
+
+        bool UpdateInstanceGeometry(Model &model,
+                                    id_t instanceId,
+                                    id_t shaderOffset,
+                                    const glm::mat4 &transform = glm::mat4{1.0f},
+                                    uint32_t mask = 0xFF) {
+            const auto mapEntry = m_instanceIdToIndexMap.find(instanceId);
+            if (mapEntry == m_instanceIdToIndexMap.end()) {
+                return false;
+            }
+
+            const id_t index = mapEntry->second;
+            if (index < 0 || static_cast<size_t>(index) >= m_instances.size()) {
+                return false;
+            }
+
+            const auto blasEntry = m_blasBuildInfoMap.find(model.getIndexReference());
+            if (blasEntry == m_blasBuildInfoMap.end() || blasEntry->second == nullptr ||
+                blasEntry->second->accelerationStructure == VK_NULL_HANDLE) {
+                return false;
+            }
+
+            VkAccelerationStructureInstanceKHR nextInstance{};
+            nextInstance.transform = Utils::GlmMatrixToVulkanMatrix(transform);
+            nextInstance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+            nextInstance.instanceCustomIndex = instanceId;
+            nextInstance.accelerationStructureReference =
+                m_device.getAccelerationStructureAddressKHR(blasEntry->second->accelerationStructure);
+            nextInstance.mask = mask;
+            nextInstance.instanceShaderBindingTableRecordOffset = shaderOffset;
+
+            if (std::memcmp(&m_instances[index], &nextInstance, sizeof(VkAccelerationStructureInstanceKHR)) == 0) {
+                return false;
+            }
+
+            m_instances[index] = nextInstance;
+            AddTlasBuildReason(TlasBuildReasonMeshChanged);
+            m_instanceStructureChanged = true;
+            m_requiresRebuild = true;
+            return true;
         }
 
         bool UpdateInstance(id_t instanceId, const glm::mat4 &transform, uint32_t mask = 0xFF) {
@@ -314,8 +391,23 @@ namespace FeatherVK {
                 return false;
             }
 
-            m_instances[index].transform = Utils::GlmMatrixToVulkanMatrix(transform);
+            const auto nextTransform = Utils::GlmMatrixToVulkanMatrix(transform);
+            const bool transformChanged =
+                std::memcmp(&m_instances[index].transform, &nextTransform, sizeof(VkTransformMatrixKHR)) != 0;
+            const bool maskChanged = m_instances[index].mask != mask;
+            if (!transformChanged && !maskChanged) {
+                return false;
+            }
+
+            m_instances[index].transform = nextTransform;
             m_instances[index].mask = mask;
+            if (transformChanged) {
+                AddTlasBuildReason(TlasBuildReasonTransformChanged);
+            }
+            if (maskChanged) {
+                AddTlasBuildReason(TlasBuildReasonMaskChanged);
+            }
+            m_transformOrMaskChanged = true;
             m_shouldUpdate = true;
             return true;
         }
@@ -350,18 +442,12 @@ namespace FeatherVK {
             VkCommandBuffer commandBuffer = m_device.beginSingleTimeCommands();
             const VkDeviceSize instanceBufferSize = sizeof(VkAccelerationStructureInstanceKHR) * instanceCount;
 
-            auto instanceBuffer = std::make_unique<Buffer>(
-                m_device,
-                instanceBufferSize,
-                1,
-                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            instanceBuffer->map();
-            instanceBuffer->writeToBuffer(m_instances.data(), instanceBufferSize);
-            instanceBuffer->flush(instanceBufferSize);
+            Buffer &instanceBuffer = EnsureTlasInstanceUploadBuffer(instanceBufferSize);
+            instanceBuffer.writeToBuffer(m_instances.data(), instanceBufferSize);
+            instanceBuffer.flush(instanceBufferSize);
 
             VkBufferDeviceAddressInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
-            bufferInfo.buffer = instanceBuffer->getBuffer();
+            bufferInfo.buffer = instanceBuffer.getBuffer();
             const VkDeviceAddress instanceAddress = vkGetBufferDeviceAddress(m_device.device(), &bufferInfo);
 
             VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
@@ -376,18 +462,40 @@ namespace FeatherVK {
                 0, nullptr,
                 0, nullptr);
 
-            auto scratchBuffer = CmdCreateTlas(commandBuffer, instanceAddress, instanceCount, flags, update, motion);
-            (void)scratchBuffer;
+            CmdCreateTlas(commandBuffer, instanceAddress, instanceCount, flags, update, motion);
 
             m_device.endSingleTimeCommands(commandBuffer, update ? "tlas_update" : "tlas_build");
+            m_tlasBuildStats.lastWasUpdate = update;
+            m_tlasBuildStats.lastReasonMask = m_pendingTlasReasonMask == TlasBuildReasonNone
+                                                  ? TlasBuildReasonForced
+                                                  : m_pendingTlasReasonMask;
+            m_tlasBuildStats.lastInstanceCount = instanceCount;
+            if (update) {
+                ++m_tlasBuildStats.updateCount;
+            } else {
+                ++m_tlasBuildStats.buildCount;
+            }
+            if (DiagnosticsEnabled()) {
+                std::cerr << "[TLAS] " << (update ? "update" : "build")
+                          << " instances=" << instanceCount
+                          << " reasons=0x" << std::hex << m_tlasBuildStats.lastReasonMask << std::dec
+                          << " builds=" << m_tlasBuildStats.buildCount
+                          << " updates=" << m_tlasBuildStats.updateCount << "\n";
+            }
             return m_lastBuildRecreatedHandle;
         }
 
         bool ShouldUpdate() const { return m_shouldUpdate; }
         bool RequiresRebuild() const { return m_requiresRebuild; }
+        bool DidInstanceStructureChange() const { return m_instanceStructureChanged; }
+        bool DidTransformOrMaskChange() const { return m_transformOrMaskChanged; }
+        [[nodiscard]] const TlasBuildStats &GetTlasBuildStats() const { return m_tlasBuildStats; }
         void ClearBuildFlags() {
             m_shouldUpdate = false;
             m_requiresRebuild = false;
+            m_instanceStructureChanged = false;
+            m_transformOrMaskChanged = false;
+            m_pendingTlasReasonMask = TlasBuildReasonNone;
         }
         bool HasValidTlas() const { return m_tlas != VK_NULL_HANDLE && m_tlasBuffer != nullptr; }
         const VkAccelerationStructureKHR &GetTlasHandle() const { return m_tlas; }
@@ -441,6 +549,46 @@ namespace FeatherVK {
             }
         }
 
+        void AddTlasBuildReason(TlasBuildReason reason) {
+            m_pendingTlasReasonMask |= static_cast<uint32_t>(reason);
+        }
+
+        Buffer &EnsureTlasInstanceUploadBuffer(VkDeviceSize requiredSize) {
+            requiredSize = std::max<VkDeviceSize>(requiredSize, 1);
+            if (m_tlasInstanceUploadBuffer != nullptr && m_tlasInstanceUploadBufferCapacity >= requiredSize) {
+                return *m_tlasInstanceUploadBuffer;
+            }
+
+            m_tlasInstanceUploadBuffer = std::make_unique<Buffer>(
+                m_device,
+                requiredSize,
+                1,
+                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                    VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            m_tlasInstanceUploadBuffer->map();
+            m_tlasInstanceUploadBufferCapacity = requiredSize;
+            return *m_tlasInstanceUploadBuffer;
+        }
+
+        Buffer &EnsureTlasScratchBuffer(VkDeviceSize requiredSize) {
+            requiredSize = std::max<VkDeviceSize>(requiredSize, 1);
+            if (m_tlasScratchBuffer != nullptr && m_tlasScratchBufferCapacity >= requiredSize) {
+                return *m_tlasScratchBuffer;
+            }
+
+            m_tlasScratchBuffer = std::make_unique<Buffer>(
+                m_device,
+                requiredSize,
+                1,
+                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                    VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            m_tlasScratchBufferCapacity = requiredSize;
+            return *m_tlasScratchBuffer;
+        }
+
         void ProcessRetiredInstances() {
             for (auto it = m_retiredInstances.begin(); it != m_retiredInstances.end();) {
                 if (--it->framesRemaining > 0) {
@@ -451,6 +599,8 @@ namespace FeatherVK {
                 RemoveInstance(it->instanceId);
                 m_retiringInstanceIds.erase(it->instanceId);
                 m_reusableInstanceIds.push_back(it->instanceId);
+                AddTlasBuildReason(TlasBuildReasonInstanceRemoved);
+                m_instanceStructureChanged = true;
                 m_requiresRebuild = true;
                 it = m_retiredInstances.erase(it);
             }
@@ -594,12 +744,12 @@ namespace FeatherVK {
             }
         }
 
-        std::unique_ptr<Buffer> CmdCreateTlas(VkCommandBuffer commandBuffer,
-                                              VkDeviceAddress instanceBufferDeviceAddress,
-                                              uint32_t instanceCount,
-                                              VkBuildAccelerationStructureFlagsKHR flags,
-                                              bool update,
-                                              bool motion) {
+        void CmdCreateTlas(VkCommandBuffer commandBuffer,
+                           VkDeviceAddress instanceBufferDeviceAddress,
+                           uint32_t instanceCount,
+                           VkBuildAccelerationStructureFlagsKHR flags,
+                           bool update,
+                           bool motion) {
             (void)motion;
 
             VkAccelerationStructureGeometryInstancesDataKHR instancesData{
@@ -668,17 +818,10 @@ namespace FeatherVK {
                 }
             }
 
-            auto scratchBuffer = std::make_unique<Buffer>(
-                m_device,
-                sizeInfo.buildScratchSize,
-                1,
-                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                    VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
-                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            Buffer &scratchBuffer = EnsureTlasScratchBuffer(sizeInfo.buildScratchSize);
 
             VkBufferDeviceAddressInfo bufferDeviceAddressInfo{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
-            bufferDeviceAddressInfo.buffer = scratchBuffer->getBuffer();
+            bufferDeviceAddressInfo.buffer = scratchBuffer.getBuffer();
             const VkDeviceAddress scratchBufferDeviceAddress =
                 vkGetBufferDeviceAddress(m_device.device(), &bufferDeviceAddressInfo);
 
@@ -694,8 +837,6 @@ namespace FeatherVK {
                 1,
                 &buildInfo,
                 &buildRangeInfoPtr);
-
-            return scratchBuffer;
         }
 
         Device &m_device;
@@ -704,6 +845,10 @@ namespace FeatherVK {
         bool m_shouldUpdate = false;
         bool m_lastBuildRecreatedHandle = false;
         bool m_requiresRebuild = false;
+        bool m_instanceStructureChanged = false;
+        bool m_transformOrMaskChanged = false;
+        uint32_t m_pendingTlasReasonMask = TlasBuildReasonNone;
+        TlasBuildStats m_tlasBuildStats{};
 
         std::vector<PendingBlasInput> m_pendingBlasInputs{};
         std::unordered_set<uint32_t> m_pendingModelIndexReferences{};
@@ -713,6 +858,10 @@ namespace FeatherVK {
 
         VkAccelerationStructureKHR m_tlas = VK_NULL_HANDLE;
         std::unique_ptr<Buffer> m_tlasBuffer{};
+        std::unique_ptr<Buffer> m_tlasInstanceUploadBuffer{};
+        std::unique_ptr<Buffer> m_tlasScratchBuffer{};
+        VkDeviceSize m_tlasInstanceUploadBufferCapacity{0};
+        VkDeviceSize m_tlasScratchBufferCapacity{0};
         std::vector<VkAccelerationStructureInstanceKHR> m_instances{};
         std::unordered_map<id_t, id_t> m_instanceIdToIndexMap{};
         std::vector<RetiredTlasResource> m_retiredTlasResources{};

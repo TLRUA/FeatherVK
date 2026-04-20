@@ -116,8 +116,19 @@ namespace FeatherVK {
             return dirtyEntities;
         }
 
+        void PublishResolvedDirtyEntities(std::vector<id_t> dirtyEntities) {
+            m_resolvedDirtyEntities = std::move(dirtyEntities);
+        }
+
+        std::vector<id_t> ConsumeResolvedDirtyEntities() {
+            std::vector<id_t> dirtyEntities = std::move(m_resolvedDirtyEntities);
+            m_resolvedDirtyEntities.clear();
+            return dirtyEntities;
+        }
+
     private:
         std::vector<id_t> m_dirtyEntities{};
         std::unordered_set<id_t> m_dirtyEntitySet{};
+        std::vector<id_t> m_resolvedDirtyEntities{};
     };
 }
