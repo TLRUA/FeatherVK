@@ -2,6 +2,7 @@
 #include <memory>
 
 #include "Renderer.h"
+#include "RenderGraph/RenderGraphExecutor.hpp"
 #include "RenderGraph/RenderGraphResourceCache.hpp"
 #include "RHI/Vulkan/VulkanCommandList.hpp"
 
@@ -28,6 +29,7 @@ namespace FeatherVK {
             static_cast<float>(SCENE_HEIGHT)};
         m_sceneViewportRect = m_scenePanelRect;
         m_currentCommandList = std::make_unique<RHI::VulkanCommandList>(device);
+        m_renderGraphExecutor = std::make_unique<RenderGraph::RenderGraphExecutor>();
 
         recreateSwapChain();
         createCommandBuffers();
@@ -176,5 +178,13 @@ namespace FeatherVK {
             return -1;
         }
         return m_renderGraphResourceCache->ReadPickingObjectId(pixelX, pixelY);
+    }
+
+    void Renderer::ExecuteGraph(RenderGraph::RenderGraph &graph,
+                                FrameInfo &frameInfo,
+                                const RenderGraph::RenderGraphResourceBindings &bindings,
+                                RenderGraph::RenderGraphResourceCache &resourceCache) {
+        assert(m_renderGraphExecutor != nullptr && "RenderGraph executor is not initialized");
+        m_renderGraphExecutor->Execute(graph, *this, frameInfo, bindings, resourceCache);
     }
 }

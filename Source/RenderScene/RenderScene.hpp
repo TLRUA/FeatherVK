@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <limits>
 #include <optional>
 #include <string>
@@ -140,14 +141,24 @@ namespace FeatherVK {
             m_meshEntityToIndex.clear();
             m_lightEntityToIndex.clear();
             m_stats = {};
+            ++m_meshRevision;
+            ++m_meshFilterRevision;
+            ++m_lightRevision;
+            ++m_cameraRevision;
+            ++m_viewRevision;
         }
 
         void SetView(RenderView view) {
+            if (SameRenderView(m_view, view)) {
+                return;
+            }
             m_view = view;
+            ++m_viewRevision;
         }
 
         void SetCamera(RenderCamera camera) {
             m_camera = camera;
+            ++m_cameraRevision;
         }
 
         void ReserveMeshInstances(size_t count) {
@@ -169,6 +180,8 @@ namespace FeatherVK {
                 m_meshEntityToIndex[meshInstance.entityId] = m_meshInstances.size();
             }
             m_meshInstances.push_back(std::move(meshInstance));
+            ++m_meshRevision;
+            ++m_meshFilterRevision;
         }
 
         void UpdateMeshInstance(RenderMeshInstance meshInstance) {
@@ -185,7 +198,12 @@ namespace FeatherVK {
             if (meshInstance.visible) {
                 ++m_stats.visibleMeshInstanceCount;
             }
+            const bool meshFilterChanged = AffectsMeshFilters(current, meshInstance);
             current = std::move(meshInstance);
+            ++m_meshRevision;
+            if (meshFilterChanged) {
+                ++m_meshFilterRevision;
+            }
         }
 
         void RemoveMeshInstance(id_t entityId) {
@@ -209,6 +227,8 @@ namespace FeatherVK {
             }
             m_meshInstances.pop_back();
             m_meshEntityToIndex.erase(indexIt);
+            ++m_meshRevision;
+            ++m_meshFilterRevision;
         }
 
         void AddLightInstance(RenderLightInstance lightInstance) {
@@ -220,6 +240,7 @@ namespace FeatherVK {
                 m_lightEntityToIndex[lightInstance.entityId] = m_lightInstances.size();
             }
             m_lightInstances.push_back(std::move(lightInstance));
+            ++m_lightRevision;
         }
 
         void UpdateLightInstance(RenderLightInstance lightInstance) {
@@ -237,6 +258,7 @@ namespace FeatherVK {
                 ++m_stats.activeLightCount;
             }
             current = std::move(lightInstance);
+            ++m_lightRevision;
         }
 
         void RemoveLightInstance(id_t entityId) {
@@ -260,6 +282,7 @@ namespace FeatherVK {
             }
             m_lightInstances.pop_back();
             m_lightEntityToIndex.erase(indexIt);
+            ++m_lightRevision;
         }
 
         [[nodiscard]] const RenderView &GetView() const { return m_view; }
@@ -267,6 +290,11 @@ namespace FeatherVK {
         [[nodiscard]] const std::vector<RenderMeshInstance> &GetMeshInstances() const { return m_meshInstances; }
         [[nodiscard]] const std::vector<RenderLightInstance> &GetLightInstances() const { return m_lightInstances; }
         [[nodiscard]] const RenderSceneStats &GetStats() const { return m_stats; }
+        [[nodiscard]] uint64_t GetMeshRevision() const { return m_meshRevision; }
+        [[nodiscard]] uint64_t GetMeshFilterRevision() const { return m_meshFilterRevision; }
+        [[nodiscard]] uint64_t GetLightRevision() const { return m_lightRevision; }
+        [[nodiscard]] uint64_t GetCameraRevision() const { return m_cameraRevision; }
+        [[nodiscard]] uint64_t GetViewRevision() const { return m_viewRevision; }
 
         [[nodiscard]] const RenderMeshInstance *FindMeshInstance(id_t entityId) const {
             const auto indexIt = m_meshEntityToIndex.find(entityId);
@@ -285,6 +313,31 @@ namespace FeatherVK {
         }
 
     private:
+        static bool SameRenderView(const RenderView &lhs, const RenderView &rhs) {
+            return lhs.panelRect.x == rhs.panelRect.x &&
+                   lhs.panelRect.y == rhs.panelRect.y &&
+                   lhs.panelRect.width == rhs.panelRect.width &&
+                   lhs.panelRect.height == rhs.panelRect.height &&
+                   lhs.viewportRect.x == rhs.viewportRect.x &&
+                   lhs.viewportRect.y == rhs.viewportRect.y &&
+                   lhs.viewportRect.width == rhs.viewportRect.width &&
+                   lhs.viewportRect.height == rhs.viewportRect.height &&
+                   lhs.renderExtent.width == rhs.renderExtent.width &&
+                   lhs.renderExtent.height == rhs.renderExtent.height &&
+                   lhs.aspectRatio == rhs.aspectRatio;
+        }
+
+        static bool AffectsMeshFilters(const RenderMeshInstance &lhs, const RenderMeshInstance &rhs) {
+            return lhs.materialId != rhs.materialId ||
+                   lhs.renderQueue != rhs.renderQueue ||
+                   lhs.active != rhs.active ||
+                   lhs.visible != rhs.visible ||
+                   lhs.defaultRenderLayer != rhs.defaultRenderLayer ||
+                   lhs.skyboxLike != rhs.skyboxLike ||
+                   lhs.overlayLike != rhs.overlayLike ||
+                   lhs.renderMesh.IsValid() != rhs.renderMesh.IsValid();
+        }
+
         RenderView m_view{};
         RenderCamera m_camera{};
         std::vector<RenderMeshInstance> m_meshInstances{};
@@ -292,5 +345,10 @@ namespace FeatherVK {
         std::unordered_map<id_t, size_t> m_meshEntityToIndex{};
         std::unordered_map<id_t, size_t> m_lightEntityToIndex{};
         RenderSceneStats m_stats{};
+        uint64_t m_meshRevision{1};
+        uint64_t m_meshFilterRevision{1};
+        uint64_t m_lightRevision{1};
+        uint64_t m_cameraRevision{1};
+        uint64_t m_viewRevision{1};
     };
 }

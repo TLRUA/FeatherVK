@@ -159,10 +159,10 @@ namespace FeatherVK::RenderGraph {
             VkCommandBuffer commandBuffer,
             size_t passIndex,
             RenderGraphBarrier::Timing timing) {
-            for (const auto &barrier: graph.GetTransitionPlan()) {
-                if (barrier.passIndex != passIndex || barrier.timing != timing) {
-                    continue;
-                }
+            const auto &barrierBucket = graph.GetBarrierBucket(passIndex, timing);
+            const auto &transitionPlan = graph.GetTransitionPlan();
+            for (const size_t barrierIndex: barrierBucket) {
+                const auto &barrier = transitionPlan[barrierIndex];
 
                 if (barrier.handle.type != ResourceType::Texture ||
                     barrier.oldState == RenderGraphResourceState::Unknown ||
@@ -171,7 +171,7 @@ namespace FeatherVK::RenderGraph {
                     continue;
                 }
 
-                const auto *binding = bindings.FindImage(barrier.resourceName);
+                const auto *binding = bindings.FindImage(barrier.handle);
                 if (binding == nullptr || !binding->enableBarriers || binding->image == VK_NULL_HANDLE) {
                     continue;
                 }

@@ -1,6 +1,10 @@
 # FeatherVK
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/TLRUA/FeatherVK)
+
 FeatherVK is a C++17 Vulkan renderer/editor project with an EnTT-based ECS, ImGui editor, rasterization, ray tracing, hybrid rendering, and a staged render architecture.
+
+**Documentation:** [Ask DeepWiki about FeatherVK](https://deepwiki.com/TLRUA/FeatherVK)
 
 ![Preview](./README.assets/preview.png)
 

@@ -214,19 +214,46 @@ namespace FeatherVK::RenderGraph {
     public:
         void ReserveImages(size_t count) {
             m_images.reserve(count);
+            m_imageHandleToIndex.reserve(count);
+            m_imageNameToIndex.reserve(count);
         }
 
-        void BindImage(std::string name, RenderGraphImageBinding binding) {
-            m_images[std::move(name)] = std::move(binding);
+        void BindImage(RenderGraphResourceHandle handle, std::string name, RenderGraphImageBinding binding) {
+            if (!handle.IsValid() || handle.type != ResourceType::Texture) {
+                return;
+            }
+
+            const auto existing = m_imageHandleToIndex.find(handle.id);
+            if (existing != m_imageHandleToIndex.end()) {
+                m_images[existing->second] = std::move(binding);
+                m_imageNameToIndex[name] = existing->second;
+                return;
+            }
+
+            const size_t index = m_images.size();
+            m_images.push_back(std::move(binding));
+            m_imageHandleToIndex.emplace(handle.id, index);
+            m_imageNameToIndex.emplace(std::move(name), index);
         }
 
         [[nodiscard]] const RenderGraphImageBinding *FindImage(const std::string &name) const {
-            const auto entry = m_images.find(name);
-            return entry == m_images.end() ? nullptr : &entry->second;
+            const auto entry = m_imageNameToIndex.find(name);
+            return entry == m_imageNameToIndex.end() ? nullptr : &m_images[entry->second];
+        }
+
+        [[nodiscard]] const RenderGraphImageBinding *FindImage(RenderGraphResourceHandle handle) const {
+            if (!handle.IsValid() || handle.type != ResourceType::Texture) {
+                return nullptr;
+            }
+
+            const auto entry = m_imageHandleToIndex.find(handle.id);
+            return entry == m_imageHandleToIndex.end() ? nullptr : &m_images[entry->second];
         }
 
     private:
-        std::unordered_map<std::string, RenderGraphImageBinding> m_images{};
+        std::vector<RenderGraphImageBinding> m_images{};
+        std::unordered_map<uint32_t, size_t> m_imageHandleToIndex{};
+        std::unordered_map<std::string, size_t> m_imageNameToIndex{};
     };
 
     class RenderGraphBlackboard {
@@ -330,6 +357,7 @@ namespace FeatherVK::RenderGraph {
             BuildResourceLifetimes(&livePasses);
             BuildExecutionOrder(livePasses);
             BuildTransitionPlan();
+            BuildBarrierBuckets();
 
             m_compiled = true;
         }
@@ -354,12 +382,27 @@ namespace FeatherVK::RenderGraph {
             return m_transitionPlan;
         }
 
+        [[nodiscard]] const std::vector<size_t> &GetBarrierBucket(size_t passIndex, RenderGraphBarrier::Timing timing) const {
+            static const std::vector<size_t> empty{};
+            const auto &buckets = timing == RenderGraphBarrier::Timing::BeforePass
+                                      ? m_beforePassBarrierBuckets
+                                      : m_afterPassBarrierBuckets;
+            if (passIndex >= buckets.size()) {
+                return empty;
+            }
+            return buckets[passIndex];
+        }
+
         RenderGraphBlackboard &GetBlackboard() {
             return m_blackboard;
         }
 
         [[nodiscard]] const RenderGraphBlackboard &GetBlackboard() const {
             return m_blackboard;
+        }
+
+        [[nodiscard]] RenderGraphResourceHandle TryFindResource(const std::string &name, ResourceType expectedType) const {
+            return FindResource(name, expectedType);
         }
 
     private:
@@ -717,12 +760,33 @@ namespace FeatherVK::RenderGraph {
             }
         }
 
+        void BuildBarrierBuckets() {
+            m_beforePassBarrierBuckets.clear();
+            m_afterPassBarrierBuckets.clear();
+            m_beforePassBarrierBuckets.resize(m_passes.size());
+            m_afterPassBarrierBuckets.resize(m_passes.size());
+
+            for (size_t barrierIndex = 0; barrierIndex < m_transitionPlan.size(); ++barrierIndex) {
+                const auto &barrier = m_transitionPlan[barrierIndex];
+                if (barrier.passIndex == InvalidPassIndex || barrier.passIndex >= m_passes.size()) {
+                    continue;
+                }
+
+                auto &bucket = barrier.timing == RenderGraphBarrier::Timing::BeforePass
+                                   ? m_beforePassBarrierBuckets[barrier.passIndex]
+                                   : m_afterPassBarrierBuckets[barrier.passIndex];
+                bucket.push_back(barrierIndex);
+            }
+        }
+
         std::vector<RenderGraphPass> m_passes{};
         std::vector<size_t> m_executionOrder{};
         std::vector<RenderGraphCompiledPass> m_compiledPasses{};
         std::vector<RenderGraphResourceLifetime> m_resourceLifetimes{};
         std::unordered_map<uint32_t, size_t> m_resourceLifetimeIndexById{};
         std::vector<RenderGraphBarrier> m_transitionPlan{};
+        std::vector<std::vector<size_t>> m_beforePassBarrierBuckets{};
+        std::vector<std::vector<size_t>> m_afterPassBarrierBuckets{};
         RenderGraphBlackboard m_blackboard{};
         std::unordered_map<uint32_t, TextureResource> m_textures{};
         std::unordered_map<uint32_t, BufferResource> m_buffers{};

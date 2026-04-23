@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.25)
+cmake_minimum_required(VERSION 3.25)
 project(FeatherVK LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -8,6 +8,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 if (MSVC)
     add_compile_options(/utf-8 /EHsc)
 endif()
+
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+set_property(GLOBAL PROPERTY PREDEFINED_TARGETS_FOLDER "CMakeTargets")
 
 include(FetchContent)
 
@@ -31,13 +34,122 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(glfw glm)
 
-file(GLOB_RECURSE SOURCES
-        ${PROJECT_SOURCE_DIR}/Source/*.cpp
-        ${PROJECT_SOURCE_DIR}/Source/*.hpp
-        ${PROJECT_SOURCE_DIR}/External/Imgui/*.cpp
+set(FEATHERVK_SOURCE_DIR "${PROJECT_SOURCE_DIR}/Source")
+set(FEATHERVK_EXTERNAL_DIR "${PROJECT_SOURCE_DIR}/External")
+set(FEATHERVK_SHADER_DIR "${PROJECT_SOURCE_DIR}/Shaders")
+set(FEATHERVK_CONFIG_DIR "${PROJECT_SOURCE_DIR}/Configurations")
+set(FEATHERVK_MODEL_DIR "${PROJECT_SOURCE_DIR}/Models")
+set(FEATHERVK_TEXTURE_DIR "${PROJECT_SOURCE_DIR}/Textures")
+set(FEATHERVK_README_ASSETS_DIR "${PROJECT_SOURCE_DIR}/README.assets")
+
+file(GLOB_RECURSE FEATHERVK_SOURCE_FILES CONFIGURE_DEPENDS
+        "${FEATHERVK_SOURCE_DIR}/*.cpp"
+        "${FEATHERVK_SOURCE_DIR}/*.c"
 )
 
-add_executable(${PROJECT_NAME} ${SOURCES})
+file(GLOB_RECURSE FEATHERVK_HEADER_FILES CONFIGURE_DEPENDS
+        "${FEATHERVK_SOURCE_DIR}/*.hpp"
+        "${FEATHERVK_SOURCE_DIR}/*.h"
+        "${FEATHERVK_SOURCE_DIR}/*.inl"
+        "${FEATHERVK_SOURCE_DIR}/*.ipp"
+)
+
+file(GLOB_RECURSE FEATHERVK_EXTERNAL_SOURCE_FILES CONFIGURE_DEPENDS
+        "${FEATHERVK_EXTERNAL_DIR}/*.cpp"
+        "${FEATHERVK_EXTERNAL_DIR}/*.c"
+)
+
+file(GLOB_RECURSE FEATHERVK_EXTERNAL_HEADER_FILES CONFIGURE_DEPENDS
+        "${FEATHERVK_EXTERNAL_DIR}/*.hpp"
+        "${FEATHERVK_EXTERNAL_DIR}/*.h"
+        "${FEATHERVK_EXTERNAL_DIR}/*.inl"
+        "${FEATHERVK_EXTERNAL_DIR}/*.ipp"
+)
+
+file(GLOB_RECURSE FEATHERVK_SHADER_FILES CONFIGURE_DEPENDS
+        "${FEATHERVK_SHADER_DIR}/*.vert"
+        "${FEATHERVK_SHADER_DIR}/*.frag"
+        "${FEATHERVK_SHADER_DIR}/*.geom"
+        "${FEATHERVK_SHADER_DIR}/*.comp"
+        "${FEATHERVK_SHADER_DIR}/*.glsl"
+        "${FEATHERVK_SHADER_DIR}/*.tesc"
+        "${FEATHERVK_SHADER_DIR}/*.tese"
+        "${FEATHERVK_SHADER_DIR}/*.rchit"
+        "${FEATHERVK_SHADER_DIR}/*.rgen"
+        "${FEATHERVK_SHADER_DIR}/*.rmiss"
+        "${FEATHERVK_SHADER_DIR}/*.rahit"
+        "${FEATHERVK_SHADER_DIR}/*.spv"
+        "${FEATHERVK_SHADER_DIR}/*.bat"
+)
+
+file(GLOB_RECURSE FEATHERVK_CONFIGURATION_FILES CONFIGURE_DEPENDS
+        "${FEATHERVK_CONFIG_DIR}/*.json"
+)
+
+file(GLOB_RECURSE FEATHERVK_MODEL_FILES CONFIGURE_DEPENDS LIST_DIRECTORIES false
+        "${FEATHERVK_MODEL_DIR}/*"
+)
+
+file(GLOB_RECURSE FEATHERVK_TEXTURE_FILES CONFIGURE_DEPENDS LIST_DIRECTORIES false
+        "${FEATHERVK_TEXTURE_DIR}/*"
+)
+
+file(GLOB_RECURSE FEATHERVK_README_ASSET_FILES CONFIGURE_DEPENDS LIST_DIRECTORIES false
+        "${FEATHERVK_README_ASSETS_DIR}/*"
+)
+
+set(FEATHERVK_PROJECT_FILES
+        "${PROJECT_SOURCE_DIR}/CMakeLists.txt"
+        "${PROJECT_SOURCE_DIR}/README.md"
+        "${PROJECT_SOURCE_DIR}/.gitignore"
+)
+
+list(SORT FEATHERVK_PROJECT_FILES)
+
+foreach(FILE_LIST
+        FEATHERVK_SOURCE_FILES
+        FEATHERVK_HEADER_FILES
+        FEATHERVK_EXTERNAL_SOURCE_FILES
+        FEATHERVK_EXTERNAL_HEADER_FILES
+        FEATHERVK_SHADER_FILES
+        FEATHERVK_CONFIGURATION_FILES
+        FEATHERVK_MODEL_FILES
+        FEATHERVK_TEXTURE_FILES
+        FEATHERVK_README_ASSET_FILES)
+    list(SORT ${FILE_LIST})
+endforeach()
+
+set(FEATHERVK_BROWSER_ONLY_FILES
+        ${FEATHERVK_HEADER_FILES}
+        ${FEATHERVK_EXTERNAL_HEADER_FILES}
+        ${FEATHERVK_SHADER_FILES}
+        ${FEATHERVK_CONFIGURATION_FILES}
+        ${FEATHERVK_MODEL_FILES}
+        ${FEATHERVK_TEXTURE_FILES}
+        ${FEATHERVK_README_ASSET_FILES}
+        ${FEATHERVK_PROJECT_FILES}
+)
+
+set_source_files_properties(${FEATHERVK_BROWSER_ONLY_FILES}
+        PROPERTIES
+        HEADER_FILE_ONLY TRUE
+)
+
+add_executable(${PROJECT_NAME})
+
+target_sources(${PROJECT_NAME}
+        PRIVATE
+        ${FEATHERVK_SOURCE_FILES}
+        ${FEATHERVK_EXTERNAL_SOURCE_FILES}
+        ${FEATHERVK_HEADER_FILES}
+        ${FEATHERVK_EXTERNAL_HEADER_FILES}
+        ${FEATHERVK_SHADER_FILES}
+        ${FEATHERVK_CONFIGURATION_FILES}
+        ${FEATHERVK_MODEL_FILES}
+        ${FEATHERVK_TEXTURE_FILES}
+        ${FEATHERVK_README_ASSET_FILES}
+        ${FEATHERVK_PROJECT_FILES}
+)
 
 target_include_directories(${PROJECT_NAME}
         PRIVATE
@@ -51,3 +163,25 @@ target_link_libraries(${PROJECT_NAME}
         glm::glm
 )
 
+source_group(TREE "${FEATHERVK_SOURCE_DIR}" PREFIX "Source" FILES ${FEATHERVK_SOURCE_FILES})
+source_group(TREE "${FEATHERVK_SOURCE_DIR}" PREFIX "Headers" FILES ${FEATHERVK_HEADER_FILES})
+source_group(TREE "${FEATHERVK_EXTERNAL_DIR}" PREFIX "External" FILES ${FEATHERVK_EXTERNAL_SOURCE_FILES} ${FEATHERVK_EXTERNAL_HEADER_FILES})
+source_group(TREE "${FEATHERVK_SHADER_DIR}" PREFIX "Shaders" FILES ${FEATHERVK_SHADER_FILES})
+source_group(TREE "${FEATHERVK_CONFIG_DIR}" PREFIX "Configurations" FILES ${FEATHERVK_CONFIGURATION_FILES})
+source_group(TREE "${FEATHERVK_MODEL_DIR}" PREFIX "Assets\\Models" FILES ${FEATHERVK_MODEL_FILES})
+source_group(TREE "${FEATHERVK_TEXTURE_DIR}" PREFIX "Assets\\Textures" FILES ${FEATHERVK_TEXTURE_FILES})
+source_group(TREE "${FEATHERVK_README_ASSETS_DIR}" PREFIX "Assets\\README" FILES ${FEATHERVK_README_ASSET_FILES})
+source_group(TREE "${PROJECT_SOURCE_DIR}" PREFIX "Project Files" FILES ${FEATHERVK_PROJECT_FILES})
+
+function(feathervk_set_optional_target_folder target_name folder_name)
+    if (TARGET "${target_name}")
+        set_target_properties("${target_name}" PROPERTIES FOLDER "${folder_name}")
+    endif()
+endfunction()
+
+feathervk_set_optional_target_folder(glfw "Dependencies\\GLFW")
+feathervk_set_optional_target_folder(uninstall "Dependencies\\GLFW")
+feathervk_set_optional_target_folder(update_mappings "Dependencies\\GLFW")
+feathervk_set_optional_target_folder(glm "Dependencies\\GLM")
+
+set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" PROPERTY VS_STARTUP_PROJECT ${PROJECT_NAME})

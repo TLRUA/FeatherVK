@@ -1505,6 +1505,30 @@ namespace FeatherVK {
             bool valid{false};
         };
 
+        struct PostDescriptorSignature {
+            VkDescriptorSet descriptorSet{VK_NULL_HANDLE};
+            uint64_t topologyVersion{0};
+            VkBuffer globalBuffer{VK_NULL_HANDLE};
+
+            [[nodiscard]] bool operator==(const PostDescriptorSignature &rhs) const {
+                return descriptorSet == rhs.descriptorSet &&
+                       topologyVersion == rhs.topologyVersion &&
+                       globalBuffer == rhs.globalBuffer;
+            }
+        };
+
+        struct ComputeDescriptorSignature {
+            VkDescriptorSet descriptorSet{VK_NULL_HANDLE};
+            uint64_t topologyVersion{0};
+            VkBuffer globalBuffer{VK_NULL_HANDLE};
+
+            [[nodiscard]] bool operator==(const ComputeDescriptorSignature &rhs) const {
+                return descriptorSet == rhs.descriptorSet &&
+                       topologyVersion == rhs.topologyVersion &&
+                       globalBuffer == rhs.globalBuffer;
+            }
+        };
+
 #ifdef RAY_TRACING
         struct CachedRayTracingDescriptorWriteTemplate {
             VkDescriptorSet descriptorSet{VK_NULL_HANDLE};
@@ -1514,6 +1538,18 @@ namespace FeatherVK {
                 VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
             std::vector<VkWriteDescriptorSet> writes{};
             bool valid{false};
+        };
+
+        struct RayTracingRayGenDescriptorSignature {
+            VkDescriptorSet descriptorSet{VK_NULL_HANDLE};
+            uint64_t topologyVersion{0};
+            VkAccelerationStructureKHR tlasHandle{VK_NULL_HANDLE};
+
+            [[nodiscard]] bool operator==(const RayTracingRayGenDescriptorSignature &rhs) const {
+                return descriptorSet == rhs.descriptorSet &&
+                       topologyVersion == rhs.topologyVersion &&
+                       tlasHandle == rhs.tlasHandle;
+            }
         };
 #endif
 
@@ -1577,6 +1613,13 @@ namespace FeatherVK {
             RefreshCachedSceneDescriptorInfos();
             const VkDescriptorSet descriptorSet = *descriptorSets[0];
             m_cachedPostGlobalUboInfo = MakeDescriptorBufferInfo(bufferPointers[0]);
+            const PostDescriptorSignature currentSignature{
+                descriptorSet,
+                m_cachedSceneDescriptorInfosVersion,
+                m_cachedPostGlobalUboInfo.buffer};
+            if (m_postDescriptorSignatureValid && currentSignature == m_lastPostDescriptorSignature) {
+                return true;
+            }
 
             const bool templateDirty =
                 !m_postDescriptorWriteTemplate.valid ||
@@ -1622,6 +1665,8 @@ namespace FeatherVK {
                 m_postDescriptorWriteTemplate.writes.data(),
                 0,
                 nullptr);
+            m_lastPostDescriptorSignature = currentSignature;
+            m_postDescriptorSignatureValid = true;
             return true;
         }
 
@@ -1642,6 +1687,14 @@ namespace FeatherVK {
             RefreshCachedSceneDescriptorInfos();
             const VkDescriptorSet descriptorSet = *descriptorSets[0];
             m_cachedRayTracingTlasHandle = m_rayTracingSceneContext.GetTlasHandle();
+            const RayTracingRayGenDescriptorSignature currentSignature{
+                descriptorSet,
+                m_cachedSceneDescriptorInfosVersion,
+                m_cachedRayTracingTlasHandle};
+            if (m_rayTracingRayGenDescriptorSignatureValid &&
+                currentSignature == m_lastRayTracingRayGenDescriptorSignature) {
+                return true;
+            }
 
             const bool templateDirty =
                 !m_rayTracingRayGenDescriptorWriteTemplate.valid ||
@@ -1697,6 +1750,8 @@ namespace FeatherVK {
                 m_rayTracingRayGenDescriptorWriteTemplate.writes.data(),
                 0,
                 nullptr);
+            m_lastRayTracingRayGenDescriptorSignature = currentSignature;
+            m_rayTracingRayGenDescriptorSignatureValid = true;
             return true;
         }
 
@@ -1718,6 +1773,13 @@ namespace FeatherVK {
             RefreshCachedSceneDescriptorInfos();
             const VkDescriptorSet descriptorSet = *descriptorSets[0];
             m_cachedComputeGlobalUboInfo = MakeDescriptorBufferInfo(bufferPointers[0]);
+            const ComputeDescriptorSignature currentSignature{
+                descriptorSet,
+                m_cachedSceneDescriptorInfosVersion,
+                m_cachedComputeGlobalUboInfo.buffer};
+            if (m_computeDescriptorSignatureValid && currentSignature == m_lastComputeDescriptorSignature) {
+                return true;
+            }
 
             const bool templateDirty =
                 !m_computeDescriptorWriteTemplate.valid ||
@@ -1778,6 +1840,8 @@ namespace FeatherVK {
                 m_computeDescriptorWriteTemplate.writes.data(),
                 0,
                 nullptr);
+            m_lastComputeDescriptorSignature = currentSignature;
+            m_computeDescriptorSignatureValid = true;
             return true;
         }
 
@@ -1823,6 +1887,8 @@ namespace FeatherVK {
         std::vector<VkDescriptorImageInfo> m_cachedShadowTermImageInfos{};
         VkDescriptorBufferInfo m_cachedPostGlobalUboInfo{};
         CachedDescriptorWriteTemplate m_postDescriptorWriteTemplate{};
+        PostDescriptorSignature m_lastPostDescriptorSignature{};
+        bool m_postDescriptorSignatureValid{false};
 #ifdef RAY_TRACING
         bool m_computeDescriptorDirty = false;
         bool m_rayTracingRayGenDescriptorDirty = false;
@@ -1834,6 +1900,10 @@ namespace FeatherVK {
         VkAccelerationStructureKHR m_cachedRayTracingTlasHandle{VK_NULL_HANDLE};
         CachedRayTracingDescriptorWriteTemplate m_rayTracingRayGenDescriptorWriteTemplate{};
         CachedDescriptorWriteTemplate m_computeDescriptorWriteTemplate{};
+        RayTracingRayGenDescriptorSignature m_lastRayTracingRayGenDescriptorSignature{};
+        bool m_rayTracingRayGenDescriptorSignatureValid{false};
+        ComputeDescriptorSignature m_lastComputeDescriptorSignature{};
+        bool m_computeDescriptorSignatureValid{false};
 #endif
 
 #ifdef RAY_TRACING

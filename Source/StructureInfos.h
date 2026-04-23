@@ -134,7 +134,7 @@ namespace FeatherVK {
         IRenderInvalidationSink *renderInvalidationSink{nullptr};
 #ifdef RAY_TRACING
         std::shared_ptr<Buffer> pEntityDescBuffer;
-        std::vector<EntityDesc> pEntityDescs;
+        std::vector<EntityDesc> *pEntityDescs{nullptr};
 #endif
     };
 

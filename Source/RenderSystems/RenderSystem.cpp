@@ -29,9 +29,10 @@ namespace FeatherVK {
                                             const FrameInfo &frameInfo,
                                             id_t rayTracingInstanceId) {
 #ifdef RAY_TRACING
-            if (rayTracingInstanceId != std::numeric_limits<id_t>::max() &&
-                static_cast<size_t>(rayTracingInstanceId) < frameInfo.pEntityDescs.size()) {
-                const PBR &pbr = frameInfo.pEntityDescs[rayTracingInstanceId].pbr;
+            if (frameInfo.pEntityDescs != nullptr &&
+                rayTracingInstanceId != std::numeric_limits<id_t>::max() &&
+                static_cast<size_t>(rayTracingInstanceId) < frameInfo.pEntityDescs->size()) {
+                const PBR &pbr = (*frameInfo.pEntityDescs)[rayTracingInstanceId].pbr;
                 const glm::vec3 baseColor = pbr.albedo.x >= 0.0f ? pbr.albedo : glm::vec3{0.8f};
                 const glm::vec3 emissive = pbr.emissive.x >= 0.0f ? pbr.emissive : glm::vec3{0.0f};
                 push.baseColorMetallic = glm::vec4(baseColor, pbr.metallic >= 0.0f ? pbr.metallic : 0.0f);

@@ -121,7 +121,7 @@ namespace FeatherVK {
             auto &gameObjectDescBuffer = m_resourceManager->GetEntityDescBuffer();
             auto &gameObjectDescs = m_resourceManager->GetEntityDescs();
             frameInfo.pEntityDescBuffer = gameObjectDescBuffer;
-            frameInfo.pEntityDescs = gameObjectDescs;
+            frameInfo.pEntityDescs = &gameObjectDescs;
 #endif
             m_renderManager->UpdateRendering(renderer, frameInfo);
             if (m_resourceManager->ConsumeSceneSaveRequest()) {

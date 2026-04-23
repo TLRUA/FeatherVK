@@ -1,6 +1,8 @@
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -20,15 +22,15 @@
 #include "../RenderSystems/SkyBoxSystem.hpp"
 #include "../RenderScene/RenderSceneBuilder.hpp"
 #include "../RenderGraph/RenderGraph.hpp"
-#include "../RenderGraph/RenderGraphExecutor.hpp"
 #include "../RenderCore/FrameData.hpp"
+#include "../RenderPipeline/HybridRenderPipeline.hpp"
+#include "../RenderPipeline/RasterRenderPipeline.hpp"
+#include "../RenderPipeline/RayTracingRenderPipeline.hpp"
 #include "EntityLifecycleUtils.hpp"
 #include "ResourceManager.hpp"
 
 namespace FeatherVK {
     namespace {
-        constexpr uint32_t RenderGraphShadowMapResolution = 1024;
-
         RenderGraph::RenderGraphGraphicsPipelineTarget MakeSwapchainPipelineTarget(Renderer &renderer,
                                                                                    const std::string &keyPrefix,
                                                                                    VkRenderPass renderPass) {
@@ -77,6 +79,7 @@ namespace FeatherVK {
         RenderManager(std::shared_ptr<ResourceManager> resourceManager) {
             m_resourceManager = std::move(resourceManager);
             CreateRenderSystems(m_resourceManager->GetMaterials(), m_resourceManager->GetDevice(), m_resourceManager->GetRenderer());
+            CreateRenderPipelines();
         }
 
         ~RenderManager() = default;
@@ -168,6 +171,15 @@ namespace FeatherVK {
             CreateEditorPickingSystem(materials, device, renderer);
         }
 
+        void CreateRenderPipelines() {
+#ifdef RAY_TRACING
+            m_rayTracingPipeline = std::make_unique<RayTracingRenderPipeline>();
+            m_hybridPipeline = std::make_unique<HybridRenderPipeline>();
+#else
+            m_rasterPipeline = std::make_unique<RasterRenderPipeline>();
+#endif
+        }
+
         void UpdateUbo(FrameInfo &frameInfo) {
             m_lightSystem.Collect(frameInfo);
 #ifndef RAY_TRACING
@@ -190,14 +202,13 @@ namespace FeatherVK {
             SanitizeSelection(frameInfo);
 #ifdef RAY_TRACING
             frameInfo.rayTracingInstanceIds = &m_entityToTlasId;
-            m_rayTracingEntityDescsDirty = false;
 #endif
 
             const auto frameIndex = frameInfo.frameIndex;
 #ifdef RAY_TRACING
             GUI::ShowWindow(ImVec2(frameInfo.extent.width, frameInfo.extent.height),
                             frameInfo.sceneRegistry,
-                            &frameInfo.pEntityDescs,
+                            frameInfo.pEntityDescs,
                             m_resourceManager->GetHierarchyService(),
                             m_resourceManager->GetEntityCommandService(),
                             m_resourceManager->GetEditorSelectionService(),
@@ -266,6 +277,12 @@ namespace FeatherVK {
             uint32_t instanceMask{0};
             bool instanceStateInitialized{false};
         };
+
+        struct RayTracingSyncStats {
+            uint32_t processedEntityCount{0};
+            uint32_t removedEntityCount{0};
+            bool fullSync{false};
+        };
 #endif
 
         struct FrameGraphCacheKey {
@@ -295,23 +312,20 @@ namespace FeatherVK {
         };
 
         struct FrameGraphBindingCacheKey {
-            uint64_t resourceTopologyVersion{0};
             uint32_t frameParity{0};
             uint32_t swapchainImageIndex{std::numeric_limits<uint32_t>::max()};
 
             [[nodiscard]] bool Matches(const FrameInfo &frameInfo,
                                        const Renderer &renderer,
-                                       const RenderGraph::RenderGraphResourceCache &resourceCache) const {
-                return resourceTopologyVersion == resourceCache.GetTopologyVersion() &&
-                       frameParity == static_cast<uint32_t>(frameInfo.frameIndex & 1u) &&
+                                       const RenderGraph::RenderGraphResourceCache &) const {
+                return frameParity == static_cast<uint32_t>(frameInfo.frameIndex & 1u) &&
                        swapchainImageIndex == renderer.getCurrentImageIndex();
             }
 
             static FrameGraphBindingCacheKey Capture(const FrameInfo &frameInfo,
                                                      const Renderer &renderer,
-                                                     const RenderGraph::RenderGraphResourceCache &resourceCache) {
+                                                     const RenderGraph::RenderGraphResourceCache &) {
                 return {
-                    resourceCache.GetTopologyVersion(),
                     static_cast<uint32_t>(frameInfo.frameIndex & 1u),
                     renderer.getCurrentImageIndex()};
             }
@@ -323,6 +337,31 @@ namespace FeatherVK {
             bool valid{false};
         };
 
+        struct FrameGraphBindingCacheBucket {
+            inline static constexpr uint32_t MaxSwapchainImages = 8u;
+            inline static constexpr uint32_t SlotCount = MaxSwapchainImages * 2u;
+            uint64_t topologyVersion{0};
+            std::array<CachedFrameGraphBindings, SlotCount> slots{};
+        };
+
+#ifdef RAY_TRACING
+        void QueueDirtyRayTracingEntity(id_t entityId) {
+            if (entityId == std::numeric_limits<id_t>::max()) {
+                return;
+            }
+            m_rayTracingRemovedEntities.erase(entityId);
+            m_rayTracingDirtyEntities.insert(entityId);
+        }
+
+        void QueueRemovedRayTracingEntity(id_t entityId) {
+            if (entityId == std::numeric_limits<id_t>::max()) {
+                return;
+            }
+            m_rayTracingDirtyEntities.erase(entityId);
+            m_rayTracingRemovedEntities.insert(entityId);
+        }
+#endif
+
         void ExecuteFrameGraph(RenderGraph::RenderGraph &graph,
                                Renderer &renderer,
                                FrameInfo &frameInfo,
@@ -330,10 +369,9 @@ namespace FeatherVK {
             auto &blackboard = graph.GetBlackboard();
             blackboard.Set("RenderScene", frameInfo.renderScene);
             blackboard.Set("FrameIndex", frameInfo.frameIndex);
-            const auto &bindings = EnsureFrameGraphResourceBindings(bindingKind, renderer, frameInfo);
-            m_frameGraphExecutor.Execute(
+            const auto &bindings = EnsureFrameGraphResourceBindings(bindingKind, graph, renderer, frameInfo);
+            renderer.ExecuteGraph(
                 graph,
-                renderer,
                 frameInfo,
                 bindings,
                 m_resourceManager->GetRenderGraphResourceCache());
@@ -345,19 +383,6 @@ namespace FeatherVK {
             m_gizmosRenderSystem->Record(context, GizmosType::EdgeDetectionStencil);
             m_gizmosRenderSystem->Record(context, GizmosType::EdgeDetection);
             m_gizmosRenderSystem->Record(context, GizmosType::Axis);
-        }
-
-        static RenderGraph::RenderGraphTextureDesc ExternalTextureDesc(
-            VkExtent2D extent,
-            uint32_t usageMask,
-            RenderGraph::RenderGraphResourceState initialState = RenderGraph::RenderGraphResourceState::Unknown,
-            RenderGraph::RenderGraphResourceState finalState = RenderGraph::RenderGraphResourceState::Unknown) {
-            RenderGraph::RenderGraphTextureDesc desc{};
-            desc.extent = extent;
-            desc.usageMask = usageMask;
-            desc.initialState = initialState;
-            desc.finalState = finalState;
-            return desc;
         }
 
         static RenderGraph::RenderGraphImageBinding ImageBinding(
@@ -385,28 +410,37 @@ namespace FeatherVK {
             binding.subresourceRange.levelCount = 1;
             binding.subresourceRange.baseArrayLayer = 0;
             binding.subresourceRange.layerCount = 1;
-            // Swapchain layout transitions are still owned by the legacy render pass until render pass ownership moves into graph.
             binding.enableBarriers = false;
             return binding;
         }
 
-        RenderGraph::RenderGraphResourceBindings BuildFrameGraphResourceBindings(Renderer &renderer, const FrameInfo &frameInfo) const {
+        RenderGraph::RenderGraphResourceBindings BuildFrameGraphResourceBindings(const RenderGraph::RenderGraph &graph,
+                                                                                 Renderer &renderer,
+                                                                                 const FrameInfo &frameInfo) const {
             RenderGraph::RenderGraphResourceBindings bindings{};
             const auto &resourceCache = m_resourceManager->GetRenderGraphResourceCache();
             const uint32_t imageIndex = static_cast<uint32_t>(frameInfo.frameIndex & 1u);
             bindings.ReserveImages(8);
 
-            bindings.BindImage("SceneColor", ImageBinding(
+            const auto bindImage = [&](const std::string &name, RenderGraph::RenderGraphImageBinding binding) {
+                const auto handle = graph.TryFindResource(name, RenderGraph::ResourceType::Texture);
+                if (!handle.IsValid()) {
+                    return;
+                }
+                bindings.BindImage(handle, name, std::move(binding));
+            };
+
+            bindImage("SceneColor", ImageBinding(
                 resourceCache.GetSceneColorImage(static_cast<int>(imageIndex)),
                 VK_IMAGE_ASPECT_COLOR_BIT,
                 ShaderReadOnlyLayoutOverrides()));
 
-            bindings.BindImage("PickingTarget", ImageBinding(
+            bindImage("PickingTarget", ImageBinding(
                 resourceCache.GetPickingIdImage(),
                 VK_IMAGE_ASPECT_COLOR_BIT,
                 PickingLayoutOverrides()));
 
-            bindings.BindImage("ShadowMap", ImageBinding(
+            bindImage("ShadowMap", ImageBinding(
                 resourceCache.GetShadowImage(),
                 VK_IMAGE_ASPECT_DEPTH_BIT,
                 {
@@ -415,121 +449,195 @@ namespace FeatherVK {
                 }));
 
 #ifdef RAY_TRACING
-            bindings.BindImage("RayTracingOutput", ImageBinding(
+            bindImage("RayTracingOutput", ImageBinding(
                 resourceCache.GetRayTracingOutputImage(static_cast<int>(imageIndex)),
                 VK_IMAGE_ASPECT_COLOR_BIT,
                 GeneralStorageLayoutOverrides()));
-            bindings.BindImage("WorldPosition", ImageBinding(
+            bindImage("WorldPosition", ImageBinding(
                 resourceCache.GetWorldPositionImage(static_cast<int>(imageIndex)),
                 VK_IMAGE_ASPECT_COLOR_BIT,
                 GeneralStorageLayoutOverrides()));
-            bindings.BindImage("ShadowTerm", ImageBinding(
+            bindImage("ShadowTerm", ImageBinding(
                 resourceCache.GetShadowTermImage(static_cast<int>(imageIndex)),
                 VK_IMAGE_ASPECT_COLOR_BIT,
                 GeneralStorageLayoutOverrides()));
-            bindings.BindImage("RayTracingGuide", ImageBinding(
+            bindImage("RayTracingGuide", ImageBinding(
                 resourceCache.GetRayTracingGuideImage(static_cast<int>(imageIndex)),
                 VK_IMAGE_ASPECT_COLOR_BIT,
                 GeneralStorageLayoutOverrides()));
-            bindings.BindImage("DenoiseAccumulation", ImageBinding(
+            bindImage("DenoiseAccumulation", ImageBinding(
                 resourceCache.GetDenoiseAccumulationImage(),
                 VK_IMAGE_ASPECT_COLOR_BIT,
                 GeneralStorageLayoutOverrides()));
 #endif
 
-            bindings.BindImage("Swapchain", SwapchainBinding(renderer.getSwapChainImage(renderer.getCurrentImageIndex())));
+            bindImage("Swapchain", SwapchainBinding(renderer.getSwapChainImage(renderer.getCurrentImageIndex())));
             return bindings;
         }
 
-        std::vector<CachedFrameGraphBindings> &GetFrameGraphBindingCaches(FrameGraphBindingKind bindingKind) {
+        FrameGraphBindingCacheBucket &GetFrameGraphBindingCache(FrameGraphBindingKind bindingKind) {
             switch (bindingKind) {
 #ifdef RAY_TRACING
                 case FrameGraphBindingKind::LayoutInteraction:
-                    return m_layoutInteractionBindingCaches;
+                    return m_layoutInteractionBindingCache;
                 case FrameGraphBindingKind::RayTracing:
-                    return m_rayTracingBindingCaches;
+                    return m_rayTracingBindingCache;
 #else
                 case FrameGraphBindingKind::LayoutInteraction:
-                    return m_layoutInteractionBindingCaches;
+                    return m_layoutInteractionBindingCache;
 #endif
                 case FrameGraphBindingKind::Raster:
-                    return m_rasterBindingCaches;
+                    return m_rasterBindingCache;
             }
 
-            return m_rasterBindingCaches;
+            return m_rasterBindingCache;
+        }
+
+        static void InvalidateFrameGraphBindingCache(FrameGraphBindingCacheBucket &cacheBucket, uint64_t topologyVersion) {
+            cacheBucket.topologyVersion = topologyVersion;
+            for (auto &slot: cacheBucket.slots) {
+                slot.valid = false;
+            }
+        }
+
+        static size_t ResolveFrameGraphBindingCacheSlot(const FrameInfo &frameInfo, const Renderer &renderer) {
+            const uint32_t frameParity = static_cast<uint32_t>(frameInfo.frameIndex & 1u);
+            const uint32_t clampedSwapchainIndex = std::min(
+                renderer.getCurrentImageIndex(),
+                FrameGraphBindingCacheBucket::MaxSwapchainImages - 1u);
+            return static_cast<size_t>(frameParity * FrameGraphBindingCacheBucket::MaxSwapchainImages + clampedSwapchainIndex);
         }
 
         const RenderGraph::RenderGraphResourceBindings &EnsureFrameGraphResourceBindings(FrameGraphBindingKind bindingKind,
+                                                                                         const RenderGraph::RenderGraph &graph,
                                                                                          Renderer &renderer,
                                                                                          const FrameInfo &frameInfo) {
-            auto &bindingCaches = GetFrameGraphBindingCaches(bindingKind);
+            auto &bindingCache = GetFrameGraphBindingCache(bindingKind);
             const auto &resourceCache = m_resourceManager->GetRenderGraphResourceCache();
-            const auto cacheKey = FrameGraphBindingCacheKey::Capture(frameInfo, renderer, resourceCache);
-
-            for (auto &cacheEntry: bindingCaches) {
-                if (cacheEntry.valid && cacheEntry.key.Matches(frameInfo, renderer, resourceCache)) {
-                    return cacheEntry.bindings;
-                }
+            const uint64_t topologyVersion = resourceCache.GetTopologyVersion();
+            if (bindingCache.topologyVersion != topologyVersion) {
+                InvalidateFrameGraphBindingCache(bindingCache, topologyVersion);
             }
 
-            auto &cacheEntry = bindingCaches.emplace_back();
+            const size_t slotIndex = ResolveFrameGraphBindingCacheSlot(frameInfo, renderer);
+            auto &cacheEntry = bindingCache.slots[slotIndex];
+            const auto cacheKey = FrameGraphBindingCacheKey::Capture(frameInfo, renderer, resourceCache);
+            if (cacheEntry.valid && cacheEntry.key.Matches(frameInfo, renderer, resourceCache)) {
+                return cacheEntry.bindings;
+            }
+
             cacheEntry.key = cacheKey;
-            cacheEntry.bindings = BuildFrameGraphResourceBindings(renderer, frameInfo);
+            cacheEntry.bindings = BuildFrameGraphResourceBindings(graph, renderer, frameInfo);
             cacheEntry.valid = true;
             return cacheEntry.bindings;
         }
 
-        static RenderGraph::RenderGraphBufferDesc ExternalBufferDesc(
-            uint32_t usageMask,
-            RenderGraph::RenderGraphResourceState initialState = RenderGraph::RenderGraphResourceState::Unknown,
-            RenderGraph::RenderGraphResourceState finalState = RenderGraph::RenderGraphResourceState::Unknown) {
-            RenderGraph::RenderGraphBufferDesc desc{};
-            desc.usageMask = usageMask;
-            desc.initialState = initialState;
-            desc.finalState = finalState;
-            return desc;
+        RenderPipelineContext MakeRenderPipelineContext(Renderer &renderer,
+                                                        FrameInfo &frameInfo,
+                                                        RenderPipelineBuildMode buildMode) {
+            RenderPipelineCallbacks callbacks{};
+            callbacks.RecordRasterScene = [this](RenderGraph::RenderGraphPassContext &context) {
+                RenderRasterScene(context);
+            };
+            callbacks.RecordPicking = [this](RenderGraph::RenderGraphPassContext &context) {
+                RenderEditorPickingDraws(context);
+            };
+            callbacks.RecordGizmos = [this](RenderGraph::RenderGraphPassContext &context) {
+                RenderGizmoDraws(context);
+            };
+#ifdef RAY_TRACING
+            callbacks.SyncRayTracingScene = [this](RenderGraph::RenderGraphPassContext &context) {
+                SyncRayTracingScene(context);
+                m_resourceManager->FlushPendingDescriptorRefreshes();
+                const bool hasValidRayTracingTlas = m_resourceManager->HasValidRayTracingTlas();
+                if (hasValidRayTracingTlas &&
+                    !m_dirtyEntityDescSlotsScratch.empty() &&
+                    context.frameInfo.pEntityDescBuffer != nullptr &&
+                    context.frameInfo.pEntityDescs != nullptr &&
+                    !context.frameInfo.pEntityDescs->empty()) {
+                    for (const id_t entityDescSlot: m_dirtyEntityDescSlotsScratch) {
+                        if (entityDescSlot < 0 || static_cast<size_t>(entityDescSlot) >= context.frameInfo.pEntityDescs->size()) {
+                            continue;
+                        }
+                        context.frameInfo.pEntityDescBuffer->writeToBuffer(
+                            &(*context.frameInfo.pEntityDescs)[static_cast<size_t>(entityDescSlot)],
+                            sizeof(EntityDesc),
+                            sizeof(EntityDesc) * static_cast<VkDeviceSize>(entityDescSlot));
+                        context.frameInfo.pEntityDescBuffer->flush(
+                            sizeof(EntityDesc),
+                            sizeof(EntityDesc) * static_cast<VkDeviceSize>(entityDescSlot));
+                    }
+                }
+                context.blackboard.Set("HasValidRayTracingTlas", hasValidRayTracingTlas);
+            };
+            callbacks.RecordRayTracing = [this](RenderGraph::RenderGraphPassContext &context) {
+                const bool *hasValidTlas = context.blackboard.TryGet<bool>("HasValidRayTracingTlas");
+                if (hasValidTlas == nullptr || !*hasValidTlas || m_rayTracingSystem == nullptr) {
+                    return;
+                }
+                m_rayTracingSystem->UpdateGlobalUboBuffer(context.frameInfo.globalUbo, context.frameInfo.frameIndex);
+                m_rayTracingSystem->Record(context);
+            };
+            callbacks.RecordRayTracingDenoise = [this](RenderGraph::RenderGraphPassContext &context) {
+                const bool *hasValidTlas = context.blackboard.TryGet<bool>("HasValidRayTracingTlas");
+                if (hasValidTlas == nullptr || !*hasValidTlas || m_computeSystem == nullptr) {
+                    return;
+                }
+                m_computeSystem->UpdateGlobalUboBuffer(context.frameInfo.globalUbo, context.frameInfo.frameIndex);
+                m_computeSystem->Record(context);
+            };
+            callbacks.RecordPost = [this](RenderGraph::RenderGraphPassContext &context) {
+                if (m_postSystem == nullptr) {
+                    return;
+                }
+                m_postSystem->UpdateGlobalUboBuffer(context.frameInfo.globalUbo, context.frameInfo.frameIndex);
+                m_postSystem->Record(context);
+                m_lastPresentedSceneImageIndex = context.frameInfo.frameIndex % 2;
+            };
+            callbacks.RecordLayoutInteractionPost = [this](RenderGraph::RenderGraphPassContext &context) {
+                if (m_postSystem == nullptr) {
+                    return;
+                }
+                m_postSystem->UpdateGlobalUboBuffer(context.frameInfo.globalUbo, context.frameInfo.frameIndex);
+                m_postSystem->RecordWithImageIndex(context, m_lastPresentedSceneImageIndex);
+            };
+#else
+            callbacks.RecordShadow = [this](RenderGraph::RenderGraphPassContext &context) {
+                if (m_shadowSystem == nullptr) {
+                    return;
+                }
+                m_shadowSystem->UpdateGlobalUboBuffer(context.frameInfo.globalUbo, context.frameInfo.frameIndex);
+                m_shadowSystem->Record(context);
+            };
+#endif
+
+            return {
+                frameInfo,
+                renderer,
+                m_resourceManager->GetRenderGraphResourceCache(),
+                std::move(callbacks),
+                buildMode};
         }
 
-        static RenderGraph::RenderGraphGraphicsPassDesc GraphicsPassDesc(
-            RenderGraph::GraphicsPassTargetKind target,
-            VkExtent2D extent,
-            RenderGraph::RenderGraphGraphicsPassSignature signature,
-            std::vector<VkClearValue> clearValues,
-            bool useSceneViewport = false,
-            bool renderImGuiAtEnd = false,
-            bool endFrame = false) {
-            RenderGraph::RenderGraphGraphicsPassDesc desc{};
-            desc.target = target;
-            desc.extent = extent;
-            desc.signature = std::move(signature);
-            desc.clearValues = std::move(clearValues);
-            desc.useSceneViewport = useSceneViewport;
-            desc.renderImGuiAtEnd = renderImGuiAtEnd;
-            desc.endFrame = endFrame;
-            return desc;
-        }
-
-        static VkClearValue ColorClear(float r, float g, float b, float a) {
-            VkClearValue value{};
-            value.color.float32[0] = r;
-            value.color.float32[1] = g;
-            value.color.float32[2] = b;
-            value.color.float32[3] = a;
-            return value;
-        }
-
-        static VkClearValue DepthClear(float depth = 1.0f, uint32_t stencil = 0u) {
-            VkClearValue value{};
-            value.depthStencil.depth = depth;
-            value.depthStencil.stencil = stencil;
-            return value;
+        RenderGraph::RenderGraph BuildFrameGraphWithPipeline(RenderPipeline &pipeline,
+                                                             Renderer &renderer,
+                                                             FrameInfo &frameInfo,
+                                                             RenderPipelineBuildMode buildMode) {
+            RenderGraph::RenderGraph graph{};
+            auto context = MakeRenderPipelineContext(renderer, frameInfo, buildMode);
+            pipeline.Build(context, graph);
+            return graph;
         }
 
 #ifdef RAY_TRACING
         RenderGraph::RenderGraph &EnsureLayoutInteractionFrameGraph(Renderer &renderer, FrameInfo &frameInfo) {
             const auto &resourceCache = m_resourceManager->GetRenderGraphResourceCache();
             if (!m_layoutInteractionFrameGraphValid || !m_layoutInteractionFrameGraphKey.Matches(frameInfo, resourceCache)) {
-                m_layoutInteractionFrameGraph = BuildLayoutInteractionFrameGraph(renderer, frameInfo, frameInfo.frameIndex);
+                m_layoutInteractionFrameGraph = BuildFrameGraphWithPipeline(
+                    *m_rayTracingPipeline,
+                    renderer,
+                    frameInfo,
+                    RenderPipelineBuildMode::LayoutInteraction);
                 m_layoutInteractionFrameGraphKey = FrameGraphCacheKey::Capture(frameInfo, resourceCache);
                 m_layoutInteractionFrameGraphValid = true;
             }
@@ -539,348 +647,29 @@ namespace FeatherVK {
         RenderGraph::RenderGraph &EnsureRayTracingFrameGraph(Renderer &renderer, FrameInfo &frameInfo) {
             const auto &resourceCache = m_resourceManager->GetRenderGraphResourceCache();
             if (!m_rayTracingFrameGraphValid || !m_rayTracingFrameGraphKey.Matches(frameInfo, resourceCache)) {
-                m_rayTracingFrameGraph = BuildRayTracingFrameGraph(renderer, frameInfo, frameInfo.frameIndex);
+                m_rayTracingFrameGraph = BuildFrameGraphWithPipeline(
+                    *m_rayTracingPipeline,
+                    renderer,
+                    frameInfo,
+                    RenderPipelineBuildMode::Main);
                 m_rayTracingFrameGraphKey = FrameGraphCacheKey::Capture(frameInfo, resourceCache);
                 m_rayTracingFrameGraphValid = true;
             }
             return m_rayTracingFrameGraph;
         }
-
-        RenderGraph::RenderGraph BuildLayoutInteractionFrameGraph(Renderer &renderer, FrameInfo &frameInfo, int frameIndex) {
-            (void) renderer;
-            (void) frameIndex;
-            using RGState = RenderGraph::RenderGraphResourceState;
-            using RGUsage = RenderGraph::ResourceUsage;
-
-            RenderGraph::RenderGraph graph{};
-            const auto &resourceCache = m_resourceManager->GetRenderGraphResourceCache();
-            graph.ImportTexture("Swapchain", ExternalTextureDesc(
-                frameInfo.extent,
-                RGUsage::ColorAttachment | RGUsage::Present,
-                RGState::Present,
-                RGState::Present));
-
-            graph.AddPass(
-                "LayoutInteractionPresentPass",
-                RenderGraph::PassType::Present,
-                [](RenderGraph::RenderGraphPassBuilder &builder) {
-                    builder.ReadWriteTexture("Swapchain", RenderGraph::RenderGraphResourceState::Present);
-                    builder.SetGraphicsPass(GraphicsPassDesc(
-                        RenderGraph::GraphicsPassTargetKind::Swapchain,
-                        {},
-                        {},
-                        {ColorClear(0.01f, 0.01f, 0.01f, 1.0f), DepthClear()},
-                        true,
-                        true,
-                        true));
-                },
-                [this](RenderGraph::RenderGraphPassContext &context) {
-                    if (m_postSystem == nullptr) {
-                        return;
-                    }
-                    m_postSystem->UpdateGlobalUboBuffer(context.frameInfo.globalUbo, context.frameInfo.frameIndex);
-                    m_postSystem->RecordWithImageIndex(context, m_lastPresentedSceneImageIndex);
-                });
-
-            return graph;
-        }
-
-        RenderGraph::RenderGraph BuildRayTracingFrameGraph(Renderer &renderer, FrameInfo &frameInfo, int frameIndex) {
-            (void) renderer;
-            (void) frameIndex;
-            using RGState = RenderGraph::RenderGraphResourceState;
-            using RGUsage = RenderGraph::ResourceUsage;
-
-            RenderGraph::RenderGraph graph{};
-            const auto &resourceCache = m_resourceManager->GetRenderGraphResourceCache();
-            graph.DeclareTexture("SceneColor", ExternalTextureDesc(
-                frameInfo.sceneRenderExtent,
-                RGUsage::ColorAttachment | RGUsage::Sampled,
-                RGState::Unknown,
-                RGState::ShaderRead));
-            graph.DeclareTexture("RayTracingOutput", ExternalTextureDesc(
-                frameInfo.sceneRenderExtent,
-                RGUsage::Storage | RGUsage::Sampled,
-                RGState::Unknown,
-                RGState::ShaderRead));
-            graph.DeclareTexture("WorldPosition", ExternalTextureDesc(
-                frameInfo.sceneRenderExtent,
-                RGUsage::Storage | RGUsage::Sampled,
-                RGState::Unknown,
-                RGState::ShaderRead));
-            graph.DeclareTexture("ShadowTerm", ExternalTextureDesc(
-                frameInfo.sceneRenderExtent,
-                RGUsage::Storage | RGUsage::Sampled,
-                RGState::Unknown,
-                RGState::ShaderRead));
-            graph.DeclareTexture("RayTracingGuide", ExternalTextureDesc(
-                frameInfo.sceneRenderExtent,
-                RGUsage::Storage | RGUsage::Sampled,
-                RGState::Unknown,
-                RGState::ShaderRead));
-            graph.DeclareTexture("DenoiseAccumulation", ExternalTextureDesc(
-                frameInfo.sceneRenderExtent,
-                RGUsage::Storage | RGUsage::Sampled,
-                RGState::Unknown,
-                RGState::ShaderReadWrite));
-            graph.DeclareTexture("PickingTarget", ExternalTextureDesc(
-                frameInfo.sceneRenderExtent,
-                RGUsage::ColorAttachment | RGUsage::Sampled,
-                RGState::Unknown,
-                RGState::ShaderRead));
-            graph.ImportTexture("Swapchain", ExternalTextureDesc(
-                frameInfo.extent,
-                RGUsage::ColorAttachment | RGUsage::Present,
-                RGState::Present,
-                RGState::Present));
-            graph.ImportBuffer("TLAS", ExternalBufferDesc(
-                RenderGraph::ToUsageMask(RGUsage::AccelerationStructure),
-                RGState::Unknown,
-                RGState::AccelerationStructureRead));
-            graph.ImportBuffer("EntityDesc", ExternalBufferDesc(
-                RenderGraph::ToUsageMask(RGUsage::StorageBuffer),
-                RGState::Unknown,
-                RGState::ShaderRead));
-
-            graph.AddPass(
-                "RayTracingSceneSync",
-                RenderGraph::PassType::Generic,
-                [](RenderGraph::RenderGraphPassBuilder &builder) {
-                    builder.WriteBuffer("TLAS", RenderGraph::RenderGraphResourceState::AccelerationStructureWrite);
-                    builder.WriteBuffer("EntityDesc", RenderGraph::RenderGraphResourceState::HostWrite);
-                },
-                [this](RenderGraph::RenderGraphPassContext &context) {
-                    SyncRayTracingScene(context.frameInfo);
-                    m_resourceManager->FlushPendingDescriptorRefreshes();
-                    const bool hasValidRayTracingTlas = m_resourceManager->HasValidRayTracingTlas();
-                    if (hasValidRayTracingTlas &&
-                        m_rayTracingEntityDescsDirty &&
-                        context.frameInfo.pEntityDescBuffer != nullptr &&
-                        !context.frameInfo.pEntityDescs.empty()) {
-                        context.frameInfo.pEntityDescBuffer->writeToBuffer(
-                            context.frameInfo.pEntityDescs.data(),
-                            context.frameInfo.pEntityDescs.size() * sizeof(EntityDesc));
-                    }
-                    context.blackboard.Set("HasValidRayTracingTlas", hasValidRayTracingTlas);
-                });
-
-            graph.AddPass(
-                "RasterSceneColorPass",
-                RenderGraph::PassType::Graphics,
-                [&](RenderGraph::RenderGraphPassBuilder &builder) {
-                    builder.WriteTexture("SceneColor", RenderGraph::RenderGraphResourceState::ColorAttachmentWrite);
-                    builder.SetGraphicsPass(GraphicsPassDesc(
-                        RenderGraph::GraphicsPassTargetKind::SceneColor,
-                        frameInfo.sceneRenderExtent,
-                        resourceCache.GetSceneColorPassSignature(),
-                        {ColorClear(0.0f, 0.0f, 0.0f, 1.0f), DepthClear()}));
-                },
-                [this](RenderGraph::RenderGraphPassContext &context) {
-                    RenderRasterScene(context);
-                });
-
-            graph.AddPass(
-                "RayTracingPass",
-                RenderGraph::PassType::RayTracing,
-                [](RenderGraph::RenderGraphPassBuilder &builder) {
-                    builder.ReadBuffer("TLAS", RenderGraph::RenderGraphResourceState::AccelerationStructureRead);
-                    builder.ReadBuffer("EntityDesc", RenderGraph::RenderGraphResourceState::ShaderRead);
-                    builder.WriteTexture("RayTracingOutput", RenderGraph::RenderGraphResourceState::ShaderWrite);
-                    builder.WriteTexture("WorldPosition", RenderGraph::RenderGraphResourceState::ShaderWrite);
-                    builder.WriteTexture("ShadowTerm", RenderGraph::RenderGraphResourceState::ShaderWrite);
-                    builder.WriteTexture("RayTracingGuide", RenderGraph::RenderGraphResourceState::ShaderWrite);
-                },
-                [this](RenderGraph::RenderGraphPassContext &context) {
-                    const bool *hasValidTlas = context.blackboard.TryGet<bool>("HasValidRayTracingTlas");
-                    if (hasValidTlas == nullptr || !*hasValidTlas || m_rayTracingSystem == nullptr) {
-                        return;
-                    }
-                    m_rayTracingSystem->UpdateGlobalUboBuffer(context.frameInfo.globalUbo, context.frameInfo.frameIndex);
-                    m_rayTracingSystem->Record(context);
-                });
-
-            graph.AddPass(
-                "RayTracingDenoisePass",
-                RenderGraph::PassType::Compute,
-                [](RenderGraph::RenderGraphPassBuilder &builder) {
-                    builder.ReadWriteTexture("RayTracingOutput", RenderGraph::RenderGraphResourceState::ShaderReadWrite);
-                    builder.ReadTexture("WorldPosition", RenderGraph::RenderGraphResourceState::ShaderRead);
-                    builder.ReadTexture("ShadowTerm", RenderGraph::RenderGraphResourceState::ShaderRead);
-                    builder.ReadTexture("RayTracingGuide", RenderGraph::RenderGraphResourceState::ShaderRead);
-                    builder.ReadWriteTexture("DenoiseAccumulation", RenderGraph::RenderGraphResourceState::ShaderReadWrite);
-                },
-                [this](RenderGraph::RenderGraphPassContext &context) {
-                    const bool *hasValidTlas = context.blackboard.TryGet<bool>("HasValidRayTracingTlas");
-                    if (hasValidTlas == nullptr || !*hasValidTlas || m_computeSystem == nullptr) {
-                        return;
-                    }
-                    m_computeSystem->UpdateGlobalUboBuffer(context.frameInfo.globalUbo, context.frameInfo.frameIndex);
-                    m_computeSystem->Record(context);
-                });
-
-            graph.AddPass(
-                "PickingPass",
-                RenderGraph::PassType::Graphics,
-                [&](RenderGraph::RenderGraphPassBuilder &builder) {
-                    builder.WriteTexture("PickingTarget", RenderGraph::RenderGraphResourceState::ColorAttachmentWrite);
-                    builder.SetForceLive();
-                    builder.SetGraphicsPass(GraphicsPassDesc(
-                        RenderGraph::GraphicsPassTargetKind::Picking,
-                        frameInfo.sceneRenderExtent,
-                        resourceCache.GetPickingPassSignature(),
-                        {ColorClear(0.0f, 0.0f, 0.0f, 0.0f), DepthClear()}));
-                },
-                [this](RenderGraph::RenderGraphPassContext &context) {
-                    RenderEditorPickingDraws(context);
-                });
-
-            graph.AddPass(
-                "PostPass",
-                RenderGraph::PassType::Present,
-                [](RenderGraph::RenderGraphPassBuilder &builder) {
-                    builder.ReadTexture("SceneColor", RenderGraph::RenderGraphResourceState::ShaderRead);
-                    builder.ReadTexture("RayTracingOutput", RenderGraph::RenderGraphResourceState::ShaderRead);
-                    builder.WriteTexture("Swapchain", RenderGraph::RenderGraphResourceState::Present);
-                    builder.SetGraphicsPass(GraphicsPassDesc(
-                        RenderGraph::GraphicsPassTargetKind::Swapchain,
-                        {},
-                        {},
-                        {ColorClear(0.01f, 0.01f, 0.01f, 1.0f), DepthClear()},
-                        true,
-                        true,
-                        false));
-                },
-                [this](RenderGraph::RenderGraphPassContext &context) {
-                    m_postSystem->UpdateGlobalUboBuffer(context.frameInfo.globalUbo, context.frameInfo.frameIndex);
-                    m_postSystem->Record(context);
-                    m_lastPresentedSceneImageIndex = context.frameInfo.frameIndex % 2;
-                });
-
-            graph.AddPass(
-                "GizmoPass",
-                RenderGraph::PassType::Graphics,
-                [](RenderGraph::RenderGraphPassBuilder &builder) {
-                    builder.ReadWriteTexture("Swapchain", RenderGraph::RenderGraphResourceState::Present);
-                    builder.SetGraphicsPass(GraphicsPassDesc(
-                        RenderGraph::GraphicsPassTargetKind::Gizmo,
-                        {},
-                        {},
-                        {ColorClear(0.01f, 0.01f, 0.01f, 1.0f), DepthClear()},
-                        true,
-                        false,
-                        true));
-                },
-                [this](RenderGraph::RenderGraphPassContext &context) {
-                    RenderGizmoDraws(context);
-                });
-
-            return graph;
-        }
 #else
         RenderGraph::RenderGraph &EnsureRasterFrameGraph(Renderer &renderer, FrameInfo &frameInfo) {
             const auto &resourceCache = m_resourceManager->GetRenderGraphResourceCache();
             if (!m_rasterFrameGraphValid || !m_rasterFrameGraphKey.Matches(frameInfo, resourceCache)) {
-                m_rasterFrameGraph = BuildRasterFrameGraph(renderer, frameInfo, frameInfo.frameIndex);
+                m_rasterFrameGraph = BuildFrameGraphWithPipeline(
+                    *m_rasterPipeline,
+                    renderer,
+                    frameInfo,
+                    RenderPipelineBuildMode::Main);
                 m_rasterFrameGraphKey = FrameGraphCacheKey::Capture(frameInfo, resourceCache);
                 m_rasterFrameGraphValid = true;
             }
             return m_rasterFrameGraph;
-        }
-
-        RenderGraph::RenderGraph BuildRasterFrameGraph(Renderer &renderer, FrameInfo &frameInfo, int frameIndex) {
-            (void) renderer;
-            (void) frameIndex;
-            using RGState = RenderGraph::RenderGraphResourceState;
-            using RGUsage = RenderGraph::ResourceUsage;
-
-            RenderGraph::RenderGraph graph{};
-            const auto &resourceCache = m_resourceManager->GetRenderGraphResourceCache();
-            graph.DeclareTexture("ShadowMap", ExternalTextureDesc(
-                {RenderGraphShadowMapResolution, RenderGraphShadowMapResolution},
-                RGUsage::DepthStencilAttachment | RGUsage::Sampled,
-                RGState::Unknown,
-                RGState::ShaderRead));
-            graph.DeclareTexture("PickingTarget", ExternalTextureDesc(
-                frameInfo.sceneRenderExtent,
-                RGUsage::ColorAttachment | RGUsage::Sampled,
-                RGState::Unknown,
-                RGState::ShaderRead));
-            graph.ImportTexture("Swapchain", ExternalTextureDesc(
-                frameInfo.extent,
-                RGUsage::ColorAttachment | RGUsage::Present,
-                RGState::Present,
-                RGState::Present));
-
-            graph.AddPass(
-                "ShadowPass",
-                RenderGraph::PassType::Graphics,
-                [&](RenderGraph::RenderGraphPassBuilder &builder) {
-                    builder.WriteTexture("ShadowMap", RenderGraph::RenderGraphResourceState::DepthStencilWrite);
-                    builder.SetGraphicsPass(GraphicsPassDesc(
-                        RenderGraph::GraphicsPassTargetKind::Shadow,
-                        {RenderGraphShadowMapResolution, RenderGraphShadowMapResolution},
-                        resourceCache.GetShadowPassSignature(),
-                        {DepthClear()}));
-                },
-                [this](RenderGraph::RenderGraphPassContext &context) {
-                    m_shadowSystem->UpdateGlobalUboBuffer(context.frameInfo.globalUbo, context.frameInfo.frameIndex);
-                    m_shadowSystem->Record(context);
-                });
-
-            graph.AddPass(
-                "PickingPass",
-                RenderGraph::PassType::Graphics,
-                [&](RenderGraph::RenderGraphPassBuilder &builder) {
-                    builder.WriteTexture("PickingTarget", RenderGraph::RenderGraphResourceState::ColorAttachmentWrite);
-                    builder.SetForceLive();
-                    builder.SetGraphicsPass(GraphicsPassDesc(
-                        RenderGraph::GraphicsPassTargetKind::Picking,
-                        frameInfo.sceneRenderExtent,
-                        resourceCache.GetPickingPassSignature(),
-                        {ColorClear(0.0f, 0.0f, 0.0f, 0.0f), DepthClear()}));
-                },
-                [this](RenderGraph::RenderGraphPassContext &context) {
-                    RenderEditorPickingDraws(context);
-                });
-
-            graph.AddPass(
-                "RasterSwapchainPass",
-                RenderGraph::PassType::Graphics,
-                [](RenderGraph::RenderGraphPassBuilder &builder) {
-                    builder.ReadTexture("ShadowMap", RenderGraph::RenderGraphResourceState::ShaderRead);
-                    builder.WriteTexture("Swapchain", RenderGraph::RenderGraphResourceState::ColorAttachmentWrite);
-                    builder.SetGraphicsPass(GraphicsPassDesc(
-                        RenderGraph::GraphicsPassTargetKind::Swapchain,
-                        {},
-                        {},
-                        {ColorClear(0.01f, 0.01f, 0.01f, 1.0f), DepthClear()},
-                        true,
-                        true,
-                        false));
-                },
-                [this](RenderGraph::RenderGraphPassContext &context) {
-                    RenderRasterScene(context);
-                });
-
-            graph.AddPass(
-                "GizmoPass",
-                RenderGraph::PassType::Graphics,
-                [](RenderGraph::RenderGraphPassBuilder &builder) {
-                    builder.ReadWriteTexture("Swapchain", RenderGraph::RenderGraphResourceState::Present);
-                    builder.SetGraphicsPass(GraphicsPassDesc(
-                        RenderGraph::GraphicsPassTargetKind::Gizmo,
-                        {},
-                        {},
-                        {ColorClear(0.01f, 0.01f, 0.01f, 1.0f), DepthClear()},
-                        true,
-                        false,
-                        true));
-                },
-                [this](RenderGraph::RenderGraphPassContext &context) {
-                    RenderGizmoDraws(context);
-                });
-
-            return graph;
         }
 #endif
 
@@ -919,6 +708,58 @@ namespace FeatherVK {
         }
 #endif
 
+        void EnsureCachedRenderQueues(const FrameInfo &frameInfo) {
+            if (frameInfo.renderScene == nullptr) {
+                m_defaultLayerMeshInstancesCache.clear();
+                m_sortedRasterRenderQueueCache.clear();
+                m_rasterRenderQueueSystemsCache.clear();
+                m_renderSceneMeshFilterRevision = 0;
+                return;
+            }
+
+            const uint64_t meshFilterRevision = frameInfo.renderScene->GetMeshFilterRevision();
+            if (m_renderSceneMeshFilterRevision == meshFilterRevision) {
+                return;
+            }
+
+            m_defaultLayerMeshInstancesCache.clear();
+            m_sortedRasterRenderQueueCache.clear();
+            const size_t visibleCount = static_cast<size_t>(frameInfo.renderScene->GetStats().visibleMeshInstanceCount);
+            m_defaultLayerMeshInstancesCache.reserve(std::max(m_defaultLayerMeshInstancesCache.capacity(), visibleCount));
+            m_sortedRasterRenderQueueCache.reserve(std::max(m_sortedRasterRenderQueueCache.capacity(), visibleCount));
+
+            for (const auto &meshInstance: frameInfo.renderScene->GetMeshInstances()) {
+                if (!meshInstance.IsDefaultLayerRenderable()) {
+                    continue;
+                }
+
+                m_defaultLayerMeshInstancesCache.push_back(&meshInstance);
+                const auto renderSystemIt = m_renderSystemMap.find(meshInstance.materialId);
+                if (renderSystemIt == m_renderSystemMap.end() || renderSystemIt->second == nullptr) {
+                    continue;
+                }
+                m_sortedRasterRenderQueueCache.push_back({renderSystemIt->second.get(), &meshInstance});
+            }
+
+            std::sort(m_sortedRasterRenderQueueCache.begin(), m_sortedRasterRenderQueueCache.end(), [](const auto &a, const auto &b) {
+                return a.meshInstance->renderQueue < b.meshInstance->renderQueue;
+            });
+
+            m_rasterRenderQueueSystemsCache.clear();
+            m_rasterRenderQueueSystemsCache.reserve(m_renderSystemMap.size());
+            m_renderQueueSystemDedupScratch.clear();
+            m_renderQueueSystemDedupScratch.reserve(m_renderSystemMap.size());
+            for (const auto &item: m_sortedRasterRenderQueueCache) {
+                if (item.renderSystem == nullptr) {
+                    continue;
+                }
+                if (m_renderQueueSystemDedupScratch.insert(item.renderSystem).second) {
+                    m_rasterRenderQueueSystemsCache.push_back(item.renderSystem);
+                }
+            }
+            m_renderSceneMeshFilterRevision = meshFilterRevision;
+        }
+
         void SanitizeSelection(FrameInfo &frameInfo) {
             auto &selectionService = m_resourceManager->GetEditorSelectionService();
             if (selectionService.HasSelection() &&
@@ -950,11 +791,35 @@ namespace FeatherVK {
                                        m_cachedSceneRenderExtent.height != frameInfo.sceneRenderExtent.height;
             auto renderSceneInvalidation = m_resourceManager->ConsumeRenderSceneInvalidation();
             auto dirtyTransformEntities = m_resourceManager->GetTransformService().ConsumeResolvedDirtyEntities();
+            const bool hasIncrementalUpdates =
+                renderSceneInvalidation.cameraDirty ||
+                !renderSceneInvalidation.events.empty() ||
+                !dirtyTransformEntities.empty();
+
+            if (m_renderSceneBuilt &&
+                !extentChanged &&
+                !renderSceneInvalidation.fullRebuild &&
+                !panelRectChanged &&
+                !hasIncrementalUpdates) {
+                frameInfo.renderScene = &m_renderScene;
+                return;
+            }
 
             if (!m_renderSceneBuilt || extentChanged || renderSceneInvalidation.fullRebuild) {
                 const auto &materialTraitsCache = EnsureRenderSceneMaterialTraitsCache(frameInfo, true);
                 m_renderScene = RenderSceneBuilder::Build(frameInfo, renderer, &materialTraitsCache);
                 m_renderSceneBuilt = true;
+#ifdef RAY_TRACING
+                if (!m_rayTracingSyncInitialized || renderSceneInvalidation.fullRebuild) {
+                    m_rayTracingFullSyncRequired = true;
+                    m_rayTracingDirtyEntities.clear();
+                    m_rayTracingRemovedEntities.clear();
+                }
+#endif
+                m_renderSceneMeshFilterRevision = 0;
+                m_defaultLayerMeshInstancesCache.clear();
+                m_sortedRasterRenderQueueCache.clear();
+                m_rasterRenderQueueSystemsCache.clear();
             } else {
                 if (panelRectChanged) {
                     m_renderScene.SetView(RenderSceneBuilder::BuildView(frameInfo));
@@ -1008,6 +873,9 @@ namespace FeatherVK {
                         case RenderSceneEventType::EntityDeleted:
                             m_renderScene.RemoveMeshInstance(event.entityId);
                             m_renderScene.RemoveLightInstance(event.entityId);
+#ifdef RAY_TRACING
+                            QueueRemovedRayTracingEntity(event.entityId);
+#endif
                             cameraDirty = true;
                             break;
                         case RenderSceneEventType::TransformChanged:
@@ -1022,6 +890,9 @@ namespace FeatherVK {
 
                 for (const id_t entityId: sceneEntityScratch) {
                     PatchRenderSceneMeshEntity(frameInfo, entityId);
+#ifdef RAY_TRACING
+                    QueueDirtyRayTracingEntity(entityId);
+#endif
                 }
 
                 if (cameraDirty) {
@@ -1097,7 +968,6 @@ namespace FeatherVK {
                 newSize *= 2;
             }
             entityDescs.resize(newSize);
-            m_rayTracingEntityDescsDirty = true;
         }
 #endif
 
@@ -1144,11 +1014,14 @@ namespace FeatherVK {
                 return;
             }
 
+            EnsureCachedRenderQueues(frameInfo);
             m_editorPickingRenderSystem->UpdateGlobalUboBuffer(frameInfo.globalUbo, frameInfo.frameIndex);
-
-            ForEachDefaultLayerMeshInstance(frameInfo, [&](const RenderMeshInstance &meshInstance) {
-                m_editorPickingRenderSystem->Record(context, meshInstance);
-            });
+            for (const auto *meshInstance: m_defaultLayerMeshInstancesCache) {
+                if (meshInstance == nullptr) {
+                    continue;
+                }
+                m_editorPickingRenderSystem->Record(context, *meshInstance);
+            }
         }
 
         void RenderRasterScene(RenderGraph::RenderGraphPassContext &context) {
@@ -1157,52 +1030,65 @@ namespace FeatherVK {
                 return;
             }
 
-            m_renderQueueScratch.clear();
-            m_renderQueueScratch.reserve(std::max(
-                m_renderQueueScratch.capacity(),
-                static_cast<size_t>(frameInfo.renderScene->GetStats().visibleMeshInstanceCount)));
-            ForEachDefaultLayerMeshInstance(frameInfo, [&](const RenderMeshInstance &meshInstance) {
-                const auto renderSystemIt = m_renderSystemMap.find(meshInstance.materialId);
-                if (renderSystemIt == m_renderSystemMap.end() || renderSystemIt->second == nullptr) {
-                    return;
-                }
-                m_renderQueueScratch.push_back({renderSystemIt->second.get(), &meshInstance});
-            });
-
-            std::sort(m_renderQueueScratch.begin(), m_renderQueueScratch.end(), [](const auto &a, const auto &b) {
-                return a.meshInstance->renderQueue < b.meshInstance->renderQueue;
-            });
-
-            m_updatedRenderSystemsScratch.clear();
-            m_updatedRenderSystemsScratch.reserve(m_renderSystemMap.size());
-            for (auto &item: m_renderQueueScratch) {
-                auto *renderSystem = item.renderSystem;
-                if (renderSystem == nullptr) {
-                    continue;
-                }
-                if (m_updatedRenderSystemsScratch.insert(renderSystem).second) {
+            EnsureCachedRenderQueues(frameInfo);
+            for (auto *renderSystem: m_rasterRenderQueueSystemsCache) {
+                if (renderSystem != nullptr) {
                     renderSystem->UpdateGlobalUboBuffer(frameInfo.globalUbo, frameInfo.frameIndex);
                 }
-                const RenderMeshInstance &meshInstance = *item.meshInstance;
-                renderSystem->Record(context, meshInstance);
+            }
+            for (const auto &item: m_sortedRasterRenderQueueCache) {
+                if (item.renderSystem == nullptr || item.meshInstance == nullptr) {
+                    continue;
+                }
+                item.renderSystem->Record(context, *item.meshInstance);
             }
         }
 #ifdef RAY_TRACING
-        void SyncRayTracingScene(FrameInfo &frameInfo) {
-            if (frameInfo.renderScene == nullptr) {
+        void SyncRayTracingScene(RenderGraph::RenderGraphPassContext &context) {
+            auto &frameInfo = context.frameInfo;
+            if (frameInfo.renderScene == nullptr || frameInfo.pEntityDescs == nullptr) {
                 return;
             }
 
+            auto &entityDescs = *frameInfo.pEntityDescs;
             auto &rayTracingSceneContext = m_resourceManager->GetRayTracingSceneContext();
             auto &renderResourceRegistry = m_resourceManager->GetRenderCore().GetResourceRegistry();
+            rayTracingSceneContext.BeginFrameTlasStats();
             rayTracingSceneContext.ProcessDeferredDestroy();
-            auto &currentRayTracingEntities = m_currentRayTracingEntitiesScratch;
-            currentRayTracingEntities.clear();
-            currentRayTracingEntities.reserve(static_cast<size_t>(frameInfo.renderScene->GetStats().visibleMeshInstanceCount));
+            m_dirtyEntityDescSlotsScratch.clear();
+            m_lastRayTracingSyncStats = {};
             bool tlasHandleChanged = false;
             bool entityDescsChanged = false;
             bool instanceStructureChanged = false;
             bool transformOrMaskChanged = false;
+            auto markEntityDescDirty = [&](const id_t entityDescSlot) {
+                if (entityDescSlot < 0) {
+                    return;
+                }
+                m_dirtyEntityDescSlotsScratch.push_back(entityDescSlot);
+                entityDescsChanged = true;
+            };
+
+            auto retireEntity = [&](const id_t entityId) {
+                const auto tlasIt = m_entityToTlasId.find(entityId);
+                if (tlasIt == m_entityToTlasId.end()) {
+                    m_rayTracingEntityStateCache.erase(entityId);
+                    return;
+                }
+
+                const id_t staleTlasId = tlasIt->second;
+                if (rayTracingSceneContext.RetireInstance(staleTlasId)) {
+                    transformOrMaskChanged = true;
+                }
+                if (staleTlasId >= 0 && static_cast<size_t>(staleTlasId) < entityDescs.size()) {
+                    entityDescs[static_cast<size_t>(staleTlasId)] = EntityDesc{};
+                    markEntityDescDirty(staleTlasId);
+                }
+                m_rayTracingEntityStateCache.erase(entityId);
+                m_entityToTlasId.erase(tlasIt);
+                frameInfo.sceneUpdated = true;
+                ++m_lastRayTracingSyncStats.removedEntityCount;
+            };
 
             auto processMeshInstance = [&](const RenderMeshInstance &meshInstance, const std::shared_ptr<Model> &model) {
                 if (model == nullptr) {
@@ -1213,8 +1099,9 @@ namespace FeatherVK {
                 const uint32_t instanceMask = isActive ? (1u << std::min(meshInstance.renderLayer, 7u)) : 0x00;
                 const glm::mat4 currentTransform = meshInstance.worldTransform;
                 auto [tlasEntry, inserted] = m_entityToTlasId.try_emplace(meshInstance.entityId, meshInstance.rayTracingInstanceId);
+                (void)inserted;
                 id_t &tlasId = tlasEntry->second;
-                if (inserted && tlasId == std::numeric_limits<id_t>::max()) {
+                if (tlasId == std::numeric_limits<id_t>::max()) {
                     tlasId = rayTracingSceneContext.AllocateInstanceId();
                 }
 
@@ -1222,17 +1109,16 @@ namespace FeatherVK {
                     return;
                 }
 
-                EnsureEntityDescCapacity(frameInfo.pEntityDescs, static_cast<size_t>(tlasId) + 1);
+                EnsureEntityDescCapacity(entityDescs, static_cast<size_t>(tlasId) + 1);
 
-                EntityDesc &entityDesc = frameInfo.pEntityDescs[tlasId];
+                EntityDesc &entityDesc = entityDescs[tlasId];
                 const int32_t renderOptions =
                     (meshInstance.castShadow ? EntityRenderOptionCastShadow : 0) |
                     (meshInstance.receiveShadow ? EntityRenderOptionReceiveShadow : 0);
                 const int32_t renderLayer = static_cast<int32_t>(std::min(meshInstance.renderLayer, 7u));
-                auto stateEntry = m_rayTracingEntityStateCache.find(meshInstance.entityId);
-                const bool hasCachedState = stateEntry != m_rayTracingEntityStateCache.end();
-                RayTracingEntityState &cachedState =
-                    hasCachedState ? stateEntry->second : m_rayTracingEntityStateCache[meshInstance.entityId];
+                auto [stateEntry, insertedState] = m_rayTracingEntityStateCache.try_emplace(meshInstance.entityId);
+                const bool hasCachedState = !insertedState;
+                RayTracingEntityState &cachedState = stateEntry->second;
                 const bool meshResourceChanged =
                     !hasCachedState || cachedState.meshResource != meshInstance.meshResource;
                 const bool entityDescDirty =
@@ -1271,11 +1157,13 @@ namespace FeatherVK {
                     nextEntityDesc.renderOptions = renderOptions;
                     nextEntityDesc.renderLayer = renderLayer;
                     entityDesc = nextEntityDesc;
-                    entityDescsChanged = true;
+                    markEntityDescDirty(tlasId);
                 }
 
                 if (!rayTracingSceneContext.HasBlas(model)) {
-                    rayTracingSceneContext.EnsureBlasBuilt(model);
+                    rayTracingSceneContext.EnsureBlasBuilt(
+                        context.frameInfo.commandBuffer,
+                        model);
                 }
 
                 const bool transformChanged =
@@ -1318,34 +1206,62 @@ namespace FeatherVK {
                 cachedState.worldTransform = currentTransform;
                 cachedState.instanceMask = instanceMask;
                 cachedState.instanceStateInitialized = true;
+                ++m_lastRayTracingSyncStats.processedEntityCount;
             };
 
-            ForEachRayTracingMeshInstance(frameInfo, [&](const RenderMeshInstance &meshInstance) {
-                const auto *meshResource = renderResourceRegistry.GetMesh(meshInstance.meshResource);
-                if (meshResource == nullptr || meshResource->legacyModel == nullptr) {
-                    return;
-                }
-                currentRayTracingEntities.insert(meshInstance.entityId);
-                processMeshInstance(meshInstance, meshResource->legacyModel);
-            });
+            if (!m_rayTracingSyncInitialized || m_rayTracingFullSyncRequired) {
+                m_lastRayTracingSyncStats.fullSync = true;
+                m_renderSceneEntityScratch.clear();
+                m_renderSceneEntityScratch.reserve(frameInfo.renderScene->GetStats().visibleMeshInstanceCount);
+                ForEachRayTracingMeshInstance(frameInfo, [&](const RenderMeshInstance &meshInstance) {
+                    m_renderSceneEntityScratch.insert(meshInstance.entityId);
+                    const auto *meshResource = renderResourceRegistry.GetMesh(meshInstance.meshResource);
+                    if (meshResource == nullptr || meshResource->legacyModel == nullptr) {
+                        retireEntity(meshInstance.entityId);
+                        return;
+                    }
+                    processMeshInstance(meshInstance, meshResource->legacyModel);
+                });
 
-            for (auto it = m_entityToTlasId.begin(); it != m_entityToTlasId.end();) {
-                if (currentRayTracingEntities.find(it->first) != currentRayTracingEntities.end()) {
-                    ++it;
-                    continue;
+                m_removedRayTracingEntityScratch.clear();
+                m_removedRayTracingEntityScratch.reserve(m_entityToTlasId.size());
+                for (const auto &[entityId, tlasId]: m_entityToTlasId) {
+                    (void) tlasId;
+                    if (m_renderSceneEntityScratch.find(entityId) == m_renderSceneEntityScratch.end()) {
+                        m_removedRayTracingEntityScratch.push_back(entityId);
+                    }
+                }
+                for (const id_t entityId: m_removedRayTracingEntityScratch) {
+                    retireEntity(entityId);
                 }
 
-                const id_t staleTlasId = it->second;
-                if (rayTracingSceneContext.RetireInstance(staleTlasId)) {
-                    transformOrMaskChanged = true;
+                m_rayTracingDirtyEntities.clear();
+                m_rayTracingRemovedEntities.clear();
+                m_rayTracingFullSyncRequired = false;
+                m_rayTracingSyncInitialized = true;
+            } else {
+                m_lastRayTracingSyncStats.fullSync = false;
+                for (const id_t entityId: m_rayTracingRemovedEntities) {
+                    retireEntity(entityId);
                 }
-                if (staleTlasId >= 0 && static_cast<size_t>(staleTlasId) < frameInfo.pEntityDescs.size()) {
-                    frameInfo.pEntityDescs[staleTlasId] = EntityDesc{};
-                    entityDescsChanged = true;
+
+                for (const id_t entityId: m_rayTracingDirtyEntities) {
+                    const auto *meshInstance = frameInfo.renderScene->FindMeshInstance(entityId);
+                    if (meshInstance == nullptr || !meshInstance->IsRayTracingRenderable()) {
+                        retireEntity(entityId);
+                        continue;
+                    }
+
+                    const auto *meshResource = renderResourceRegistry.GetMesh(meshInstance->meshResource);
+                    if (meshResource == nullptr || meshResource->legacyModel == nullptr) {
+                        retireEntity(entityId);
+                        continue;
+                    }
+                    processMeshInstance(*meshInstance, meshResource->legacyModel);
                 }
-                m_rayTracingEntityStateCache.erase(it->first);
-                frameInfo.sceneUpdated = true;
-                it = m_entityToTlasId.erase(it);
+
+                m_rayTracingDirtyEntities.clear();
+                m_rayTracingRemovedEntities.clear();
             }
 
             const bool needsRebuild =
@@ -1359,9 +1275,15 @@ namespace FeatherVK {
                  rayTracingSceneContext.ShouldUpdate());
 
             if (needsRebuild) {
-                tlasHandleChanged = rayTracingSceneContext.BuildTopLevel(VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR, false);
+                tlasHandleChanged = rayTracingSceneContext.BuildTopLevel(
+                    context.frameInfo.commandBuffer,
+                    VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+                    false);
             } else if (needsUpdate) {
-                tlasHandleChanged = rayTracingSceneContext.BuildTopLevel(VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR, true);
+                tlasHandleChanged = rayTracingSceneContext.BuildTopLevel(
+                    context.frameInfo.commandBuffer,
+                    VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+                    true);
             }
             rayTracingSceneContext.ClearBuildFlags();
 
@@ -1369,10 +1291,6 @@ namespace FeatherVK {
                 m_resourceManager->MarkRayTracingTlasDescriptorDirty();
             }
 
-            if (entityDescsChanged || m_rayTracingEntityDescsDirty) {
-                m_rayTracingEntityDescsDirty = true;
-                m_resourceManager->GetEntityDescs() = frameInfo.pEntityDescs;
-            }
         }
 #endif
 
@@ -1385,23 +1303,27 @@ namespace FeatherVK {
         std::shared_ptr<Material> m_editorPickingMaterial;
         std::shared_ptr<EditorPickingRenderSystem> m_editorPickingRenderSystem;
         LightSystem m_lightSystem;
-        RenderGraph::RenderGraphExecutor m_frameGraphExecutor{};
         RenderScene m_renderScene{};
         RenderSceneBuilder::MaterialTraitsCache m_renderSceneMaterialTraitsCache{};
         size_t m_renderSceneMaterialTraitsCacheMaterialCount{0};
         bool m_renderSceneMaterialTraitsDirty{true};
-        std::vector<RasterRenderQueueItem> m_renderQueueScratch{};
-        std::unordered_set<RenderSystem *> m_updatedRenderSystemsScratch{};
+        uint64_t m_renderSceneMeshFilterRevision{0};
+        std::vector<const RenderMeshInstance *> m_defaultLayerMeshInstancesCache{};
+        std::vector<RasterRenderQueueItem> m_sortedRasterRenderQueueCache{};
+        std::vector<RenderSystem *> m_rasterRenderQueueSystemsCache{};
+        std::unordered_set<RenderSystem *> m_renderQueueSystemDedupScratch{};
         std::unordered_set<id_t> m_renderSceneEntityScratch{};
-        std::vector<CachedFrameGraphBindings> m_layoutInteractionBindingCaches{};
-        std::vector<CachedFrameGraphBindings> m_rayTracingBindingCaches{};
-        std::vector<CachedFrameGraphBindings> m_rasterBindingCaches{};
+        FrameGraphBindingCacheBucket m_layoutInteractionBindingCache{};
+        FrameGraphBindingCacheBucket m_rayTracingBindingCache{};
+        FrameGraphBindingCacheBucket m_rasterBindingCache{};
         ViewportRect m_cachedScenePanelRect{};
         ViewportRect m_cachedSceneViewportRect{};
         VkExtent2D m_cachedSceneRenderExtent{};
         bool m_renderSceneBuilt{false};
 
 #ifdef RAY_TRACING
+        std::unique_ptr<RenderPipeline> m_rayTracingPipeline{};
+        std::unique_ptr<RenderPipeline> m_hybridPipeline{};
         std::shared_ptr<RayTracingSystem> m_rayTracingSystem;
         RenderGraph::RenderGraph m_layoutInteractionFrameGraph{};
         RenderGraph::RenderGraph m_rayTracingFrameGraph{};
@@ -1409,12 +1331,18 @@ namespace FeatherVK {
         FrameGraphCacheKey m_rayTracingFrameGraphKey{};
         bool m_layoutInteractionFrameGraphValid{false};
         bool m_rayTracingFrameGraphValid{false};
-        std::unordered_set<id_t> m_currentRayTracingEntitiesScratch{};
         std::unordered_map<id_t, RayTracingEntityState> m_rayTracingEntityStateCache{};
         std::unordered_map<id_t, id_t> m_entityToTlasId{};
-        bool m_rayTracingEntityDescsDirty{false};
+        std::unordered_set<id_t> m_rayTracingDirtyEntities{};
+        std::unordered_set<id_t> m_rayTracingRemovedEntities{};
+        std::vector<id_t> m_removedRayTracingEntityScratch{};
+        std::vector<id_t> m_dirtyEntityDescSlotsScratch{};
+        bool m_rayTracingSyncInitialized{false};
+        bool m_rayTracingFullSyncRequired{true};
+        RayTracingSyncStats m_lastRayTracingSyncStats{};
         int m_lastPresentedSceneImageIndex = 0;
 #else
+        std::unique_ptr<RenderPipeline> m_rasterPipeline{};
         std::shared_ptr<ShadowSystem> m_shadowSystem;
         RenderGraph::RenderGraph m_rasterFrameGraph{};
         FrameGraphCacheKey m_rasterFrameGraphKey{};

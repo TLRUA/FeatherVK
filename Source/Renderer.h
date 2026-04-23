@@ -14,6 +14,9 @@
 
 namespace FeatherVK {
     namespace RenderGraph {
+        class RenderGraph;
+        class RenderGraphExecutor;
+        class RenderGraphResourceBindings;
         class RenderGraphResourceCache;
     }
 
@@ -123,6 +126,11 @@ namespace FeatherVK {
 
         int32_t readPickingObjectId(uint32_t pixelX, uint32_t pixelY);
 
+        void ExecuteGraph(RenderGraph::RenderGraph &graph,
+                          FrameInfo &frameInfo,
+                          const RenderGraph::RenderGraphResourceBindings &bindings,
+                          RenderGraph::RenderGraphResourceCache &resourceCache);
+
     private:
         void createCommandBuffers();
 
@@ -143,6 +151,7 @@ namespace FeatherVK {
         ViewportRect m_sceneViewportRect{};
         VkExtent2D m_sceneRenderExtent{static_cast<uint32_t>(SCENE_WIDTH), static_cast<uint32_t>(SCENE_HEIGHT)};
         RenderGraph::RenderGraphResourceCache *m_renderGraphResourceCache{nullptr};
+        std::unique_ptr<RenderGraph::RenderGraphExecutor> m_renderGraphExecutor;
 
     };
 
